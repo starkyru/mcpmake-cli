@@ -1,4 +1,8 @@
-FROM mcr.microsoft.com/playwright:v1.50.0-noble AS builder
+# Keep this base-image tag IN LOCKSTEP with the "playwright" version in
+# package.json.hbs (currently 1.59.1). Playwright requires the library version
+# and the bundled browser binaries to match, or chromium.launch() fails at
+# runtime ("browser not found"). Bump both together.
+FROM mcr.microsoft.com/playwright:v1.59.1-noble AS builder
 
 WORKDIR /app
 COPY package.json package-lock.json ./
@@ -7,7 +11,7 @@ COPY tsconfig.json ./
 COPY src/ src/
 RUN npm run build
 
-FROM mcr.microsoft.com/playwright:v1.50.0-noble
+FROM mcr.microsoft.com/playwright:v1.59.1-noble
 
 LABEL org.opencontainers.image.title="{{serverName}}"
 ENV NODE_ENV=production
