@@ -39,7 +39,14 @@ export { loadPostmanCollection } from './parser/postman-loader.js';
 // ---------------------------------------------------------------------------
 // Transformer (operations -> tools/resources/prompts)
 // ---------------------------------------------------------------------------
-export { toToolName, toToolTitle, toFileName, toFunctionName } from './transformer/naming.js';
+export {
+  toToolName,
+  toToolTitle,
+  toFileName,
+  toFunctionName,
+  deriveResourceName,
+} from './transformer/naming.js';
+export { resourceTreeNames } from './transformer/resource-namer.js';
 export { detectAuthSchemes } from './transformer/auth-detector.js';
 export { buildToolDefinition, buildAllTools } from './transformer/tool-builder.js';
 export { filterOperations } from './transformer/operation-filter.js';

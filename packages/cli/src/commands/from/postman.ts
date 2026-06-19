@@ -5,6 +5,7 @@ import { clusterEntries } from '@mcpmake/core';
 import { clustersToOperations } from '@mcpmake/core';
 import { deduplicateEntries } from '@mcpmake/core';
 import { buildAllTools } from '@mcpmake/core';
+import { resourceTreeNames } from '@mcpmake/core';
 import { filterOperations } from '@mcpmake/core';
 import { buildResources, buildPrompts } from '@mcpmake/core';
 import { emitProject } from '@mcpmake/core';
@@ -64,6 +65,12 @@ export default defineConfigurableCommand('postman', {
       alias: 'e',
       description: 'Exclude operations matching patterns (comma-separated)',
     },
+    'resource-names': {
+      type: 'boolean',
+      description:
+        'Name tools from the REST resource tree (POST /accounts → create_account); deterministic, offline, no API key',
+      default: false,
+    },
     force: {
       type: 'boolean',
       alias: 'f',
@@ -93,7 +100,12 @@ export default defineConfigurableCommand('postman', {
     const clusters = clusterEntries(normalized);
     logger.info(`Clustered into ${clusters.length} operations`);
 
-    const { operations: allOperations, baseUrl, detectedAuth } = clustersToOperations(clusters);
+    const { operations: rawOperations, baseUrl, detectedAuth } = clustersToOperations(clusters);
+
+    // Deterministic REST resource-tree naming (offline; no API key).
+    const allOperations = args['resource-names']
+      ? resourceTreeNames(rawOperations)
+      : rawOperations;
 
     let operations = filterOperations(allOperations, {
       include: args.include?.split(',').map((s) => s.trim()),

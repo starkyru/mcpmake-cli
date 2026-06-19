@@ -6,6 +6,7 @@ import { clusterEntries } from '@mcpmake/core';
 import { clustersToOperations } from '@mcpmake/core';
 import { deduplicateEntries } from '@mcpmake/core';
 import { improveToolNames } from '@mcpmake/core';
+import { resourceTreeNames } from '@mcpmake/core';
 import { buildAllTools } from '@mcpmake/core';
 import { filterOperations } from '@mcpmake/core';
 import { emitProject } from '@mcpmake/core';
@@ -93,6 +94,12 @@ export default defineCommand({
       description: 'Use AI to generate better tool names (requires ANTHROPIC_API_KEY)',
       default: false,
     },
+    'resource-names': {
+      type: 'boolean',
+      description:
+        'Name tools from the REST resource tree (POST /accounts → create_account); deterministic, offline, no API key',
+      default: false,
+    },
     interactive: {
       type: 'boolean',
       description: 'Review and confirm detected tools before generation',
@@ -148,6 +155,11 @@ export default defineCommand({
     logger.info(`Clustered into ${clusters.length} operations`);
 
     let { operations: allOperations, detectedAuth } = clustersToOperations(clusters);
+
+    // Deterministic REST resource-tree naming (offline; no API key).
+    if (args['resource-names']) {
+      allOperations = resourceTreeNames(allOperations);
+    }
 
     // LLM-assisted naming
     if (args['improve-names']) {

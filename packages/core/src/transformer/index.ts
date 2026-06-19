@@ -1,4 +1,11 @@
-export { toToolName, toToolTitle, toFileName, toFunctionName } from './naming.js';
+export {
+  toToolName,
+  toToolTitle,
+  toFileName,
+  toFunctionName,
+  deriveResourceName,
+} from './naming.js';
+export { resourceTreeNames } from './resource-namer.js';
 export { detectAuthSchemes } from './auth-detector.js';
 export { buildToolDefinition, buildAllTools } from './tool-builder.js';
 export { clusterEntries } from './har-clusterer.js';

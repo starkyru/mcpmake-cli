@@ -9,6 +9,7 @@ import { detectAuthSchemes } from '@mcpmake/core';
 import { buildAllTools } from '@mcpmake/core';
 import { filterOperations } from '@mcpmake/core';
 import { improveToolNames } from '@mcpmake/core';
+import { resourceTreeNames } from '@mcpmake/core';
 import { buildResources, buildPrompts } from '@mcpmake/core';
 import { applyClientCompat, type ClientMode } from '@mcpmake/core';
 import { emitProject, emitPythonProject } from '@mcpmake/core';
@@ -119,6 +120,12 @@ export default defineConfigurableCommand('openapi', {
       description: 'Use AI to generate better tool names (requires ANTHROPIC_API_KEY)',
       default: false,
     },
+    'resource-names': {
+      type: 'boolean',
+      description:
+        'Name tools from the REST resource tree (POST /accounts → create_account); deterministic, offline, no API key',
+      default: false,
+    },
     overlay: {
       type: 'string',
       description:
@@ -171,6 +178,12 @@ export default defineConfigurableCommand('openapi', {
     }
 
     logger.info(`Found ${operations.length} operations`);
+
+    // Deterministic REST resource-tree naming (offline; no API key). Applied
+    // before the optional LLM pass so AI can further refine if both are set.
+    if (args['resource-names']) {
+      operations = resourceTreeNames(operations);
+    }
 
     // LLM-assisted naming
     if (args['improve-names']) {
