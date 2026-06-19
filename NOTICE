@@ -1,0 +1,12 @@
+mcpmake
+Copyright 2026 mcpmake
+
+This product includes software developed by the mcpmake team
+(https://mcpmake.dev).
+
+Licensed under the Apache License, Version 2.0. See the LICENSE file for the
+full license text.
+
+The MCP servers that mcpmake generates are yours: the Apache-2.0 license covers
+the generator and library only. Code you produce with mcpmake carries no license
+obligation back to this project.

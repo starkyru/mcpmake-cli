@@ -1,0 +1,45 @@
+{
+  "name": "@mcpmake/core",
+  "version": "0.1.0",
+  "description": "Shared generation library for mcpmake — parse APIs (OpenAPI/HAR/Postman/websites) and emit MCP servers.",
+  "type": "module",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/starkyru/mcpmake-cli.git",
+    "directory": "packages/core"
+  },
+  "homepage": "https://mcpmake.dev",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "bash scripts/build.sh",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.90.0",
+    "@apidevtools/swagger-parser": "^12.1.0",
+    "citty": "^0.1.6",
+    "consola": "^3.4.2",
+    "handlebars": "^4.7.8",
+    "json-schema-to-zod": "^2.4.1",
+    "marked": "^12.0.2",
+    "openapi-types": "^12.1.3",
+    "playwright": "^1.59.1",
+    "yaml": "^2.7.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

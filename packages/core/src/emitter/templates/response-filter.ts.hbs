@@ -1,0 +1,128 @@
+/**
+ * Minimal, dependency-free jq-style response filter.
+ *
+ * Stainless exposes a per-call `jq_filter` argument that trims the JSON response
+ * before it is returned to the agent (saving context tokens). A full jq engine is
+ * a heavy dependency, so this implements a safe, commonly-used subset:
+ *
+ *   .                identity (whole document)
+ *   .a.b.c           nested object access
+ *   .a.b?            optional access (never throws on a missing key)
+ *   .items[0]        array index (negative indexes count from the end)
+ *   .items[]         iterate an array, applying the rest of the path to each item
+ *   .a | .b          pipe (each stage receives the previous stage's output)
+ *
+ * Anything outside this subset (or any error while evaluating) makes the filter
+ * fall back to returning the unfiltered value, so a bad filter never breaks a
+ * tool call. This is intentionally conservative: it only ever *selects* data,
+ * it never executes arbitrary expressions.
+ */
+export function applyJqFilter(data: unknown, filter: string): unknown {
+  const trimmed = filter.trim();
+  if (!trimmed || trimmed === '.') return data;
+
+  // A pipe runs each stage in sequence; later stages refine the earlier output.
+  const stages = trimmed.split('|').map((s) => s.trim());
+  let current: unknown = data;
+  for (const stage of stages) {
+    current = applyStage(current, stage);
+  }
+  return current;
+}
+
+function applyStage(data: unknown, stage: string): unknown {
+  if (!stage || stage === '.') return data;
+
+  // Tokenize a leading-dot path into object keys and array selectors.
+  // e.g. ".a.b[0].c[]" → [{key:"a"}, {key:"b"}, {index:0}, {key:"c"}, {iterate:true}]
+  const tokens = tokenizePath(stage);
+  if (!tokens) return data; // unsupported syntax → leave the value untouched
+
+  let current: unknown = data;
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (current == null) return undefined;
+
+    if (token.iterate) {
+      if (!Array.isArray(current)) return undefined;
+      const rest = tokens.slice(i + 1);
+      return current.map((item) => walk(item, rest));
+    }
+
+    if (token.index !== undefined) {
+      if (!Array.isArray(current)) return undefined;
+      const idx = token.index < 0 ? current.length + token.index : token.index;
+      current = current[idx];
+      continue;
+    }
+
+    if (typeof current !== 'object' || Array.isArray(current)) return undefined;
+    current = (current as Record<string, unknown>)[token.key as string];
+  }
+  return current;
+}
+
+interface PathToken {
+  key?: string;
+  index?: number;
+  iterate?: boolean;
+}
+
+function walk(data: unknown, tokens: PathToken[]): unknown {
+  let current: unknown = data;
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (current == null) return undefined;
+    if (token.iterate) {
+      if (!Array.isArray(current)) return undefined;
+      const rest = tokens.slice(i + 1);
+      return current.map((item) => walk(item, rest));
+    }
+    if (token.index !== undefined) {
+      if (!Array.isArray(current)) return undefined;
+      const idx = token.index < 0 ? current.length + token.index : token.index;
+      current = current[idx];
+      continue;
+    }
+    if (typeof current !== 'object' || Array.isArray(current)) return undefined;
+    current = (current as Record<string, unknown>)[token.key as string];
+  }
+  return current;
+}
+
+function tokenizePath(path: string): PathToken[] | null {
+  const tokens: PathToken[] = [];
+  let i = 0;
+  const n = path.length;
+  while (i < n) {
+    const ch = path[i];
+    if (ch === '.') {
+      i++;
+      // Read an object key (identifier-ish chars). A bare "." (e.g. before "[")
+      // is allowed and contributes no key token.
+      let key = '';
+      while (i < n && /[A-Za-z0-9_$-]/.test(path[i])) {
+        key += path[i];
+        i++;
+      }
+      // Tolerate the jq optional-access marker "?".
+      if (i < n && path[i] === '?') i++;
+      if (key) tokens.push({ key });
+    } else if (ch === '[') {
+      const close = path.indexOf(']', i);
+      if (close === -1) return null;
+      const inner = path.slice(i + 1, close).trim();
+      if (inner === '') {
+        tokens.push({ iterate: true });
+      } else if (/^-?\d+$/.test(inner)) {
+        tokens.push({ index: parseInt(inner, 10) });
+      } else {
+        return null; // unsupported selector (filters, slices, string keys)
+      }
+      i = close + 1;
+    } else {
+      return null; // unexpected character → unsupported
+    }
+  }
+  return tokens;
+}

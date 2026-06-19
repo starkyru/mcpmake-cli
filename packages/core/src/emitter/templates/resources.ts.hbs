@@ -1,0 +1,63 @@
+import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { executeRequest } from './http.js';
+import type { AppConfig } from './config.js';
+
+export function registerAllResources(server: McpServer, config: AppConfig): void {
+{{#each resources}}
+{{#if isTemplate}}
+  server.resource(
+    '{{name}}',
+    '{{uri}}',
+    {
+      description: `{{{description}}}`,
+      mimeType: 'application/json',
+    },
+    async (uri) => {
+{{{urlBody}}}
+      const response = await executeRequest({
+        method: 'get',
+        url,
+        headers: {},
+        config,
+      });
+      return {
+        contents: [
+          {
+            uri: uri.href,
+            mimeType: 'application/json',
+            text: JSON.stringify(response.data, null, 2),
+          },
+        ],
+      };
+    },
+  );
+{{else}}
+  server.resource(
+    '{{name}}',
+    '{{uri}}',
+    {
+      description: `{{{description}}}`,
+      mimeType: 'application/json',
+    },
+    async () => {
+      const response = await executeRequest({
+        method: 'get',
+        url: `${config.baseUrl}{{path}}`,
+        headers: {},
+        config,
+      });
+      return {
+        contents: [
+          {
+            uri: '{{uri}}',
+            mimeType: 'application/json',
+            text: JSON.stringify(response.data, null, 2),
+          },
+        ],
+      };
+    },
+  );
+{{/if}}
+
+{{/each}}
+}

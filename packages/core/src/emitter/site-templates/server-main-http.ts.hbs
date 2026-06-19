@@ -1,0 +1,108 @@
+import http from 'node:http';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { loadConfig } from './config.js';
+import { initBrowserManager, closeBrowser, isBrowserRunning } from './browser-manager.js';
+import { registerAllTools } from './tools/index.js';
+
+function log(level: string, message: string, data?: Record<string, unknown>): void {
+  const entry = { timestamp: new Date().toISOString(), level, message, ...data };
+  process.stderr.write(JSON.stringify(entry) + '\n');
+}
+
+const config = loadConfig();
+initBrowserManager(config.browser);
+
+const server = new McpServer({
+  name: '{{serverName}}',
+  version: '{{serverVersion}}',
+});
+
+registerAllTools(server, config);
+
+let isReady = false;
+
+if (process.env.TRANSPORT === 'http') {
+  const port = parseInt(process.env.PORT ?? '3000', 10);
+  const allowedOrigin = process.env.ALLOWED_ORIGIN;
+
+  const httpServer = http.createServer(async (req, res) => {
+    const url = new URL(req.url ?? '/', `http://localhost:${port}`);
+
+    if (url.pathname === '/health') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ status: 'ok', browser: isBrowserRunning() }));
+      return;
+    }
+
+    if (url.pathname === '/ready') {
+      res.writeHead(isReady ? 200 : 503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ready: isReady }));
+      return;
+    }
+
+    if (url.pathname === '/mcp') {
+      if (allowedOrigin) {
+        // Compare host-to-host exactly (DNS-rebinding protection). A substring
+        // match would let "evil-{ALLOWED_ORIGIN}.attacker.com" through.
+        const originHeader = req.headers.origin;
+        let originHost = '';
+        if (originHeader) {
+          try {
+            originHost = new URL(originHeader).host;
+          } catch {
+            originHost = '';
+          }
+        } else if (req.headers.host) {
+          originHost = req.headers.host;
+        }
+        // ALLOWED_ORIGIN may be a full origin (https://app.example.com) or a bare host.
+        let allowedHost = allowedOrigin;
+        try {
+          allowedHost = new URL(allowedOrigin).host;
+        } catch {
+          // already a bare host
+        }
+        // Hosts are case-insensitive; normalize both sides (URL.host already lowercases).
+        if (originHost.toLowerCase() !== allowedHost.toLowerCase()) {
+          res.writeHead(403);
+          res.end('Forbidden');
+          return;
+        }
+      }
+
+      const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+      await server.connect(transport);
+      await transport.handleRequest(req, res);
+      return;
+    }
+
+    res.writeHead(404);
+    res.end('Not Found');
+  });
+
+  httpServer.listen(port, () => {
+    isReady = true;
+    log('info', `MCP server listening on port ${port}`);
+  });
+
+  const shutdown = async () => {
+    log('info', 'Shutting down...');
+    await closeBrowser();
+    httpServer.close();
+    setTimeout(() => process.exit(0), 5000);
+  };
+
+  process.on('SIGTERM', shutdown);
+  process.on('SIGINT', shutdown);
+} else {
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+  isReady = true;
+
+  process.on('SIGTERM', async () => {
+    await closeBrowser();
+    process.exit(0);
+  });
+}

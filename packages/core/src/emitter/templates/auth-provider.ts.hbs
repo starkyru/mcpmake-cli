@@ -1,0 +1,57 @@
+import type { AppConfig } from './config.js';
+{{#if hasOAuth}}
+import { getAccessToken } from './oauth.js';
+{{/if}}
+
+{{#if hasOAuth}}
+export async function getAuthHeaders(config: AppConfig): Promise<Record<string, string>> {
+{{else}}
+export function getAuthHeaders(config: AppConfig): Record<string, string> {
+{{/if}}
+  const headers: Record<string, string> = {};
+
+{{#each authSchemes}}
+{{#if (eq type "apiKey")}}
+{{#if (eq in "header")}}
+  if (config.apiKey) {
+    headers['{{headerName}}'] = config.apiKey;
+  }
+{{/if}}
+{{#if (eq in "query")}}
+  // API key sent as query parameter — handled in request URL construction
+{{/if}}
+{{/if}}
+{{#if (eq type "http-bearer")}}
+  if (config.bearerToken) {
+    headers['Authorization'] = `Bearer ${config.bearerToken}`;
+  }
+{{/if}}
+{{#if (eq type "http-basic")}}
+  if (config.basicUsername && config.basicPassword) {
+    const encoded = Buffer.from(`${config.basicUsername}:${config.basicPassword}`).toString('base64');
+    headers['Authorization'] = `Basic ${encoded}`;
+  }
+{{/if}}
+{{#if (eq type "oauth2")}}
+  // OAuth2 — use token management with refresh
+  try {
+    const token = await getAccessToken({
+      clientId: config.oauth2ClientId ?? '',
+      clientSecret: config.oauth2ClientSecret,
+      authorizationUrl: config.oauth2AuthorizationUrl ?? '',
+      tokenUrl: config.oauth2TokenUrl ?? '',
+      scopes: [],
+      redirectUri: config.oauth2RedirectUri ?? 'http://localhost:3000/callback',
+    });
+    headers['Authorization'] = `Bearer ${token}`;
+  } catch {
+    // Fallback to pre-obtained token
+    if (config.oauth2Token) {
+      headers['Authorization'] = `Bearer ${config.oauth2Token}`;
+    }
+  }
+{{/if}}
+{{/each}}
+
+  return headers;
+}

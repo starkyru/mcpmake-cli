@@ -1,0 +1,57 @@
+import { describe, it, expect } from 'vitest';
+import { z } from 'zod';
+import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { AppConfig } from '../../src/config.js';
+import { register } from '../../src/tools/{{fileName}}.js';
+
+/**
+ * Capture the server.registerTool() call without a real MCP server or any
+ * network access. The tool's HTTP handler is never invoked here.
+ */
+function capture(): { name: string; def: Record<string, unknown>; handler: unknown }[] {
+  const calls: { name: string; def: Record<string, unknown>; handler: unknown }[] = [];
+  const server = {
+    registerTool(name: string, def: Record<string, unknown>, handler: unknown) {
+      calls.push({ name, def, handler });
+    },
+  } as unknown as McpServer;
+  const config = {
+    baseUrl: 'https://example.test',
+    maxRetries: 0,
+    requestIntervalMs: 0,
+  } as unknown as AppConfig;
+  register(server, config);
+  return calls;
+}
+
+describe('{{name}}', () => {
+  // Tool: {{name}} — {{method}} {{pathTemplate}}
+
+  it('registers exactly one tool under its name', () => {
+    const calls = capture();
+    expect(calls).toHaveLength(1);
+    expect(calls[0].name).toBe('{{name}}');
+  });
+
+  it('exposes a title and description', () => {
+    const { def } = capture()[0];
+    expect(def.title).toBeTruthy();
+    expect(typeof def.description).toBe('string');
+  });
+
+  it('registers a callable handler', () => {
+    expect(typeof capture()[0].handler).toBe('function');
+  });
+
+  it('has a well-formed input schema', () => {
+    const raw = capture()[0].def.inputSchema as unknown;
+    // inputSchema is a Zod raw shape (record of validators); it must build into
+    // a usable object schema and run without throwing.
+    const schema =
+      raw && typeof (raw as { safeParse?: unknown }).safeParse === 'function'
+        ? (raw as z.ZodTypeAny)
+        : z.object(raw as z.ZodRawShape);
+    const result = schema.safeParse({});
+    expect(typeof result.success).toBe('boolean');
+  });
+});

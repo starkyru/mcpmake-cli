@@ -1,0 +1,42 @@
+import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { AppConfig } from '../config.js';
+{{#each tools}}
+import { register as register{{capitalize functionName}} } from './{{fileName}}.js';
+{{/each}}
+
+/**
+ * Runtime tool filtering.
+ *
+ * Two optional env vars narrow which tools are registered at startup (works for
+ * both the stdio and HTTP transports). When neither is set, every tool is
+ * registered exactly as before — this is purely additive.
+ *
+ *   MCP_TOOLS          comma-separated allowlist; only these tool names register
+ *   MCP_EXCLUDE_TOOLS  comma-separated denylist; these tool names never register
+ *
+ * The denylist is applied after the allowlist. Names are matched exactly (the
+ * tool names shown in tools/list).
+ */
+function parseList(raw: string | undefined): Set<string> | undefined {
+  if (!raw) return undefined;
+  const names = raw
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return names.length > 0 ? new Set(names) : undefined;
+}
+
+const allow = parseList(process.env.MCP_TOOLS);
+const deny = parseList(process.env.MCP_EXCLUDE_TOOLS);
+
+export function isToolEnabled(name: string): boolean {
+  if (allow && !allow.has(name)) return false;
+  if (deny && deny.has(name)) return false;
+  return true;
+}
+
+export function registerAllTools(server: McpServer, config: AppConfig): void {
+{{#each tools}}
+  if (isToolEnabled('{{name}}')) register{{capitalize functionName}}(server, config);
+{{/each}}
+}

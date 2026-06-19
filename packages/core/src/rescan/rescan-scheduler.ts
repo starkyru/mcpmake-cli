@@ -1,0 +1,208 @@
+import { logger } from '../utils/logger.js';
+
+export interface ScheduleEntry {
+  slug: string;
+  cronExpr: string;
+  partial: boolean;
+  nextRunAt: Date;
+  createdAt: Date;
+}
+
+export type RescanCallback = (slug: string, partial: boolean) => void | Promise<void>;
+
+/**
+ * In-memory scheduler for periodic site rescans.
+ * Checks every 60 seconds for due rescans and invokes the callback.
+ */
+export class RescanScheduler {
+  private schedules = new Map<string, ScheduleEntry>();
+  private timer: ReturnType<typeof setInterval> | null = null;
+  private callback: RescanCallback;
+  private running = false;
+
+  constructor(callback: RescanCallback) {
+    this.callback = callback;
+  }
+
+  /** Register or update a rescan schedule for a site slug. */
+  scheduleRescan(slug: string, cronExpr: string, partial = false): void {
+    const nextRunAt = computeNextRun(cronExpr, new Date());
+    if (!nextRunAt) {
+      logger.warn(`Invalid cron expression for slug "${slug}": ${cronExpr}`);
+      return;
+    }
+    this.schedules.set(slug, {
+      slug,
+      cronExpr,
+      partial,
+      nextRunAt,
+      createdAt: new Date(),
+    });
+    logger.info(`Scheduled rescan for "${slug}" — next run at ${nextRunAt.toISOString()}`);
+  }
+
+  /** Cancel a pending rescan schedule. */
+  cancelRescan(slug: string): boolean {
+    const deleted = this.schedules.delete(slug);
+    if (deleted) {
+      logger.info(`Cancelled rescan schedule for "${slug}"`);
+    }
+    return deleted;
+  }
+
+  /** Start the periodic checker (every 60s). */
+  start(): void {
+    if (this.running) return;
+    this.running = true;
+    this.timer = setInterval(() => {
+      void this.tick();
+    }, 60_000);
+    logger.info('Rescan scheduler started');
+  }
+
+  /** Stop the periodic checker. */
+  stop(): void {
+    if (!this.running) return;
+    this.running = false;
+    if (this.timer !== null) {
+      clearInterval(this.timer);
+      this.timer = null;
+    }
+    logger.info('Rescan scheduler stopped');
+  }
+
+  /** Visible for testing: run a single check cycle. */
+  async tick(): Promise<void> {
+    const now = new Date();
+    for (const entry of this.schedules.values()) {
+      if (entry.nextRunAt <= now) {
+        try {
+          await this.callback(entry.slug, entry.partial);
+        } catch (err) {
+          logger.error(
+            `Rescan callback failed for "${entry.slug}": ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+        // Advance to the next scheduled run
+        const next = computeNextRun(entry.cronExpr, now);
+        if (next) {
+          entry.nextRunAt = next;
+        } else {
+          // Invalid cron — remove the schedule
+          this.schedules.delete(entry.slug);
+        }
+      }
+    }
+  }
+
+  /** Get all registered schedules (for introspection / testing). */
+  getSchedules(): ReadonlyMap<string, ScheduleEntry> {
+    return this.schedules;
+  }
+}
+
+// ─── Simple Cron Parsing ──────────────────────────────────────────
+
+/**
+ * Parse a simplified cron expression and compute the next run time after `after`.
+ *
+ * Supported format: "minute hour dayOfMonth month dayOfWeek"
+ *   - Each field can be a number or '*'
+ *   - Ranges (1-5), lists (1,3,5), and step values (*\/10) are supported for minute/hour
+ *
+ * Returns null if the expression is invalid.
+ */
+export function computeNextRun(cronExpr: string, after: Date): Date | null {
+  const parts = cronExpr.trim().split(/\s+/);
+  if (parts.length !== 5) return null;
+
+  const minuteSpec = parts[0];
+  const hourSpec = parts[1];
+  const domSpec = parts[2];
+  const monthSpec = parts[3];
+  const dowSpec = parts[4];
+
+  const minutes = expandField(minuteSpec, 0, 59);
+  const hours = expandField(hourSpec, 0, 23);
+  const doms = expandField(domSpec, 1, 31);
+  const months = expandField(monthSpec, 1, 12);
+  const dows = expandField(dowSpec, 0, 6);
+
+  if (!minutes || !hours || !doms || !months || !dows) return null;
+
+  // Brute-force search over the next 400 days to find the first matching time
+  const candidate = new Date(after.getTime());
+  candidate.setSeconds(0, 0);
+  candidate.setMinutes(candidate.getMinutes() + 1); // Start from the next minute
+
+  const limit = new Date(after.getTime() + 7 * 24 * 60 * 60 * 1000);
+
+  while (candidate < limit) {
+    const m = candidate.getMinutes();
+    const h = candidate.getHours();
+    const dom = candidate.getDate();
+    const mon = candidate.getMonth() + 1; // JS months are 0-based
+    const dow = candidate.getDay();
+
+    if (
+      minutes.includes(m) &&
+      hours.includes(h) &&
+      doms.includes(dom) &&
+      months.includes(mon) &&
+      dows.includes(dow)
+    ) {
+      return candidate;
+    }
+
+    candidate.setMinutes(candidate.getMinutes() + 1);
+  }
+
+  return null;
+}
+
+function expandField(spec: string, min: number, max: number): number[] | null {
+  if (spec === '*') {
+    return range(min, max);
+  }
+
+  // Step: */N
+  const stepMatch = spec.match(/^\*\/(\d+)$/);
+  if (stepMatch) {
+    const step = parseInt(stepMatch[1], 10);
+    if (step <= 0 || step > max) return null;
+    const result: number[] = [];
+    for (let i = min; i <= max; i += step) {
+      result.push(i);
+    }
+    return result;
+  }
+
+  // List: 1,3,5
+  if (spec.includes(',')) {
+    const values = spec.split(',').map((s) => parseInt(s.trim(), 10));
+    if (values.some((v) => isNaN(v) || v < min || v > max)) return null;
+    return values;
+  }
+
+  // Range: 1-5
+  const rangeMatch = spec.match(/^(\d+)-(\d+)$/);
+  if (rangeMatch) {
+    const start = parseInt(rangeMatch[1], 10);
+    const end = parseInt(rangeMatch[2], 10);
+    if (start < min || end > max || start > end) return null;
+    return range(start, end);
+  }
+
+  // Single number
+  const num = parseInt(spec, 10);
+  if (isNaN(num) || num < min || num > max) return null;
+  return [num];
+}
+
+function range(start: number, end: number): number[] {
+  const result: number[] = [];
+  for (let i = start; i <= end; i++) {
+    result.push(i);
+  }
+  return result;
+}

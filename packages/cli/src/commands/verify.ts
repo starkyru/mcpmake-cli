@@ -1,0 +1,78 @@
+import { defineCommand } from 'citty';
+import { readFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
+import { loadOpenApiSpec } from '@mcpmake/core';
+import { extractOperations } from '@mcpmake/core';
+import { buildAllTools } from '@mcpmake/core';
+import { logger } from '@mcpmake/core';
+import { fail } from '@mcpmake/core';
+import { pathExists } from '@mcpmake/core';
+import type { OpenAPIV3 } from 'openapi-types';
+
+export default defineCommand({
+  meta: {
+    name: 'verify',
+    description: 'Verify that a generated MCP server still matches its source spec',
+  },
+  args: {
+    spec: {
+      type: 'positional',
+      description: 'Path to the OpenAPI spec',
+      required: true,
+    },
+    project: {
+      type: 'string',
+      alias: 'p',
+      description: 'Path to the generated project directory',
+      required: true,
+    },
+  },
+  async run({ args }) {
+    logger.info(`Verifying project against spec: ${args.spec}`);
+
+    // Load and parse the spec
+    const { api } = await loadOpenApiSpec(args.spec);
+    const { operations } = extractOperations(api as OpenAPIV3.Document);
+    const expectedTools = buildAllTools(operations);
+
+    // Read the generated tool index to find registered tools
+    const toolIndexPath = resolve(args.project, 'src/tools/index.ts');
+    if (!(await pathExists(toolIndexPath))) {
+      await fail(`Tool index not found at: ${toolIndexPath}`);
+    }
+
+    const toolIndex = await readFile(toolIndexPath, 'utf-8');
+
+    let missingCount = 0;
+    let extraCount = 0;
+
+    // Check each expected tool has a file
+    for (const tool of expectedTools) {
+      const toolFile = resolve(args.project, `src/tools/${tool.fileName}.ts`);
+      if (!(await pathExists(toolFile))) {
+        logger.error(`Missing tool file: src/tools/${tool.fileName}.ts (${tool.name})`);
+        missingCount++;
+      } else if (!toolIndex.includes(tool.fileName)) {
+        logger.warn(`Tool file exists but not registered: ${tool.fileName}`);
+        missingCount++;
+      }
+    }
+
+    // Check for extra tool files not in the spec
+    const expectedFileNames = new Set(expectedTools.map((t) => t.fileName));
+    const importMatches = toolIndex.matchAll(/from '\.\/([^']+)\.js'/g);
+    for (const match of importMatches) {
+      const fileName = match[1];
+      if (!expectedFileNames.has(fileName)) {
+        logger.warn(`Extra tool not in spec: src/tools/${fileName}.ts`);
+        extraCount++;
+      }
+    }
+
+    if (missingCount === 0 && extraCount === 0) {
+      logger.success(`Verified: all ${expectedTools.length} tools match the spec`);
+    } else {
+      await fail(`Verification failed: ${missingCount} missing, ${extraCount} extra tools`);
+    }
+  },
+});

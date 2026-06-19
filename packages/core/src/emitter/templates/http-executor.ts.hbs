@@ -1,0 +1,159 @@
+import { getAuthHeaders } from './auth.js';
+import { traceHeaders } from './trace.js';
+import type { AppConfig } from './config.js';
+
+export interface RequestOptions {
+  method: string;
+  url: string;
+  body?: unknown;
+  contentType?: string;
+  headers: Record<string, string>;
+  config: AppConfig;
+  /**
+   * Optional Idempotency-Key for mutating (POST/PUT/PATCH/DELETE) requests. When
+   * absent and `MCP_IDEMPOTENCY_AUTO=true`, a UUID is generated automatically.
+   */
+  idempotencyKey?: string;
+}
+
+export interface ApiResponse {
+  status: number;
+  data: unknown;
+  headers: Record<string, string>;
+}
+
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    public readonly status: number,
+    public readonly data: unknown,
+  ) {
+    super(message);
+    this.name = 'ApiError';
+  }
+}
+
+const RETRYABLE_STATUS_CODES = [429, 500, 502, 503, 504];
+
+/** Methods that mutate server state and therefore benefit from an idempotency key. */
+const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+
+let lastRequestTime = 0;
+
+/**
+ * Resolve the Idempotency-Key for a mutating request. Precedence:
+ *   1. an explicit per-call key passed in `options.idempotencyKey`
+ *   2. when `MCP_IDEMPOTENCY_AUTO=true`, a generated UUID (so retries of the
+ *      same upstream call carry a stable key for the duration of the attempt loop)
+ * Returns undefined for non-mutating methods or when neither is configured, so
+ * the default behavior is unchanged.
+ */
+function resolveIdempotencyKey(method: string, explicit: string | undefined): string | undefined {
+  if (!MUTATING_METHODS.has(method)) return undefined;
+  if (explicit) return explicit;
+  // `process` is absent on Workers (nodejs_compat leaves it undefined here), so
+  // guard it; auto-keying is then simply off on that target unless a per-call
+  // key is supplied. The Web Crypto `crypto` global exists on both runtimes.
+  const auto =
+    typeof process !== 'undefined' && process.env?.MCP_IDEMPOTENCY_AUTO === 'true';
+  if (auto) {
+    return typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : `idem-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  }
+  return undefined;
+}
+
+export async function executeRequest(options: RequestOptions): Promise<ApiResponse> {
+  const { config } = options;
+
+  // Rate limiting
+  const now = Date.now();
+  const elapsed = now - lastRequestTime;
+  if (elapsed < config.requestIntervalMs) {
+    await sleep(config.requestIntervalMs - elapsed);
+  }
+  lastRequestTime = Date.now();
+
+  const authHeaders = await getAuthHeaders(config);
+  // Header precedence (lowest → highest): auth, runtime default headers
+  // (MCP_DEFAULT_HEADERS), W3C Trace Context, then per-call headers.
+  // Propagate W3C Trace Context to the upstream API (no-op outside an HTTP
+  // request, e.g. stdio transport, where there is no active trace).
+  const method = options.method.toUpperCase();
+  const headers: Record<string, string> = {
+    ...authHeaders,
+    ...config.defaultHeaders,
+    ...traceHeaders(),
+    ...options.headers,
+  };
+
+  if (options.body && options.contentType) {
+    headers['Content-Type'] = options.contentType;
+  }
+
+  // Idempotency-Key for mutating requests (explicit per-call, or auto when enabled).
+  const idempotencyKey = resolveIdempotencyKey(method, options.idempotencyKey);
+  if (idempotencyKey && !headers['Idempotency-Key']) {
+    headers['Idempotency-Key'] = idempotencyKey;
+  }
+
+  let lastError: Error | undefined;
+
+  for (let attempt = 0; attempt <= config.maxRetries; attempt++) {
+    try {
+      const response = await fetch(options.url, {
+        method,
+        headers,
+        body: options.body ? JSON.stringify(options.body) : undefined,
+      });
+
+      if (RETRYABLE_STATUS_CODES.includes(response.status) && attempt < config.maxRetries) {
+        const retryAfter = response.headers.get('Retry-After');
+        const delay = retryAfter
+          ? parseInt(retryAfter, 10) * 1000
+          : 1000 * Math.pow(2, attempt);
+        await sleep(delay);
+        continue;
+      }
+
+      const data = await parseResponseBody(response);
+
+      if (!response.ok) {
+        throw new ApiError(
+          `${response.status} ${response.statusText}`,
+          response.status,
+          data,
+        );
+      }
+
+      return {
+        status: response.status,
+        data,
+        headers: Object.fromEntries(response.headers.entries()),
+      };
+    } catch (error) {
+      lastError = error as Error;
+      if (error instanceof ApiError && !RETRYABLE_STATUS_CODES.includes(error.status)) {
+        throw error;
+      }
+      if (attempt < config.maxRetries) {
+        await sleep(1000 * Math.pow(2, attempt));
+      }
+    }
+  }
+
+  throw lastError ?? new Error('Request failed after retries');
+}
+
+async function parseResponseBody(response: Response): Promise<unknown> {
+  const contentType = response.headers.get('content-type') ?? '';
+  if (contentType.includes('application/json')) {
+    return response.json();
+  }
+  return response.text();
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}

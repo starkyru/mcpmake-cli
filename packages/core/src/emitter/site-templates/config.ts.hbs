@@ -1,0 +1,28 @@
+export interface BrowserConfig {
+  headless: boolean;
+  idleTimeoutMs: number;
+  viewport: { width: number; height: number };
+  userAgent?: string;
+  maxSessions: number;
+}
+
+export interface AppConfig {
+  baseUrl: string;
+  browser: BrowserConfig;
+}
+
+export function loadConfig(): AppConfig {
+  return {
+    baseUrl: process.env.BASE_URL ?? '{{{baseUrl}}}',
+    browser: {
+      headless: process.env.HEADLESS !== 'false',
+      idleTimeoutMs: parseInt(process.env.IDLE_TIMEOUT_MS ?? '{{browserConfig.idleTimeoutMs}}', 10),
+      viewport: {
+        width: parseInt(process.env.VIEWPORT_WIDTH ?? '{{browserConfig.viewport.width}}', 10),
+        height: parseInt(process.env.VIEWPORT_HEIGHT ?? '{{browserConfig.viewport.height}}', 10),
+      },
+      userAgent: process.env.USER_AGENT || undefined,
+      maxSessions: parseInt(process.env.MAX_SESSIONS ?? '{{browserConfig.maxSessions}}', 10) || 10,
+    },
+  };
+}

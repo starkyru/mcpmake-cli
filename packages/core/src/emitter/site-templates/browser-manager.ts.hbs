@@ -1,0 +1,233 @@
+/**
+ * Browser lifecycle management for the site MCP server.
+ * Handles launching, closing, idle timeout, and screenshots.
+ */
+
+import { chromium } from 'playwright';
+import type { Browser, BrowserContext, Page } from 'playwright';
+import type { BrowserConfig } from './config.js';
+
+interface BrowserSession {
+  context: BrowserContext;
+  page: Page;
+  lastAccessedAt: number;
+}
+
+let browser: Browser | undefined;
+const sessions = new Map<string, BrowserSession>();
+let idleTimer: ReturnType<typeof setInterval> | undefined;
+let config: BrowserConfig;
+
+const DEFAULT_SESSION = '__default__';
+
+/**
+ * Initialize the browser manager with configuration.
+ */
+export function initBrowserManager(browserConfig: BrowserConfig): void {
+  config = browserConfig;
+}
+
+/**
+ * Resolve the first selector that attaches to the page, trying the primary
+ * selector first and then any fallbacks. This gives generated tools runtime
+ * resilience: when a site's DOM shifts and the primary selector breaks, a
+ * fallback (id, aria-label, name, CSS path, XPath, ...) can still match,
+ * instead of the tool failing outright.
+ *
+ * Throws a descriptive error if none of the candidates resolve.
+ */
+export async function resolveSelector(
+  page: Page,
+  candidates: Array<string | undefined>,
+  options: { timeoutMs?: number } = {},
+): Promise<string> {
+  const valid = candidates.filter(
+    (c): c is string => typeof c === 'string' && c.trim().length > 0,
+  );
+  if (valid.length === 0) {
+    throw new Error('No selector candidates were provided');
+  }
+
+  // Fast path: return the first candidate already attached to the DOM.
+  for (const selector of valid) {
+    try {
+      const handle = await page.$(selector);
+      if (handle) {
+        await handle.dispose();
+        return selector;
+      }
+    } catch {
+      // Invalid selector syntax — skip and try the next candidate.
+    }
+  }
+
+  // Slow path: the element may not have rendered yet. Wait for the first
+  // candidate to attach, racing all of them under a single timeout budget.
+  const timeoutMs = options.timeoutMs ?? 5000;
+  try {
+    return await Promise.any(
+      valid.map(async (selector) => {
+        await page.waitForSelector(selector, { state: 'attached', timeout: timeoutMs });
+        return selector;
+      }),
+    );
+  } catch {
+    throw new Error(
+      `None of the selectors resolved on the page (the page structure may have changed): ${valid.join(', ')}`,
+    );
+  }
+}
+
+/**
+ * Get or create a browser session.
+ * If sessionId is provided, reuses an existing session or creates one with that ID.
+ * If not, creates a new session with a generated ID.
+ * Throws if the session pool is at capacity (maxSessions).
+ */
+export async function getOrCreateSession(sessionId?: string): Promise<{ page: Page; sessionId: string }> {
+  const id = sessionId ?? DEFAULT_SESSION;
+
+  // Reuse existing session
+  const existing = sessions.get(id);
+  if (existing) {
+    existing.lastAccessedAt = Date.now();
+    resetIdleTimer();
+    return { page: existing.page, sessionId: id };
+  }
+
+  // Check capacity before creating a new session
+  const maxSessions = config.maxSessions ?? 10;
+  if (sessions.size >= maxSessions) {
+    throw new Error(
+      `Session pool at capacity (${maxSessions}). ` +
+      'Close an existing session before creating a new one.'
+    );
+  }
+
+  // Launch browser if not running
+  if (!browser || !browser.isConnected()) {
+    // Only disable sandbox when running as root in a container
+    const isRoot = process.getuid?.() === 0;
+    browser = await chromium.launch({
+      headless: config.headless,
+      args: isRoot ? ['--no-sandbox', '--disable-setuid-sandbox'] : [],
+    });
+  }
+
+  // Create new session
+  const context = await browser.newContext({
+    viewport: config.viewport,
+    ...(config.userAgent ? { userAgent: config.userAgent } : {}),
+  });
+  const page = await context.newPage();
+
+  // Generate final session ID upfront to avoid race conditions
+  const finalId = id === DEFAULT_SESSION
+    ? `session_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`
+    : id;
+
+  sessions.set(finalId, {
+    context,
+    page,
+    lastAccessedAt: Date.now(),
+  });
+
+  resetIdleTimer();
+
+  return { page, sessionId: finalId };
+}
+
+/**
+ * Close a specific session or the default session.
+ */
+export async function closeSession(sessionId?: string): Promise<void> {
+  const id = sessionId ?? DEFAULT_SESSION;
+  const session = sessions.get(id);
+  if (!session) return;
+
+  await session.context.close().catch(() => {});
+  sessions.delete(id);
+
+  // If no sessions remain, close the browser
+  if (sessions.size === 0) {
+    await closeBrowser();
+  }
+}
+
+/**
+ * Close the browser and all sessions.
+ */
+export async function closeBrowser(): Promise<void> {
+  clearIdleTimer();
+
+  for (const [id, session] of sessions) {
+    await session.context.close().catch(() => {});
+    sessions.delete(id);
+  }
+
+  if (browser) {
+    await browser.close().catch(() => {});
+    browser = undefined;
+  }
+}
+
+/**
+ * Take a screenshot of the current page in a session.
+ */
+export async function takeScreenshot(
+  sessionId?: string,
+  fullPage = false,
+): Promise<Buffer> {
+  const id = sessionId ?? DEFAULT_SESSION;
+  const session = sessions.get(id);
+  if (!session) {
+    throw new Error(`No active session: ${id}`);
+  }
+  session.lastAccessedAt = Date.now();
+  return session.page.screenshot({ type: 'png', fullPage });
+}
+
+/**
+ * List active session IDs.
+ */
+export function listSessions(): string[] {
+  return Array.from(sessions.keys());
+}
+
+/**
+ * Check if the browser is running.
+ */
+export function isBrowserRunning(): boolean {
+  return browser !== undefined && browser.isConnected();
+}
+
+// ─── Idle Timer ─────────────────────────────────────────────────────
+
+function resetIdleTimer(): void {
+  clearIdleTimer();
+  idleTimer = setInterval(() => {
+    const now = Date.now();
+    // Close idle sessions
+    for (const [id, session] of sessions) {
+      if (now - session.lastAccessedAt > config.idleTimeoutMs) {
+        session.context.close().catch(() => {});
+        sessions.delete(id);
+      }
+    }
+    // Close browser if no sessions
+    if (sessions.size === 0) {
+      closeBrowser();
+    }
+  }, 30_000); // Check every 30 seconds
+}
+
+function clearIdleTimer(): void {
+  if (idleTimer) {
+    clearInterval(idleTimer);
+    idleTimer = undefined;
+  }
+}
+
+// Clean up on process exit
+process.on('SIGTERM', () => closeBrowser());
+process.on('SIGINT', () => closeBrowser());

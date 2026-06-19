@@ -1,0 +1,146 @@
+import { z } from 'zod';
+import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import {
+  getOrCreateSession,
+  closeSession,
+  closeBrowser,
+  takeScreenshot as doScreenshot,
+  listSessions,
+  isBrowserRunning,
+} from '../browser-manager.js';
+import type { AppConfig } from '../config.js';
+
+{{#if (eq name "start_browser")}}
+const inputSchema = z.object({
+  sessionId: z.string().optional().describe('Reuse an existing session instead of starting a new one'),
+  headless: z.boolean().optional().describe('Run in headless mode (default: from server config)'),
+});
+
+export function register(server: McpServer, config: AppConfig): void {
+  server.registerTool(
+    'start_browser',
+    {
+      title: 'Start Browser',
+      description: 'Launch a browser session. Returns a sessionId for subsequent tool calls.',
+      inputSchema,
+      annotations: { idempotentHint: true },
+    },
+    async (input) => {
+      try {
+        const { sessionId } = await getOrCreateSession(
+          (input as Record<string, unknown>).sessionId as string | undefined,
+        );
+
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                sessionId,
+                status: 'started',
+                activeSessions: listSessions().length,
+              }, null, 2),
+            },
+          ],
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return {
+          content: [{ type: 'text' as const, text: `Error: ${message}` }],
+          isError: true,
+        };
+      }
+    },
+  );
+}
+{{/if}}
+
+{{#if (eq name "stop_browser")}}
+const inputSchema = z.object({
+  sessionId: z.string().optional().describe('Session to close. If omitted, closes all sessions'),
+});
+
+export function register(server: McpServer, config: AppConfig): void {
+  server.registerTool(
+    'stop_browser',
+    {
+      title: 'Stop Browser',
+      description: 'Close a browser session and free resources.',
+      inputSchema,
+      annotations: { destructiveHint: true },
+    },
+    async (input) => {
+      try {
+        const sessionId = (input as Record<string, unknown>).sessionId as string | undefined;
+
+        if (sessionId) {
+          await closeSession(sessionId);
+        } else {
+          await closeBrowser();
+        }
+
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                status: 'stopped',
+                activeSessions: listSessions().length,
+              }, null, 2),
+            },
+          ],
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return {
+          content: [{ type: 'text' as const, text: `Error: ${message}` }],
+          isError: true,
+        };
+      }
+    },
+  );
+}
+{{/if}}
+
+{{#if (eq name "take_screenshot")}}
+const inputSchema = z.object({
+  sessionId: z.string().optional().describe('Session to screenshot. If omitted, uses default session'),
+  fullPage: z.boolean().optional().describe('Capture the full scrollable page (default: false)'),
+});
+
+export function register(server: McpServer, config: AppConfig): void {
+  server.registerTool(
+    'take_screenshot',
+    {
+      title: 'Take Screenshot',
+      description: 'Capture a screenshot of the current page.',
+      inputSchema,
+      annotations: { readOnlyHint: true },
+    },
+    async (input) => {
+      try {
+        const sessionId = (input as Record<string, unknown>).sessionId as string | undefined;
+        const fullPage = (input as Record<string, unknown>).fullPage as boolean | undefined;
+
+        const screenshot = await doScreenshot(sessionId, fullPage ?? false);
+
+        return {
+          content: [
+            {
+              type: 'image' as const,
+              data: screenshot.toString('base64'),
+              mimeType: 'image/png',
+            },
+          ],
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return {
+          content: [{ type: 'text' as const, text: `Error: ${message}` }],
+          isError: true,
+        };
+      }
+    },
+  );
+}
+{{/if}}

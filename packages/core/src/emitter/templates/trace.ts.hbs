@@ -1,0 +1,79 @@
+/**
+ * W3C Trace Context propagation (https://www.w3.org/TR/trace-context/).
+ *
+ * The HTTP server reads an inbound `traceparent` (joining a distributed trace)
+ * or starts a fresh one, binds it to the request via AsyncLocalStorage, and the
+ * HTTP executor stamps it onto every upstream API call so the trace spans the
+ * API hop. Stdio servers never establish a context, so upstream calls simply
+ * carry no trace headers (the store is empty — `traceHeaders()` returns `{}`).
+ */
+
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { randomBytes } from 'node:crypto';
+
+export interface TraceContext {
+  /** 32-hex trace id, shared across the whole distributed trace. */
+  traceId: string;
+  /** 16-hex span id for this server's work (the parent of upstream calls). */
+  spanId: string;
+  /** 2-hex trace-flags (`01` = sampled). */
+  flags: string;
+  /** Opaque vendor `tracestate`, propagated verbatim when present. */
+  traceState?: string;
+}
+
+const storage = new AsyncLocalStorage<TraceContext>();
+
+const TRACEPARENT_RE = /^00-([0-9a-f]{32})-([0-9a-f]{16})-([0-9a-f]{2})$/;
+const INVALID_TRACE_ID = '0'.repeat(32);
+
+/** Parse a `traceparent` header; returns its trace id + flags, or null if invalid. */
+export function parseTraceparent(
+  header: string | undefined,
+): { traceId: string; flags: string } | null {
+  if (!header) return null;
+  const match = TRACEPARENT_RE.exec(header.trim().toLowerCase());
+  if (!match) return null;
+  const traceId = match[1];
+  const flags = match[3];
+  if (traceId === INVALID_TRACE_ID) return null;
+  return { traceId, flags };
+}
+
+/**
+ * Build the context for a request: continue a valid inbound trace, otherwise
+ * start a new one. A fresh span id is always minted for this server's work.
+ */
+export function deriveContext(traceparent?: string, tracestate?: string): TraceContext {
+  const parent = parseTraceparent(traceparent);
+  return {
+    traceId: parent?.traceId ?? randomBytes(16).toString('hex'),
+    spanId: randomBytes(8).toString('hex'),
+    flags: parent?.flags ?? '01',
+    traceState: tracestate?.trim() || undefined,
+  };
+}
+
+/** Format a context as a `traceparent` header value. */
+export function formatTraceparent(ctx: TraceContext): string {
+  return `00-${ctx.traceId}-${ctx.spanId}-${ctx.flags}`;
+}
+
+/** Run `fn` with `ctx` bound as the active trace context for its async subtree. */
+export function runWithTrace<T>(ctx: TraceContext, fn: () => T): T {
+  return storage.run(ctx, fn);
+}
+
+/** The active trace context, or undefined outside a traced request. */
+export function currentTrace(): TraceContext | undefined {
+  return storage.getStore();
+}
+
+/** Trace headers to stamp on an upstream request, or `{}` when no trace is active. */
+export function traceHeaders(): Record<string, string> {
+  const ctx = storage.getStore();
+  if (!ctx) return {};
+  const headers: Record<string, string> = { traceparent: formatTraceparent(ctx) };
+  if (ctx.traceState) headers.tracestate = ctx.traceState;
+  return headers;
+}

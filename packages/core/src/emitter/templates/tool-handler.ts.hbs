@@ -1,0 +1,142 @@
+import { z } from 'zod';
+import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { executeRequest } from '../http.js';
+import { applyJqFilter } from '../response-filter.js';
+import type { AppConfig } from '../config.js';
+{{#if isAsync}}
+import { createTask, updateTask } from '../task-manager.js';
+{{/if}}
+
+// Per-call control arguments shared by every generated tool. These are optional
+// and stripped before the upstream request is built, so omitting them preserves
+// the original behavior exactly.
+const controlSchema = {
+  jq_filter: z
+    .string()
+    .optional()
+    .describe(
+      'Optional jq-style filter applied to the JSON response before it is returned ' +
+        '(e.g. ".data", ".items[0].id", ".items[]"). Trims large responses.',
+    ),
+  idempotency_key: z
+    .string()
+    .optional()
+    .describe(
+      'Optional Idempotency-Key header for safe retries of mutating requests. ' +
+        'Ignored for read-only operations.',
+    ),
+};
+
+const inputSchema = ({{{inputSchemaCode}}}).extend(controlSchema);
+{{#if outputSchemaCode}}
+const outputSchema = {{{outputSchemaCode}}};
+{{/if}}
+
+/** Execute the HTTP request for this tool and return the (optionally filtered) data. */
+async function runRequest(rawInput: Record<string, unknown>, config: AppConfig): Promise<unknown> {
+  // Pull off the per-call control args so they are never forwarded upstream.
+  const { jq_filter: jqFilter, idempotency_key: idempotencyKey, ...input } = rawInput;
+  const url = buildUrl(input, config.baseUrl);
+
+  const response = await executeRequest({
+    method: '{{method}}',
+    url,
+{{#if hasRequestBody}}
+    body: input.body,
+    contentType: '{{requestBodyContentType}}',
+{{/if}}
+    headers: {},
+    config,
+    idempotencyKey: typeof idempotencyKey === 'string' ? idempotencyKey : undefined,
+  });
+
+  let result: unknown = response.data;
+{{#if jqFilter}}
+  // Build-time x-mcp-jq-filter (applied first when no per-call filter is given).
+  if (typeof jqFilter !== 'string') {
+    result = applyJqFilter(result, '{{{jqFilter}}}');
+  }
+{{/if}}
+  // Per-call jq_filter takes precedence (absent → unchanged).
+  if (typeof jqFilter === 'string' && jqFilter) {
+    result = applyJqFilter(result, jqFilter);
+  }
+  return result;
+}
+
+export function register(server: McpServer, config: AppConfig): void {
+  server.registerTool(
+    '{{name}}',
+    {
+      title: '{{title}}',
+      description: `{{{description}}}`,
+      inputSchema,
+{{#if outputSchemaCode}}
+      outputSchema,
+{{/if}}
+{{#if annotations}}
+      annotations: {
+{{#if annotations.readOnlyHint}}
+        readOnlyHint: true,
+{{/if}}
+{{#if annotations.destructiveHint}}
+        destructiveHint: true,
+{{/if}}
+{{#if annotations.idempotentHint}}
+        idempotentHint: true,
+{{/if}}
+      },
+{{/if}}
+    },
+    async (input) => {
+{{#if isAsync}}
+      // Tasks extension (2026-07-28): a long-running tool answers immediately
+      // with a task handle and runs the work in the background; the client
+      // drives it with tasks/get / tasks/update / tasks/cancel. VERIFY the
+      // returned handle envelope against the final spec.
+      const task = createTask('{{name}}');
+      void (async () => {
+        try {
+          const result = await runRequest(input as Record<string, unknown>, config);
+          updateTask(task.id, { status: 'completed', result });
+        } catch (error) {
+          updateTask(task.id, {
+            status: 'failed',
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      })();
+      const handle = { taskId: task.id, status: task.status };
+      return {
+        content: [{ type: 'text' as const, text: JSON.stringify({ task: handle }, null, 2) }],
+        structuredContent: { task: handle },
+      };
+{{else}}
+      try {
+        const result = await runRequest(input as Record<string, unknown>, config);
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return {
+          content: [{ type: 'text' as const, text: `Error: ${message}` }],
+          isError: true,
+        };
+      }
+{{/if}}
+    },
+  );
+}
+
+function buildUrl(
+  params: Record<string, unknown>,
+  baseUrl: string,
+): string {
+{{{buildUrlBody}}}
+}

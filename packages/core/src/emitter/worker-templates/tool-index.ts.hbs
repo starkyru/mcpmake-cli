@@ -1,0 +1,28 @@
+import type { z } from 'zod';
+import type { AppConfig } from '../config.js';
+{{#each tools}}
+import {
+  definition as def{{capitalize functionName}},
+  handler as handler{{capitalize functionName}},
+} from './{{fileName}}.js';
+{{/each}}
+
+export interface ToolEntry {
+  definition: {
+    name: string;
+    title: string;
+    description: string;
+    inputSchema: z.ZodTypeAny;
+    annotations?: Record<string, boolean>;
+  };
+  handler: (
+    input: Record<string, unknown>,
+    config: AppConfig,
+  ) => Promise<{ content: { type: 'text'; text: string }[]; isError?: boolean }>;
+}
+
+export const tools: ToolEntry[] = [
+{{#each tools}}
+  { definition: def{{capitalize functionName}}, handler: handler{{capitalize functionName}} },
+{{/each}}
+];

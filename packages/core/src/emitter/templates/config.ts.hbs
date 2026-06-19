@@ -1,0 +1,110 @@
+export interface AppConfig {
+  baseUrl: string;
+{{#each authSchemes}}
+{{#if (eq type "apiKey")}}
+  apiKey?: string;
+{{/if}}
+{{#if (eq type "http-bearer")}}
+  bearerToken?: string;
+{{/if}}
+{{#if (eq type "http-basic")}}
+  basicUsername?: string;
+  basicPassword?: string;
+{{/if}}
+{{#if (eq type "oauth2")}}
+  oauth2Token?: string;
+  oauth2ClientId?: string;
+  oauth2ClientSecret?: string;
+  oauth2AuthorizationUrl?: string;
+  oauth2TokenUrl?: string;
+  oauth2RedirectUri?: string;
+{{/if}}
+{{/each}}
+  maxRetries: number;
+  requestIntervalMs: number;
+  /** Extra headers added to every upstream request (non-breaking; empty by default). */
+  defaultHeaders: Record<string, string>;
+}
+
+/**
+ * Resolve the upstream base URL with optional named environments.
+ *
+ * `MCP_ENVIRONMENTS` is a JSON object mapping an environment name to a base URL,
+ * e.g. `{"production":"https://api.example.com","sandbox":"https://sandbox.example.com"}`.
+ * `API_ENVIRONMENT` selects one of those names. When either is unset (or the
+ * name is unknown) the resolver falls back to `BASE_URL`, so existing
+ * deployments are unaffected.
+ */
+function resolveBaseUrl(): string {
+  const raw = process.env.MCP_ENVIRONMENTS;
+  const selected = process.env.API_ENVIRONMENT;
+  if (raw && selected) {
+    try {
+      const envs = JSON.parse(raw) as Record<string, unknown>;
+      const url = envs[selected];
+      if (typeof url === 'string' && url) {
+        return url.replace(/\/$/, '');
+      }
+    } catch {
+      // Malformed MCP_ENVIRONMENTS — fall through to BASE_URL.
+    }
+  }
+  return requireEnv('BASE_URL').replace(/\/$/, '');
+}
+
+/**
+ * Parse `MCP_DEFAULT_HEADERS` (a JSON object of header name → value) into a map
+ * applied to every upstream request. Invalid JSON or non-string values are
+ * ignored so a bad value never breaks the server.
+ */
+function loadDefaultHeaders(): Record<string, string> {
+  const raw = process.env.MCP_DEFAULT_HEADERS;
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const headers: Record<string, string> = {};
+    for (const [key, value] of Object.entries(parsed)) {
+      if (typeof value === 'string') headers[key] = value;
+    }
+    return headers;
+  } catch {
+    return {};
+  }
+}
+
+export function loadConfig(): AppConfig {
+  return {
+    baseUrl: resolveBaseUrl(),
+{{#each authSchemes}}
+{{#if (eq type "apiKey")}}
+    apiKey: process.env.{{envVarName}},
+{{/if}}
+{{#if (eq type "http-bearer")}}
+    bearerToken: process.env.{{envVarName}},
+{{/if}}
+{{#if (eq type "http-basic")}}
+    basicUsername: process.env.BASIC_USERNAME,
+    basicPassword: process.env.BASIC_PASSWORD,
+{{/if}}
+{{#if (eq type "oauth2")}}
+    oauth2Token: process.env.OAUTH2_TOKEN,
+    oauth2ClientId: process.env.OAUTH2_CLIENT_ID,
+    oauth2ClientSecret: process.env.OAUTH2_CLIENT_SECRET,
+    oauth2AuthorizationUrl: process.env.OAUTH2_AUTHORIZATION_URL,
+    oauth2TokenUrl: process.env.OAUTH2_TOKEN_URL,
+    oauth2RedirectUri: process.env.OAUTH2_REDIRECT_URI,
+{{/if}}
+{{/each}}
+    maxRetries: parseInt(process.env.MAX_RETRIES ?? '3', 10),
+    requestIntervalMs: parseInt(process.env.REQUEST_INTERVAL_MS ?? '100', 10),
+    defaultHeaders: loadDefaultHeaders(),
+  };
+}
+
+function requireEnv(name: string): string {
+  const value = process.env[name];
+  if (!value) {
+    throw new Error(`Missing required environment variable: ${name}`);
+  }
+  return value;
+}

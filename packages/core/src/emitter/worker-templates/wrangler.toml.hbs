@@ -1,0 +1,19 @@
+name = "{{serverName}}"
+main = "src/index.ts"
+compatibility_date = "2024-11-01"
+# nodejs_compat backs the reused modules (AsyncLocalStorage trace context,
+# node:crypto, Buffer). Required — do not remove.
+compatibility_flags = ["nodejs_compat"]
+
+# Non-secret configuration. Override per-environment as needed.
+[vars]
+BASE_URL = "{{baseUrl}}"
+MAX_RETRIES = "3"
+REQUEST_INTERVAL_MS = "100"
+# ALLOWED_ORIGIN = "https://your-client.example.com"
+
+# Secrets are NOT stored in this file. Set them before `wrangler deploy`:
+#   wrangler secret put MCP_AUTH_TOKEN        # bearer token clients must present
+{{#each authEnvVars}}
+#   wrangler secret put {{name}}
+{{/each}}

@@ -1,0 +1,86 @@
+import { z } from 'zod';
+import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+{{#if button}}
+import { getOrCreateSession, takeScreenshot, resolveSelector } from '../browser-manager.js';
+{{else}}
+import { getOrCreateSession, takeScreenshot } from '../browser-manager.js';
+{{/if}}
+import type { AppConfig } from '../config.js';
+
+const inputSchema = {{{inputSchemaCode}}};
+
+export function register(server: McpServer, config: AppConfig): void {
+  server.registerTool(
+    '{{name}}',
+    {
+      title: '{{jsString title}}',
+      description: `{{{description}}}`,
+      inputSchema,
+{{#if annotations}}
+      annotations: {
+{{#if annotations.readOnlyHint}}
+        readOnlyHint: true,
+{{/if}}
+{{#if annotations.destructiveHint}}
+        destructiveHint: true,
+{{/if}}
+{{#if annotations.idempotentHint}}
+        idempotentHint: true,
+{{/if}}
+      },
+{{/if}}
+    },
+    async (input) => {
+      try {
+        const { page, sessionId } = await getOrCreateSession(
+          (input as Record<string, unknown>).sessionId as string | undefined,
+        );
+
+{{#if pageUrl}}
+        // Navigate to the page if not already there
+        const targetUrl = '{{jsString pageUrl}}';
+        if (!page.url().startsWith(targetUrl.split('?')[0])) {
+          await page.goto(targetUrl, { waitUntil: 'domcontentloaded' });
+          await page.waitForTimeout(500);
+        }
+{{/if}}
+
+{{#if link}}
+        // Navigate to link
+        await page.goto('{{jsString link.href}}', { waitUntil: 'domcontentloaded' });
+        await page.waitForTimeout(500);
+{{else if button}}
+        // Click button
+        const buttonSelector = await resolveSelector(page, ['{{jsString button.selector.primary}}'{{#each button.selector.fallbacks}}, '{{jsString this}}'{{/each}}]);
+        await page.click(buttonSelector);
+        await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
+{{/if}}
+
+        // Capture result
+        const pageTitle = await page.title();
+        const pageUrl = page.url();
+        const screenshot = await takeScreenshot(sessionId);
+
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({ sessionId, pageTitle, url: pageUrl, success: true }, null, 2),
+            },
+            {
+              type: 'image' as const,
+              data: screenshot.toString('base64'),
+              mimeType: 'image/png',
+            },
+          ],
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return {
+          content: [{ type: 'text' as const, text: `Error: ${message}` }],
+          isError: true,
+        };
+      }
+    },
+  );
+}

@@ -1,0 +1,27 @@
+# Local dev secrets for `wrangler dev`. Copy to `.dev.vars` (gitignored) and fill in.
+# In production these are set with `wrangler secret put <NAME>` instead.
+
+# Bearer token clients must send as `Authorization: Bearer <token>`.
+# Leave empty to disable auth (local/dev only — never deploy without it).
+MCP_AUTH_TOKEN=
+{{#each authEnvVars}}
+# {{description}}
+{{name}}=
+{{/each}}
+
+# Runtime tool filtering (optional, comma-separated tool names).
+# MCP_TOOLS=
+# MCP_EXCLUDE_TOOLS=
+
+# Named environments (optional). JSON map of name → base URL; API_ENVIRONMENT
+# selects one. Falls back to BASE_URL when unset.
+{{#if environmentsJson}}
+MCP_ENVIRONMENTS={{environmentsJson}}
+API_ENVIRONMENT={{defaultEnvironment}}
+{{else}}
+# MCP_ENVIRONMENTS={"production":"{{baseUrl}}","sandbox":"https://sandbox.example.com"}
+# API_ENVIRONMENT=production
+{{/if}}
+
+# Custom default headers added to every upstream request (optional, JSON object).
+# MCP_DEFAULT_HEADERS={"X-Tenant-Id":"acme"}

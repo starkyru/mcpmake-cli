@@ -1,0 +1,23 @@
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { loadConfig } from './config.js';
+import { initBrowserManager, closeBrowser } from './browser-manager.js';
+import { registerAllTools } from './tools/index.js';
+
+const config = loadConfig();
+initBrowserManager(config.browser);
+
+const server = new McpServer({
+  name: '{{serverName}}',
+  version: '{{serverVersion}}',
+});
+
+registerAllTools(server, config);
+
+const transport = new StdioServerTransport();
+await server.connect(transport);
+
+process.on('SIGTERM', async () => {
+  await closeBrowser();
+  process.exit(0);
+});

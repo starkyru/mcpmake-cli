@@ -1,0 +1,344 @@
+import { defineConfigurableCommand } from '@mcpmake/core';
+import { resolve } from 'node:path';
+import { execFile as execFileCb } from 'node:child_process';
+import { promisify } from 'node:util';
+import { loadOpenApiSpec } from '@mcpmake/core';
+import { applyOverlay } from '@mcpmake/core';
+import { extractOperations } from '@mcpmake/core';
+import { detectAuthSchemes } from '@mcpmake/core';
+import { buildAllTools } from '@mcpmake/core';
+import { filterOperations } from '@mcpmake/core';
+import { improveToolNames } from '@mcpmake/core';
+import { buildResources, buildPrompts } from '@mcpmake/core';
+import { applyClientCompat, type ClientMode } from '@mcpmake/core';
+import { emitProject, emitPythonProject } from '@mcpmake/core';
+import { printWorkerNextSteps } from './target-support.js';
+import { generateMcpb } from '@mcpmake/core';
+import { getProvider, getProviderNames } from '@mcpmake/core';
+import { logger } from '@mcpmake/core';
+import { fail } from '@mcpmake/core';
+import { watchFile } from '@mcpmake/core';
+import type { OpenAPIV3 } from 'openapi-types';
+
+const execFile = promisify(execFileCb);
+
+function toPackageName(title: string): string {
+  return title
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '');
+}
+
+export default defineConfigurableCommand('openapi', {
+  meta: {
+    name: 'openapi',
+    description: 'Generate an MCP server from an OpenAPI specification',
+  },
+  args: {
+    spec: {
+      type: 'positional',
+      description: `Path/URL to OpenAPI spec, or provider name (${getProviderNames().join(', ')})`,
+      required: true,
+    },
+    output: {
+      type: 'string',
+      alias: 'o',
+      description: 'Output directory for generated project',
+      required: true,
+    },
+    name: {
+      type: 'string',
+      alias: 'n',
+      description: 'Server name (defaults to API title from spec)',
+    },
+    'base-url': {
+      type: 'string',
+      alias: 'b',
+      description: 'Base URL override (defaults to first server in spec)',
+    },
+    force: {
+      type: 'boolean',
+      alias: 'f',
+      description: 'Overwrite existing output directory',
+      default: false,
+    },
+    transport: {
+      type: 'string',
+      alias: 't',
+      description: 'Transport mode: "stdio" (default) or "http"',
+      default: 'stdio',
+    },
+    include: {
+      type: 'string',
+      alias: 'i',
+      description:
+        'Only include operations matching these patterns (comma-separated tags, paths, or operationIds)',
+    },
+    exclude: {
+      type: 'string',
+      alias: 'e',
+      description: 'Exclude operations matching these patterns (comma-separated)',
+    },
+    'dry-run': {
+      type: 'boolean',
+      description: 'Preview generated files without writing',
+      default: false,
+    },
+    client: {
+      type: 'string',
+      alias: 'c',
+      description: 'Client compatibility mode: cursor, claude, openai',
+    },
+    'no-resources': {
+      type: 'boolean',
+      description: 'Skip generating MCP resources',
+      default: false,
+    },
+    'no-prompts': {
+      type: 'boolean',
+      description: 'Skip generating MCP prompts',
+      default: false,
+    },
+    'dynamic-discovery': {
+      type: 'boolean',
+      description: 'Emit 4 meta-tools instead of N individual tools (for large APIs)',
+      default: false,
+    },
+    'static-tools': {
+      type: 'string',
+      description: 'With --dynamic-discovery: also register first N tools statically',
+    },
+    watch: {
+      type: 'boolean',
+      alias: 'w',
+      description: 'Watch spec file for changes and regenerate',
+      default: false,
+    },
+    'improve-names': {
+      type: 'boolean',
+      description: 'Use AI to generate better tool names (requires ANTHROPIC_API_KEY)',
+      default: false,
+    },
+    overlay: {
+      type: 'string',
+      description:
+        'Path to an OpenAPI Overlay file (YAML/JSON) to patch the spec before processing',
+    },
+    format: {
+      type: 'string',
+      description: 'Output format: "typescript" (default), "python"',
+      default: 'typescript',
+    },
+    target: {
+      type: 'string',
+      description: 'Deployment target: "node" (default) or "cloudflare" (Cloudflare Workers)',
+      default: 'node',
+    },
+    mcpb: {
+      type: 'boolean',
+      description: 'Also generate an .mcpb bundle for one-click Claude Desktop install',
+      default: false,
+    },
+  },
+  async run({ args }) {
+    // Resolve provider shortcut
+    const provider = getProvider(args.spec);
+    const specPath = provider?.specUrl ?? args.spec;
+    if (provider) {
+      logger.info(`Using provider template: ${provider.name} (${provider.description})`);
+      if (provider.suggestedIncludes && !args.include) {
+        logger.info(
+          `Tip: use --include ${provider.suggestedIncludes.join(',')} to reduce tool count`,
+        );
+      }
+    }
+
+    logger.info(`Loading OpenAPI spec from: ${specPath}`);
+
+    const { api } = await loadOpenApiSpec(specPath);
+
+    // Apply overlay if specified (patches spec before extraction)
+    if (args.overlay) {
+      await applyOverlay(api as Record<string, unknown>, args.overlay);
+    }
+
+    let { operations, baseUrl, securitySchemes, info } = extractOperations(
+      api as OpenAPIV3.Document,
+    );
+
+    if (operations.length === 0) {
+      await fail('No operations found in the spec.');
+    }
+
+    logger.info(`Found ${operations.length} operations`);
+
+    // LLM-assisted naming
+    if (args['improve-names']) {
+      operations = await improveToolNames(operations);
+    }
+
+    const filtered = filterOperations(operations, {
+      include: args.include?.split(',').map((s) => s.trim()),
+      exclude: args.exclude?.split(',').map((s) => s.trim()),
+    });
+
+    if (filtered.length === 0) {
+      await fail('No operations left after filtering. Check your --include/--exclude patterns.');
+    }
+
+    if (filtered.length !== operations.length) {
+      logger.info(`${filtered.length} operations after filtering`);
+    }
+
+    let tools = buildAllTools(filtered);
+    if (args.client) {
+      tools = applyClientCompat(tools, args.client as ClientMode);
+    }
+    const { authSchemes, envVars } = detectAuthSchemes(securitySchemes);
+
+    const serverName = args.name ?? (provider ? provider.name : toPackageName(info.title));
+    const resolvedBaseUrl = args['base-url'] ?? baseUrl ?? provider?.baseUrl;
+
+    if (!resolvedBaseUrl) {
+      await fail('No base URL found in spec. Use --base-url to provide one.');
+    }
+
+    const target: 'node' | 'cloudflare' = args.target === 'cloudflare' ? 'cloudflare' : 'node';
+
+    // Cloudflare Workers always run as a stateless HTTP fetch handler — there is
+    // no stdio there. Override transport so shared template data stays coherent.
+    const transport =
+      target === 'cloudflare' ? 'http' : args.transport === 'http' ? 'http' : 'stdio';
+
+    const resources = args['no-resources'] ? [] : buildResources(filtered);
+    const prompts = args['no-prompts'] ? [] : buildPrompts(filtered);
+
+    const dynamicDiscovery = args['dynamic-discovery'] ?? false;
+    const staticToolCount = args['static-tools'] ? parseInt(args['static-tools'], 10) : undefined;
+
+    const manifest = {
+      serverName,
+      serverVersion: info.version ?? '1.0.0',
+      baseUrl: resolvedBaseUrl,
+      transport: transport as 'stdio' | 'http',
+      tools,
+      resources,
+      prompts,
+      authSchemes,
+      envVars: [
+        {
+          name: 'BASE_URL',
+          description: 'API base URL',
+          required: true,
+          example: resolvedBaseUrl,
+        },
+        ...envVars,
+      ],
+      dynamicDiscovery,
+      staticToolCount,
+      target,
+    };
+
+    const emitOpts = {
+      outputDir: args.output,
+      force: args.force ?? false,
+      dryRun: args['dry-run'] ?? false,
+    };
+
+    const outputFormat = args.format ?? 'typescript';
+    if (target === 'cloudflare' && outputFormat === 'python') {
+      await fail(
+        '--target cloudflare is only available for TypeScript output (not --format python)',
+      );
+    }
+    logger.info(
+      `Generating ${outputFormat} MCP server: ${serverName}` +
+        (target === 'cloudflare' ? ' (Cloudflare Workers)' : ''),
+    );
+
+    if (outputFormat === 'python') {
+      await emitPythonProject(manifest, emitOpts);
+      logger.success(`Python MCP server generated at: ${args.output}`);
+      logger.info('');
+      logger.info('Next steps:');
+      logger.info(`  cd ${args.output}`);
+      logger.info('  cp .env.example .env  # fill in your credentials');
+      logger.info('  pip install -r requirements.txt');
+      logger.info('  python server.py');
+
+      if (args.mcpb) {
+        logger.warn('MCPB bundling is only supported for TypeScript projects');
+      }
+    } else {
+      await emitProject(manifest, emitOpts);
+      logger.success(`MCP server generated at: ${args.output}`);
+
+      if (target === 'cloudflare') {
+        if (args.mcpb) {
+          logger.warn('MCPB bundling is not applicable to the Cloudflare Workers target');
+        }
+        printWorkerNextSteps(args.output);
+      } else if (args.mcpb && !args['dry-run']) {
+        const projectDir = resolve(args.output);
+
+        logger.info('Installing production dependencies...');
+        await execFile('npm', ['install', '--omit=dev'], {
+          cwd: projectDir,
+          timeout: 120_000,
+        });
+
+        logger.info('Building project...');
+        await execFile('npm', ['run', 'build'], {
+          cwd: projectDir,
+          timeout: 120_000,
+        });
+
+        logger.info('Creating .mcpb bundle...');
+        const mcpbPath = await generateMcpb({ projectDir });
+        logger.success(`MCPB bundle created: ${mcpbPath}`);
+      } else {
+        logger.info('');
+        logger.info('Next steps:');
+        logger.info(`  cd ${args.output}`);
+        logger.info('  cp .env.example .env  # fill in your credentials');
+        logger.info('  npm install');
+        logger.info('  npm run build');
+        logger.info('  npm start');
+      }
+    }
+
+    // Watch mode — re-generate on spec file changes
+    if (args.watch && !provider) {
+      watchFile({
+        filePath: args.spec,
+        onChange: async () => {
+          const { api: freshApi } = await loadOpenApiSpec(specPath);
+          if (args.overlay) {
+            await applyOverlay(freshApi as Record<string, unknown>, args.overlay);
+          }
+          const fresh = extractOperations(freshApi as OpenAPIV3.Document);
+          const freshFiltered = filterOperations(fresh.operations, {
+            include: args.include?.split(',').map((s) => s.trim()),
+            exclude: args.exclude?.split(',').map((s) => s.trim()),
+          });
+          const freshTools = buildAllTools(freshFiltered);
+          const freshAuth = detectAuthSchemes(fresh.securitySchemes);
+          const freshResources = buildResources(freshFiltered);
+          const freshPrompts = buildPrompts(freshFiltered);
+          await emitProject(
+            {
+              ...manifest,
+              tools: freshTools,
+              resources: freshResources,
+              prompts: freshPrompts,
+              authSchemes: freshAuth.authSchemes,
+            },
+            { outputDir: args.output, force: true, dryRun: false },
+          );
+        },
+      });
+      // Keep the process alive
+      await new Promise(() => {});
+    }
+  },
+});

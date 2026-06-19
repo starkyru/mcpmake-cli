@@ -1,0 +1,189 @@
+/**
+ * HTTP route handlers for task management.
+ * Provides REST endpoints for querying, waiting on, and cancelling async tasks.
+ */
+
+import type { IncomingMessage, ServerResponse } from 'node:http';
+import {
+  getTask,
+  updateTask,
+  cancelTask,
+  listTasks,
+  getResult,
+  type Task,
+  type TaskStatus,
+} from './task-manager.js';
+
+const VALID_STATUSES = new Set<string>([
+  'working', 'input_required', 'completed', 'failed', 'cancelled',
+]);
+
+/* ── MCP Tasks extension (2026-07-28) — JSON-RPC over /mcp ────────────────
+ * The 2026-07-28 RC moves Tasks to an extension driven by tasks/get,
+ * tasks/update, and tasks/cancel; tasks/list is removed (it can't be scoped
+ * without sessions). The current SDK doesn't dispatch these, so server-main
+ * peeks the JSON-RPC body and calls handleTaskRpc. Wire shapes are marked
+ * VERIFY — the RC is not final. The REST routes above are retained during the
+ * 12-month grace period. */
+
+/** Serialize a task for the wire (VERIFY field names against the final spec). */
+function taskToWire(task: Task): Record<string, unknown> {
+  return {
+    taskId: task.id,
+    status: task.status,
+    result: task.result,
+    error: task.error,
+    createdAt: task.createdAt,
+    updatedAt: task.updatedAt,
+  };
+}
+
+function rpcResult(id: unknown, result: unknown): Record<string, unknown> {
+  return { jsonrpc: '2.0', id: id ?? null, result };
+}
+
+function rpcError(id: unknown, code: number, message: string): Record<string, unknown> {
+  return { jsonrpc: '2.0', id: id ?? null, error: { code, message } };
+}
+
+/**
+ * Handle a `tasks/*` JSON-RPC method. Returns a JSON-RPC response object, or
+ * `null` if the method isn't a recognized task method (caller forwards it on).
+ */
+export function handleTaskRpc(
+  method: string,
+  params: unknown,
+  id: unknown,
+): Record<string, unknown> | null {
+  const p = (params ?? {}) as { taskId?: unknown; status?: unknown; result?: unknown; error?: unknown };
+  const taskId = typeof p.taskId === 'string' ? p.taskId : '';
+
+  switch (method) {
+    case 'tasks/get': {
+      const task = getTask(taskId);
+      return task ? rpcResult(id, taskToWire(task)) : rpcError(id, -32001, `Task ${taskId} not found`);
+    }
+    case 'tasks/update': {
+      const status =
+        typeof p.status === 'string' && VALID_STATUSES.has(p.status)
+          ? (p.status as TaskStatus)
+          : undefined;
+      const task = updateTask(taskId, {
+        status,
+        result: p.result,
+        error: typeof p.error === 'string' ? p.error : undefined,
+      });
+      return task ? rpcResult(id, taskToWire(task)) : rpcError(id, -32001, `Task ${taskId} not found`);
+    }
+    case 'tasks/cancel': {
+      const task = cancelTask(taskId);
+      return task ? rpcResult(id, taskToWire(task)) : rpcError(id, -32001, `Task ${taskId} not found`);
+    }
+    case 'tasks/list':
+      // Removed in the 2026-07-28 Tasks extension (can't be scoped without sessions).
+      return rpcError(id, -32601, 'tasks/list is not supported (removed in the Tasks extension)');
+    default:
+      return null;
+  }
+}
+
+/**
+ * Route handler for task endpoints. Returns true if the request was handled.
+ */
+export function handleTaskRoutes(
+  req: IncomingMessage,
+  res: ServerResponse,
+  url: URL,
+): boolean {
+  const method = req.method ?? 'GET';
+  const path = url.pathname;
+
+  // GET /tasks — list tasks
+  if (path === '/tasks' && method === 'GET') {
+    const statusParam = url.searchParams.get('status') ?? undefined;
+    const limitParam = url.searchParams.get('limit');
+    const limit = limitParam ? parseInt(limitParam, 10) : 50;
+
+    if (statusParam && !VALID_STATUSES.has(statusParam)) {
+      sendJson(res, 400, { error: `Invalid status filter: ${statusParam}` });
+      return true;
+    }
+
+    const tasks = listTasks(statusParam as TaskStatus | undefined, limit);
+    sendJson(res, 200, { tasks });
+    return true;
+  }
+
+  // Match /tasks/:taskId routes
+  const taskIdMatch = path.match(/^\/tasks\/([0-9a-f-]{36})(\/.*)?$/);
+  if (!taskIdMatch) return false;
+
+  const taskId = taskIdMatch[1];
+  const subPath = taskIdMatch[2] ?? '';
+
+  // GET /tasks/:taskId — get task status
+  if (subPath === '' && method === 'GET') {
+    const task = getTask(taskId);
+    if (!task) {
+      sendJson(res, 404, { error: `Task ${taskId} not found` });
+      return true;
+    }
+    sendJson(res, 200, {
+      taskId: task.id,
+      status: task.status,
+      result: task.result,
+      error: task.error,
+      createdAt: task.createdAt,
+      updatedAt: task.updatedAt,
+    });
+    return true;
+  }
+
+  // GET /tasks/:taskId/result — wait for task result
+  if (subPath === '/result' && method === 'GET') {
+    const timeoutParam = url.searchParams.get('timeout');
+    const timeoutMs = timeoutParam ? parseInt(timeoutParam, 10) : 30000;
+
+    if (!Number.isFinite(timeoutMs) || timeoutMs < 0 || timeoutMs > 300000) {
+      sendJson(res, 400, { error: 'timeout must be between 0 and 300000 ms' });
+      return true;
+    }
+
+    getResult(taskId, timeoutMs)
+      .then((task) => {
+        sendJson(res, 200, {
+          taskId: task.id,
+          status: task.status,
+          result: task.result,
+          error: task.error,
+        });
+      })
+      .catch((err: Error) => {
+        if (err.message === 'timeout') {
+          sendJson(res, 408, { error: 'Timed out waiting for task result' });
+        } else {
+          sendJson(res, 404, { error: err.message });
+        }
+      });
+
+    return true;
+  }
+
+  // POST /tasks/:taskId/cancel — cancel a task
+  if (subPath === '/cancel' && method === 'POST') {
+    const task = cancelTask(taskId);
+    if (!task) {
+      sendJson(res, 404, { error: `Task ${taskId} not found` });
+      return true;
+    }
+    sendJson(res, 200, { taskId: task.id, status: task.status });
+    return true;
+  }
+
+  return false;
+}
+
+function sendJson(res: ServerResponse, status: number, body: unknown): void {
+  res.writeHead(status, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify(body));
+}

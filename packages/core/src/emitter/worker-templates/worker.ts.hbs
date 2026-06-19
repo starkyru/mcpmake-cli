@@ -1,0 +1,286 @@
+/**
+ * Cloudflare Workers entry — stateless MCP server (Fetch handler).
+ *
+ * The MCP 2026-07-28 transport is stateless (no Mcp-Session-Id, no persistent
+ * connection): each `POST /mcp` carries one self-contained JSON-RPC message (or
+ * a batch) and receives one JSON response. That maps cleanly onto the Workers
+ * request/response model, so we dispatch JSON-RPC by hand here instead of using
+ * the SDK's StreamableHTTPServerTransport, which is bound to node:http req/res
+ * objects and cannot run on Workers.
+ *
+ * Secrets (API credentials + the MCP bearer token) arrive via the `env` binding,
+ * not process.env — set them with `wrangler secret put <NAME>`.
+ */
+import { zodToJsonSchema } from 'zod-to-json-schema';
+import { loadConfig, type AppConfig } from './config.js';
+import { tools, type ToolEntry } from './tools/index.js';
+import { deriveContext, runWithTrace } from './trace.js';
+
+export interface Env {
+  [key: string]: string | undefined;
+}
+
+// initialize handshake. We answer with our preferred stable revision, or the
+// client's requested version when it is one we actually implement — we never
+// blindly echo an arbitrary requested string (that would claim compatibility
+// this tools-only Worker has not implemented). The basic initialize/tools flow
+// is unchanged across these revisions, so all are genuinely supported.
+const PROTOCOL_VERSION = '2025-11-25'; // preferred (current stable)
+const SUPPORTED_PROTOCOL_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03-26'];
+const PROTOCOL_REVISION = '2026-07-28'; // server/discover preflight only (SEP-2575); NOT the negotiated initialize version
+const SERVER_INFO = { name: '{{serverName}}', version: '{{serverVersion}}' } as const;
+const MAX_BODY = 4 * 1024 * 1024; // 4 MB
+
+const toolByName = new Map<string, ToolEntry>(tools.map((t) => [t.definition.name, t]));
+
+/* ── Runtime tool filtering (additive) ───────────────────────────────────
+ * Two optional env vars narrow which tools are exposed without rebuilding:
+ *   MCP_TOOLS          comma-separated allowlist (only these names)
+ *   MCP_EXCLUDE_TOOLS  comma-separated denylist (applied after the allowlist)
+ * When neither is set every tool is exposed exactly as before. */
+function parseList(raw: string | undefined): Set<string> | undefined {
+  if (!raw) return undefined;
+  const names = raw
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return names.length > 0 ? new Set(names) : undefined;
+}
+function toolEnabled(name: string, env: Env): boolean {
+  const allow = parseList(env.MCP_TOOLS);
+  const deny = parseList(env.MCP_EXCLUDE_TOOLS);
+  if (allow && !allow.has(name)) return false;
+  if (deny && deny.has(name)) return false;
+  return true;
+}
+function enabledTools(env: Env): ToolEntry[] {
+  return tools.filter((t) => toolEnabled(t.definition.name, env));
+}
+
+/* ── Constant-time bearer check ──────────────────────────────────────────
+ * HMACs both tokens to fixed-length digests with a random per-isolate key,
+ * then compares the bytes — constant time and independent of token length, so
+ * neither equality nor length leaks through timing. The key is created lazily
+ * on first use: Workers forbids generating random values in global scope, so it
+ * must be minted inside a request handler. */
+let cmpKeyPromise: Promise<CryptoKey> | null = null;
+function compareKey(): Promise<CryptoKey> {
+  if (!cmpKeyPromise) {
+    cmpKeyPromise = crypto.subtle.importKey(
+      'raw',
+      crypto.getRandomValues(new Uint8Array(32)),
+      { name: 'HMAC', hash: 'SHA-256' },
+      false,
+      ['sign'],
+    );
+  }
+  return cmpKeyPromise;
+}
+async function safeEqual(a: string, b: string): Promise<boolean> {
+  const key = await compareKey();
+  const enc = new TextEncoder();
+  const da = new Uint8Array(await crypto.subtle.sign('HMAC', key, enc.encode(a)));
+  const db = new Uint8Array(await crypto.subtle.sign('HMAC', key, enc.encode(b)));
+  let diff = 0;
+  for (let i = 0; i < da.length; i++) diff |= da[i] ^ db[i];
+  return diff === 0;
+}
+async function isAuthorized(request: Request, expected: string | undefined): Promise<boolean> {
+  if (!expected) return true; // auth disabled when MCP_AUTH_TOKEN is unset (local/dev only)
+  const header = request.headers.get('authorization');
+  if (!header || !header.startsWith('Bearer ')) return false;
+  const presented = header.slice(7).trim();
+  if (!presented) return false;
+  return safeEqual(presented, expected);
+}
+
+/* ── HTTP / CORS helpers ─────────────────────────────────────────────── */
+function corsHeaders(origin?: string | null): Record<string, string> {
+  return {
+    'access-control-allow-origin': origin || '*',
+    'access-control-allow-methods': 'POST, GET, OPTIONS',
+    'access-control-allow-headers':
+      'authorization, content-type, mcp-method, mcp-name, mcp-protocol-version, traceparent, tracestate',
+  };
+}
+function json(body: unknown, status = 200, extra?: Record<string, string>): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'content-type': 'application/json', ...corsHeaders(), ...extra },
+  });
+}
+function ok(id: unknown, result: unknown): object {
+  return { jsonrpc: '2.0', id: id ?? null, result };
+}
+function err(id: unknown, code: number, message: string): object {
+  return { jsonrpc: '2.0', id: id ?? null, error: { code, message } };
+}
+function rpcErrorResponse(id: unknown, code: number, message: string): Response {
+  return json(err(id, code, message));
+}
+
+/* ── server/discover (SEP-2575) — VERIFY result shape against the final spec ── */
+function discoverResult(env: Env): Record<string, unknown> {
+  return {
+    server: SERVER_INFO,
+    protocolRevision: PROTOCOL_REVISION,
+    capabilities: { tools: { count: enabledTools(env).length } },
+    extensions: [],
+    cacheTtlSeconds: 300,
+  };
+}
+
+/** A tool's `tools/list` entry: its input schema rendered as JSON Schema. */
+function toListEntry(t: ToolEntry): Record<string, unknown> {
+  const schema = zodToJsonSchema(t.definition.inputSchema, {
+    $refStrategy: 'none',
+  }) as Record<string, unknown>;
+  delete schema.$schema;
+  return {
+    name: t.definition.name,
+    title: t.definition.title,
+    description: t.definition.description,
+    inputSchema: schema,
+    ...(t.definition.annotations ? { annotations: t.definition.annotations } : {}),
+  };
+}
+
+async function handleToolCall(
+  id: unknown,
+  params: { name?: unknown; arguments?: unknown } | undefined,
+  config: AppConfig,
+  env: Env,
+): Promise<object> {
+  const name = typeof params?.name === 'string' ? params.name : '';
+  const entry = toolByName.get(name);
+  if (!entry || !toolEnabled(name, env)) return err(id, -32602, `Unknown tool: ${name}`);
+  const parsed = entry.definition.inputSchema.safeParse(params?.arguments ?? {});
+  if (!parsed.success) {
+    return err(id, -32602, `Invalid arguments for ${name}: ${parsed.error.message}`);
+  }
+  const result = await entry.handler(parsed.data as Record<string, unknown>, config);
+  return ok(id, result);
+}
+
+/** Dispatch one JSON-RPC message. Returns null for notifications (no reply). */
+async function handleRpc(
+  msg: { id?: unknown; method?: unknown; params?: unknown } | null,
+  config: AppConfig,
+  env: Env,
+): Promise<object | null> {
+  const id = msg?.id;
+  const method = msg?.method;
+  switch (method) {
+    case 'initialize': {
+      // Negotiate, don't echo: honor the client's requested version only when
+      // we implement it; otherwise answer with our preferred version so the
+      // client can decide whether to proceed.
+      const requested = (msg?.params as { protocolVersion?: unknown })?.protocolVersion;
+      const negotiated =
+        typeof requested === 'string' && SUPPORTED_PROTOCOL_VERSIONS.includes(requested)
+          ? requested
+          : PROTOCOL_VERSION;
+      return ok(id, {
+        protocolVersion: negotiated,
+        capabilities: { tools: { listChanged: false } },
+        serverInfo: SERVER_INFO,
+      });
+    }
+    case 'ping':
+      return ok(id, {});
+    case 'tools/list':
+      return ok(id, { tools: enabledTools(env).map(toListEntry) });
+    case 'tools/call':
+      return handleToolCall(
+        id,
+        msg?.params as { name?: unknown; arguments?: unknown },
+        config,
+        env,
+      );
+    case 'server/discover':
+      return ok(id, discoverResult(env));
+    default:
+      // Notifications (e.g. notifications/initialized) carry no id and get no reply.
+      if (id === undefined || id === null) return null;
+      return err(id, -32601, `Method not found: ${String(method)}`);
+  }
+}
+
+export default {
+  async fetch(request: Request, env: Env): Promise<Response> {
+    const url = new URL(request.url);
+    const origin = request.headers.get('origin');
+
+    if (request.method === 'OPTIONS') {
+      return new Response(null, { status: 204, headers: corsHeaders(origin) });
+    }
+    if (url.pathname === '/health') return json({ status: 'ok' });
+    if (url.pathname === '/ready') return json({ status: 'ready' });
+
+    // Bearer authentication (every path except /health and /ready).
+    if (!(await isAuthorized(request, env.MCP_AUTH_TOKEN))) {
+      return json({ error: 'Unauthorized: missing or invalid bearer token' }, 401, {
+        'www-authenticate': 'Bearer',
+      });
+    }
+
+    // Routing-header observability (SEP-2243, additive — never rejects).
+    const mcpMethod = request.headers.get('mcp-method');
+    const mcpName = request.headers.get('mcp-name');
+    if (mcpMethod || mcpName) {
+      console.log(JSON.stringify({ level: 'info', msg: 'mcp-meta-headers', mcpMethod, mcpName }));
+    }
+
+    if (url.pathname !== '/mcp') return json({ error: 'Not found' }, 404);
+    if (request.method !== 'POST') {
+      // Stateless: no SSE stream to open (GET) or session to delete (DELETE).
+      return rpcErrorResponse(null, -32601, 'Only POST is supported on this stateless server');
+    }
+
+    // Origin guard (DNS-rebinding protection). Enforced only when configured —
+    // a Workers endpoint is public and gated by the bearer token, not by origin.
+    const allowedOrigin = env.ALLOWED_ORIGIN;
+    if (allowedOrigin && origin && origin !== allowedOrigin) {
+      return json({ error: 'Forbidden: invalid origin' }, 403);
+    }
+
+    const contentLength = Number(request.headers.get('content-length') ?? '0');
+    if (contentLength > MAX_BODY) return rpcErrorResponse(null, -32600, 'Request body too large');
+    const raw = await request.text();
+    if (raw.length > MAX_BODY) return rpcErrorResponse(null, -32600, 'Request body too large');
+    if (!raw) return rpcErrorResponse(null, -32600, 'Empty request body');
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return rpcErrorResponse(null, -32700, 'Parse error');
+    }
+
+    const config = loadConfig(env);
+    // Bind a W3C Trace Context for this request so upstream API calls made inside
+    // the tool handlers carry the traceparent and the trace spans the API hop.
+    const trace = deriveContext(
+      request.headers.get('traceparent') ?? undefined,
+      request.headers.get('tracestate') ?? undefined,
+    );
+
+    return runWithTrace(trace, async () => {
+      if (Array.isArray(parsed)) {
+        const settled = await Promise.all(
+          parsed.map((m) => handleRpc(m as { id?: unknown; method?: unknown }, config, env)),
+        );
+        const responses = settled.filter((r): r is object => r !== null);
+        if (responses.length === 0) {
+          return new Response(null, { status: 202, headers: corsHeaders(origin) });
+        }
+        return json(responses);
+      }
+      const response = await handleRpc(parsed as { id?: unknown; method?: unknown }, config, env);
+      if (response === null) {
+        return new Response(null, { status: 202, headers: corsHeaders(origin) });
+      }
+      return json(response);
+    });
+  },
+};

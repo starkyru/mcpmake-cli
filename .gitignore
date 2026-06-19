@@ -1,0 +1,7 @@
+node_modules/
+dist/
+*.tsbuildinfo
+.dist-stage.*/
+.build.lock/
+*.log
+.DS_Store

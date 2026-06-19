@@ -1,0 +1,188 @@
+/**
+ * OAuth 2.1 token management.
+ * Supports Authorization Code + PKCE and Client Credentials flows.
+ */
+
+import crypto from 'node:crypto';
+
+export interface OAuthConfig {
+  clientId: string;
+  clientSecret?: string;
+  authorizationUrl: string;
+  tokenUrl: string;
+  scopes: string[];
+  redirectUri: string;
+}
+
+interface TokenResponse {
+  access_token: string;
+  token_type: string;
+  expires_in?: number;
+  refresh_token?: string;
+  scope?: string;
+}
+
+let cachedToken: { accessToken: string; expiresAt: number; refreshToken?: string } | undefined;
+
+/**
+ * Get a valid access token, refreshing if needed.
+ */
+export async function getAccessToken(config: OAuthConfig): Promise<string> {
+  if (cachedToken && Date.now() < cachedToken.expiresAt - 60_000) {
+    return cachedToken.accessToken;
+  }
+
+  // Try refresh first
+  if (cachedToken?.refreshToken) {
+    try {
+      const token = await refreshToken(config, cachedToken.refreshToken);
+      cacheToken(token);
+      return token.access_token;
+    } catch {
+      // Refresh failed — fall through to re-authenticate
+    }
+  }
+
+  // Client Credentials flow (machine-to-machine)
+  if (config.clientSecret && !process.env.OAUTH2_TOKEN) {
+    const token = await clientCredentialsGrant(config);
+    cacheToken(token);
+    return token.access_token;
+  }
+
+  // Pre-obtained token from env
+  if (process.env.OAUTH2_TOKEN) {
+    return process.env.OAUTH2_TOKEN;
+  }
+
+  throw new Error(
+    'No OAuth token available. Set OAUTH2_TOKEN or configure OAUTH2_CLIENT_ID + OAUTH2_CLIENT_SECRET for client credentials flow.',
+  );
+}
+
+/**
+ * Client Credentials grant (RFC 6749 Section 4.4).
+ */
+async function clientCredentialsGrant(config: OAuthConfig): Promise<TokenResponse> {
+  const params = new URLSearchParams({
+    grant_type: 'client_credentials',
+    client_id: config.clientId,
+    ...(config.clientSecret ? { client_secret: config.clientSecret } : {}),
+    ...(config.scopes.length > 0 ? { scope: config.scopes.join(' ') } : {}),
+  });
+
+  const response = await fetch(config.tokenUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: params.toString(),
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`OAuth client credentials failed (${response.status}): ${body}`);
+  }
+
+  return response.json() as Promise<TokenResponse>;
+}
+
+/**
+ * Refresh an access token using a refresh token.
+ */
+async function refreshToken(config: OAuthConfig, refreshTokenValue: string): Promise<TokenResponse> {
+  const params = new URLSearchParams({
+    grant_type: 'refresh_token',
+    client_id: config.clientId,
+    refresh_token: refreshTokenValue,
+  });
+
+  const response = await fetch(config.tokenUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: params.toString(),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Token refresh failed: ${response.status}`);
+  }
+
+  return response.json() as Promise<TokenResponse>;
+}
+
+/**
+ * Generate PKCE code verifier and challenge for Authorization Code flow.
+ */
+export function generatePkce(): { codeVerifier: string; codeChallenge: string } {
+  const codeVerifier = crypto.randomBytes(32).toString('base64url');
+  const codeChallenge = crypto
+    .createHash('sha256')
+    .update(codeVerifier)
+    .digest('base64url');
+  return { codeVerifier, codeChallenge };
+}
+
+/**
+ * Build the authorization URL for the Authorization Code + PKCE flow.
+ */
+export function buildAuthorizationUrl(config: OAuthConfig, state: string, codeChallenge: string): string {
+  const params = new URLSearchParams({
+    response_type: 'code',
+    client_id: config.clientId,
+    redirect_uri: config.redirectUri,
+    state,
+    code_challenge: codeChallenge,
+    code_challenge_method: 'S256',
+    ...(config.scopes.length > 0 ? { scope: config.scopes.join(' ') } : {}),
+  });
+  return `${config.authorizationUrl}?${params.toString()}`;
+}
+
+/**
+ * Exchange an authorization code for tokens (PKCE flow).
+ */
+export async function exchangeCode(config: OAuthConfig, code: string, codeVerifier: string): Promise<TokenResponse> {
+  const params = new URLSearchParams({
+    grant_type: 'authorization_code',
+    client_id: config.clientId,
+    code,
+    redirect_uri: config.redirectUri,
+    code_verifier: codeVerifier,
+  });
+
+  const response = await fetch(config.tokenUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: params.toString(),
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`OAuth code exchange failed (${response.status}): ${body}`);
+  }
+
+  const token = await response.json() as TokenResponse;
+  cacheToken(token);
+  return token;
+}
+
+function cacheToken(token: TokenResponse): void {
+  cachedToken = {
+    accessToken: token.access_token,
+    expiresAt: Date.now() + (token.expires_in ?? 3600) * 1000,
+    refreshToken: token.refresh_token,
+  };
+}
+
+/**
+ * OAuth Authorization Server Metadata (RFC 8414).
+ */
+export function getAuthServerMetadata(config: OAuthConfig, issuer: string): Record<string, unknown> {
+  return {
+    issuer,
+    authorization_endpoint: config.authorizationUrl,
+    token_endpoint: config.tokenUrl,
+    response_types_supported: ['code'],
+    grant_types_supported: ['authorization_code', 'client_credentials', 'refresh_token'],
+    code_challenge_methods_supported: ['S256'],
+    scopes_supported: config.scopes,
+  };
+}

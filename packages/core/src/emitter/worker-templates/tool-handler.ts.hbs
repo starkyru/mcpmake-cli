@@ -1,0 +1,103 @@
+import { z } from 'zod';
+import { executeRequest } from '../http.js';
+import { applyJqFilter } from '../response-filter.js';
+import type { AppConfig } from '../config.js';
+
+// Per-call control arguments shared by every generated tool. Optional and
+// stripped before the upstream request, so omitting them is a no-op.
+const controlSchema = {
+  jq_filter: z
+    .string()
+    .optional()
+    .describe(
+      'Optional jq-style filter applied to the JSON response before it is returned ' +
+        '(e.g. ".data", ".items[0].id", ".items[]"). Trims large responses.',
+    ),
+  idempotency_key: z
+    .string()
+    .optional()
+    .describe(
+      'Optional Idempotency-Key header for safe retries of mutating requests. ' +
+        'Ignored for read-only operations.',
+    ),
+};
+
+const inputSchema = ({{{inputSchemaCode}}}).extend(controlSchema);
+
+export const definition = {
+  name: '{{name}}',
+  title: '{{title}}',
+  description: `{{{description}}}`,
+  inputSchema,
+{{#if annotations}}
+  annotations: {
+{{#if annotations.readOnlyHint}}
+    readOnlyHint: true,
+{{/if}}
+{{#if annotations.destructiveHint}}
+    destructiveHint: true,
+{{/if}}
+{{#if annotations.idempotentHint}}
+    idempotentHint: true,
+{{/if}}
+  } as Record<string, boolean>,
+{{/if}}
+};
+
+export interface ToolResult {
+  content: { type: 'text'; text: string }[];
+  isError?: boolean;
+}
+
+/**
+ * Execute this tool. On the Workers (stateless) target a tool always runs to
+ * completion within the request — there is no Tasks extension / background
+ * polling, so async operations resolve synchronously here.
+ */
+export async function handler(
+  input: Record<string, unknown>,
+  config: AppConfig,
+): Promise<ToolResult> {
+  try {
+    const result = await runRequest(input, config);
+    return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { content: [{ type: 'text', text: `Error: ${message}` }], isError: true };
+  }
+}
+
+async function runRequest(rawInput: Record<string, unknown>, config: AppConfig): Promise<unknown> {
+  // Pull off the per-call control args so they are never forwarded upstream.
+  const { jq_filter: jqFilter, idempotency_key: idempotencyKey, ...input } = rawInput;
+  const url = buildUrl(input, config.baseUrl);
+
+  const response = await executeRequest({
+    method: '{{method}}',
+    url,
+{{#if hasRequestBody}}
+    body: input.body,
+    contentType: '{{requestBodyContentType}}',
+{{/if}}
+    headers: {},
+    config,
+    idempotencyKey: typeof idempotencyKey === 'string' ? idempotencyKey : undefined,
+  });
+
+  let result: unknown = response.data;
+{{#if jqFilter}}
+  // Build-time x-mcp-jq-filter (applied first when no per-call filter is given).
+  if (typeof jqFilter !== 'string') {
+    result = applyJqFilter(result, '{{{jqFilter}}}');
+  }
+{{/if}}
+  // Per-call jq_filter takes precedence (absent → unchanged).
+  if (typeof jqFilter === 'string' && jqFilter) {
+    result = applyJqFilter(result, jqFilter);
+  }
+  return result;
+}
+
+function buildUrl(params: Record<string, unknown>, baseUrl: string): string {
+{{{buildUrlBody}}}
+}

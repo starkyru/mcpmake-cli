@@ -1,0 +1,116 @@
+import { z } from 'zod';
+import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { getOrCreateSession, takeScreenshot, resolveSelector } from '../browser-manager.js';
+import type { AppConfig } from '../config.js';
+
+const inputSchema = {{{inputSchemaCode}}};
+
+export function register(server: McpServer, config: AppConfig): void {
+  server.registerTool(
+    '{{name}}',
+    {
+      title: '{{jsString title}}',
+      description: `{{{description}}}`,
+      inputSchema,
+{{#if annotations}}
+      annotations: {
+{{#if annotations.readOnlyHint}}
+        readOnlyHint: true,
+{{/if}}
+{{#if annotations.destructiveHint}}
+        destructiveHint: true,
+{{/if}}
+{{#if annotations.idempotentHint}}
+        idempotentHint: true,
+{{/if}}
+      },
+{{/if}}
+    },
+    async (input) => {
+      try {
+        const { page, sessionId } = await getOrCreateSession(
+          (input as Record<string, unknown>).sessionId as string | undefined,
+        );
+
+        // Navigate to the page if not already there
+{{#if pageUrl}}
+        const targetUrl = '{{jsString pageUrl}}';
+        if (!page.url().startsWith(targetUrl.split('?')[0])) {
+          await page.goto(targetUrl, { waitUntil: 'domcontentloaded' });
+          await page.waitForTimeout(500);
+        }
+{{/if}}
+
+        // Fill form fields
+{{#each form.fields}}
+{{#unless (eq fieldType "hidden")}}
+{{#if (eq fieldType "checkbox")}}
+        if ((input as Record<string, unknown>)['{{jsString name}}'] !== undefined) {
+          const checked = Boolean((input as Record<string, unknown>)['{{jsString name}}']);
+          const fieldSelector = await resolveSelector(page, ['{{jsString selector.primary}}'{{#each selector.fallbacks}}, '{{jsString this}}'{{/each}}]);
+          if (checked) {
+            await page.check(fieldSelector);
+          } else {
+            await page.uncheck(fieldSelector);
+          }
+        }
+{{else if (eq fieldType "select")}}
+        if ((input as Record<string, unknown>)['{{jsString name}}'] !== undefined) {
+          const fieldSelector = await resolveSelector(page, ['{{jsString selector.primary}}'{{#each selector.fallbacks}}, '{{jsString this}}'{{/each}}]);
+          await page.selectOption(fieldSelector, String((input as Record<string, unknown>)['{{jsString name}}']));
+        }
+{{else if (eq fieldType "radio")}}
+        if ((input as Record<string, unknown>)['{{jsString name}}'] !== undefined) {
+          const radioName = '{{jsString name}}';
+          const radioValue = String((input as Record<string, unknown>)['{{jsString name}}']).replace(/["\\[\]()]/g, '\\$&');
+          const radioNameSel = radioName.replace(/["\\]/g, '\\$&');
+          await page.check(`input[name="${radioNameSel}"][value="${radioValue}"]`);
+        }
+{{else}}
+        if ((input as Record<string, unknown>)['{{jsString name}}'] !== undefined) {
+          const fieldSelector = await resolveSelector(page, ['{{jsString selector.primary}}'{{#each selector.fallbacks}}, '{{jsString this}}'{{/each}}]);
+          await page.fill(fieldSelector, String((input as Record<string, unknown>)['{{jsString name}}']));
+        }
+{{/if}}
+{{/unless}}
+{{/each}}
+
+        // Submit the form
+{{#if form.submitButton}}
+        const submitSelector = await resolveSelector(page, ['{{jsString form.submitButton.primary}}'{{#each form.submitButton.fallbacks}}, '{{jsString this}}'{{/each}}]);
+        await page.click(submitSelector);
+{{else}}
+        await page.keyboard.press('Enter');
+{{/if}}
+
+        // Wait for navigation or response
+        await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
+
+        // Capture result
+        const pageTitle = await page.title();
+        const pageUrl = page.url();
+        const screenshot = await takeScreenshot(sessionId);
+
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({ sessionId, pageTitle, url: pageUrl, success: true }, null, 2),
+            },
+            {
+              type: 'image' as const,
+              data: screenshot.toString('base64'),
+              mimeType: 'image/png',
+            },
+          ],
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return {
+          content: [{ type: 'text' as const, text: `Error: ${message}` }],
+          isError: true,
+        };
+      }
+    },
+  );
+}

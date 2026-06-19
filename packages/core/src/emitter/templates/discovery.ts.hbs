@@ -1,0 +1,320 @@
+/**
+ * Dynamic tool discovery — 4 meta-tools that let LLMs discover and call tools
+ * without all tool schemas loaded into context upfront.
+ *
+ * Reduces initial context from ~25-40K tokens (for large APIs) to ~1,300 tokens.
+ */
+
+import { z } from 'zod';
+import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { executeRequest } from './http.js';
+import { applyJqFilter } from './response-filter.js';
+import type { AppConfig } from './config.js';
+import catalogData from './tool-catalog.json' with { type: 'json' };
+
+interface CatalogEntry {
+  name: string;
+  title: string;
+  description: string;
+  method: string;
+  path: string;
+  inputSchema: Record<string, unknown>;
+  pathParams: string[];
+  queryParams: string[];
+  hasRequestBody: boolean;
+  requestBodyContentType: string;
+}
+
+const catalog: CatalogEntry[] = catalogData as CatalogEntry[];
+
+// Simple TF-IDF search index built at startup
+const searchIndex = buildSearchIndex(catalog);
+
+export function registerDiscoveryTools(server: McpServer, config: AppConfig): void {
+  // 1. list_tools — list available tools with optional query filter
+  server.registerTool(
+    'list_tools',
+    {
+      title: 'List Available Tools',
+      description: `List all ${catalog.length} available API tools. Use "query" to filter by name or description.`,
+      inputSchema: z.object({
+        query: z.string().optional().describe('Filter tools by name or description'),
+        offset: z.number().int().optional().describe('Pagination offset (default: 0)'),
+        limit: z.number().int().optional().describe('Max results (default: 20)'),
+      }),
+      annotations: { readOnlyHint: true },
+    },
+    async (input) => {
+      const query = (input as Record<string, unknown>).query as string | undefined;
+      const offset = ((input as Record<string, unknown>).offset as number) ?? 0;
+      const limit = ((input as Record<string, unknown>).limit as number) ?? 20;
+
+      let results = catalog;
+      if (query) {
+        results = searchTools(query);
+      }
+
+      const page = results.slice(offset, offset + limit);
+      const hasMore = offset + limit < results.length;
+
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify(
+              {
+                tools: page.map((t) => ({ name: t.name, description: t.description })),
+                total: results.length,
+                hasMore,
+                nextOffset: hasMore ? offset + limit : undefined,
+              },
+              null,
+              2,
+            ),
+          },
+        ],
+      };
+    },
+  );
+
+  // 2. get_tool_schema — get the full input schema for a specific tool
+  server.registerTool(
+    'get_tool_schema',
+    {
+      title: 'Get Tool Schema',
+      description: 'Get the full input schema and details for a specific tool by name.',
+      inputSchema: z.object({
+        name: z.string().describe('Tool name (from list_tools)'),
+      }),
+      annotations: { readOnlyHint: true },
+    },
+    async (input) => {
+      const name = (input as Record<string, unknown>).name as string;
+      const tool = catalog.find((t) => t.name === name);
+
+      if (!tool) {
+        return {
+          content: [{ type: 'text' as const, text: `Tool "${name}" not found.` }],
+          isError: true,
+        };
+      }
+
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify(
+              {
+                name: tool.name,
+                title: tool.title,
+                description: tool.description,
+                method: tool.method,
+                path: tool.path,
+                inputSchema: tool.inputSchema,
+              },
+              null,
+              2,
+            ),
+          },
+        ],
+      };
+    },
+  );
+
+  // 3. execute_tool — execute a tool by name with arguments
+  server.registerTool(
+    'execute_tool',
+    {
+      title: 'Execute Tool',
+      description: 'Execute any API tool by name. Get the schema first with get_tool_schema.',
+      inputSchema: z.object({
+        name: z.string().describe('Tool name'),
+        args: z.record(z.unknown()).optional().describe('Tool arguments (match the input schema)'),
+        jq_filter: z
+          .string()
+          .optional()
+          .describe('Optional jq-style filter applied to the response (e.g. ".data", ".items[]").'),
+        idempotency_key: z
+          .string()
+          .optional()
+          .describe('Optional Idempotency-Key header for safe retries of mutating requests.'),
+      }),
+    },
+    async (input) => {
+      const name = (input as Record<string, unknown>).name as string;
+      const args = ((input as Record<string, unknown>).args as Record<string, unknown>) ?? {};
+      const jqFilter = (input as Record<string, unknown>).jq_filter as string | undefined;
+      const idempotencyKey = (input as Record<string, unknown>).idempotency_key as
+        | string
+        | undefined;
+      const tool = catalog.find((t) => t.name === name);
+
+      if (!tool) {
+        return {
+          content: [{ type: 'text' as const, text: `Tool "${name}" not found.` }],
+          isError: true,
+        };
+      }
+
+      try {
+        // Build URL from path template
+        let url = config.baseUrl + tool.path;
+        for (const param of tool.pathParams) {
+          if (args[param] !== undefined) {
+            url = url.replace(`{${param}}`, encodeURIComponent(String(args[param])));
+          }
+        }
+
+        // Add query params
+        const queryParams = new URLSearchParams();
+        for (const param of tool.queryParams) {
+          if (args[param] !== undefined) {
+            queryParams.set(param, String(args[param]));
+          }
+        }
+        const qs = queryParams.toString();
+        if (qs) url += `?${qs}`;
+
+        const response = await executeRequest({
+          method: tool.method,
+          url,
+          ...(tool.hasRequestBody && args.body
+            ? { body: args.body, contentType: tool.requestBodyContentType }
+            : {}),
+          headers: {},
+          config,
+          idempotencyKey,
+        });
+
+        const result =
+          typeof jqFilter === 'string' && jqFilter
+            ? applyJqFilter(response.data, jqFilter)
+            : response.data;
+
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return {
+          content: [{ type: 'text' as const, text: `Error: ${message}` }],
+          isError: true,
+        };
+      }
+    },
+  );
+
+  // 4. search_tools — semantic search over tool descriptions
+  server.registerTool(
+    'search_tools',
+    {
+      title: 'Search Tools',
+      description: 'Search for tools by description. Uses fuzzy matching.',
+      inputSchema: z.object({
+        description: z.string().describe('What you want to do (natural language)'),
+        limit: z.number().int().optional().describe('Max results (default: 5)'),
+      }),
+      annotations: { readOnlyHint: true },
+    },
+    async (input) => {
+      const description = (input as Record<string, unknown>).description as string;
+      const limit = ((input as Record<string, unknown>).limit as number) ?? 5;
+
+      const results = searchTools(description).slice(0, limit);
+
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify(
+              results.map((t) => ({ name: t.name, description: t.description, method: t.method, path: t.path })),
+              null,
+              2,
+            ),
+          },
+        ],
+      };
+    },
+  );
+}
+
+// ---------------------------------------------------------------------------
+// TF-IDF Search
+// ---------------------------------------------------------------------------
+
+interface SearchEntry {
+  tool: CatalogEntry;
+  terms: Map<string, number>; // term -> TF-IDF weight
+}
+
+function buildSearchIndex(tools: CatalogEntry[]): SearchEntry[] {
+  const docFreq = new Map<string, number>();
+  const docs: Array<{ tool: CatalogEntry; terms: string[] }> = [];
+
+  for (const tool of tools) {
+    const text = `${tool.name} ${tool.title} ${tool.description} ${tool.method} ${tool.path}`;
+    const terms = tokenize(text);
+    docs.push({ tool, terms });
+
+    const unique = new Set(terms);
+    for (const term of unique) {
+      docFreq.set(term, (docFreq.get(term) ?? 0) + 1);
+    }
+  }
+
+  const N = tools.length;
+  return docs.map(({ tool, terms }) => {
+    const termFreq = new Map<string, number>();
+    for (const t of terms) {
+      termFreq.set(t, (termFreq.get(t) ?? 0) + 1);
+    }
+
+    const weighted = new Map<string, number>();
+    for (const [term, tf] of termFreq) {
+      const df = docFreq.get(term) ?? 1;
+      const idf = Math.log(N / df);
+      weighted.set(term, tf * idf);
+    }
+
+    return { tool, terms: weighted };
+  });
+}
+
+function searchTools(query: string): CatalogEntry[] {
+  const queryTerms = tokenize(query);
+  if (queryTerms.length === 0) return catalog;
+
+  const scores: Array<{ tool: CatalogEntry; score: number }> = [];
+
+  for (const entry of searchIndex) {
+    let score = 0;
+    for (const qt of queryTerms) {
+      // Exact match
+      score += entry.terms.get(qt) ?? 0;
+      // Prefix match (fuzzy)
+      for (const [term, weight] of entry.terms) {
+        if (term.startsWith(qt) || qt.startsWith(term)) {
+          score += weight * 0.5;
+        }
+      }
+    }
+    if (score > 0) {
+      scores.push({ tool: entry.tool, score });
+    }
+  }
+
+  return scores.sort((a, b) => b.score - a.score).map((s) => s.tool);
+}
+
+function tokenize(text: string): string[] {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, ' ')
+    .split(/\s+/)
+    .filter((t) => t.length > 1);
+}

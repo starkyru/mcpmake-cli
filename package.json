@@ -1,0 +1,34 @@
+{
+  "name": "mcpmake-cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "mcpmake — generate MCP servers you own from any API. CLI (mcpmake) + shared library (@mcpmake/core).",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/starkyru/mcpmake-cli.git"
+  },
+  "homepage": "https://mcpmake.dev",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace @mcpmake/core && npm run build --workspace mcpmake",
+    "typecheck": "npm run build --workspace @mcpmake/core && npm run typecheck --workspace @mcpmake/core && npm run typecheck --workspace mcpmake",
+    "test": "vitest run",
+    "format": "prettier --write 'packages/*/src/**/*.ts' 'packages/*/test/**/*.ts'",
+    "format:check": "prettier --check 'packages/*/src/**/*.ts' 'packages/*/test/**/*.ts'"
+  },
+  "devDependencies": {
+    "@types/har-format": "^1.2.16",
+    "@types/node": "^22.0.0",
+    "prettier": "^3.8.3",
+    "tsx": "^4.19.0",
+    "typescript": "^5.8.0",
+    "vitest": "^3.1.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

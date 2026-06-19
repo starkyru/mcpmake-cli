@@ -1,0 +1,11 @@
+import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { AppConfig } from '../config.js';
+{{#each tools}}
+import { register as register{{capitalize functionName}} } from './{{fileName}}.js';
+{{/each}}
+
+export function registerAllTools(server: McpServer, config: AppConfig): void {
+{{#each tools}}
+  register{{capitalize functionName}}(server, config);
+{{/each}}
+}

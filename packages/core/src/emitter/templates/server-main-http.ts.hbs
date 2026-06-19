@@ -1,0 +1,442 @@
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { registerAllTools } from './tools/index.js';
+{{#if hasResources}}
+import { registerAllResources } from './resources.js';
+{{/if}}
+{{#if hasPrompts}}
+import { registerAllPrompts } from './prompts.js';
+{{/if}}
+import { loadConfig } from './config.js';
+{{#if hasAsyncTools}}
+import { handleTaskRoutes, handleTaskRpc } from './task-handlers.js';
+import { handleTaskSse } from './task-sse.js';
+{{/if}}
+{{#if hasOAuth}}
+import { getAuthServerMetadata } from './oauth.js';
+{{/if}}
+import http from 'node:http';
+import crypto from 'node:crypto';
+import { deriveContext, runWithTrace } from './trace.js';
+
+/* ── Structured JSON logger ─────────────────────────────────────────── */
+
+function log(level: 'info' | 'error', msg: string, extra?: Record<string, unknown>): void {
+  const entry = { ts: new Date().toISOString(), level, msg, ...extra };
+  process.stderr.write(JSON.stringify(entry) + '\n');
+}
+
+/* ── MCP 2026-07-28 ─────────────────────────────────────────────────────
+ * This server is being migrated toward the 2026-07-28 spec revision (RC).
+ * Implemented here (additive, works against the current SDK):
+ *   - stateless transport by default (set MCP_STATEFUL=true to keep sessions)
+ *   - server/discover preflight (SEP-2575)
+ *   - Mcp-Method / Mcp-Name routing headers logged (SEP-2243)
+ *   - Tasks extension methods tasks/get|update|cancel (tasks/list removed)
+ * SDK-gated (lands when @modelcontextprotocol/sdk ships RC support, then the
+ * package.json pin is bumped): removal of the initialize/initialized handshake
+ * and moving protocolVersion/clientInfo/capabilities into per-request _meta.
+ * The 2026-07-28 RC is NOT final — wire shapes marked VERIFY may change. */
+const PROTOCOL_REVISION = '2026-07-28'; // VERIFY against the final spec
+
+/* ── Bearer authentication ──────────────────────────────────────────────
+ * Constant-time check that the request presents the expected bearer token via
+ * the `Authorization: Bearer <token>` header. Returns true when no token is
+ * configured (auth disabled). The token is never accepted from the query
+ * string — URLs leak through logs, history, and referrers. */
+function isAuthorized(req: http.IncomingMessage, expected: string | undefined): boolean {
+  if (!expected) return true; // auth disabled when MCP_AUTH_TOKEN is unset
+
+  const header = req.headers.authorization;
+  if (typeof header !== 'string' || !header.startsWith('Bearer ')) return false;
+  const presented = header.slice(7).trim();
+  if (!presented) return false;
+
+  const a = Buffer.from(presented);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
+}
+
+/* ── Bounded request-body reader ─────────────────────────────────────────
+ * Buffers the body so we can peek JSON-RPC for server/discover + tasks/* and
+ * then hand the parsed value to the SDK transport's `parsedBody` argument
+ * (so the drained stream is never re-read). Resolves null past the size cap. */
+const MAX_BODY = 4 * 1024 * 1024; // 4 MB
+function readBody(req: http.IncomingMessage): Promise<Buffer | null> {
+  return new Promise((resolve) => {
+    const chunks: Buffer[] = [];
+    let total = 0;
+    let settled = false;
+    const done = (v: Buffer | null) => {
+      if (!settled) {
+        settled = true;
+        resolve(v);
+      }
+    };
+    req.on('data', (c: Buffer) => {
+      total += c.length;
+      if (total > MAX_BODY) {
+        done(null);
+        req.destroy();
+        return;
+      }
+      chunks.push(c);
+    });
+    req.on('end', () => done(Buffer.concat(chunks)));
+    req.on('error', () => done(null));
+    req.on('aborted', () => done(null));
+  });
+}
+
+function sendJson(res: http.ServerResponse, status: number, body: unknown): void {
+  res.writeHead(status, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify(body));
+}
+
+/** Narrow a possibly-repeated request header to a single string value. */
+function headerValue(v: string | string[] | undefined): string | undefined {
+  return Array.isArray(v) ? v[0] : v;
+}
+
+function rpcError(res: http.ServerResponse, id: unknown, code: number, message: string): void {
+  sendJson(res, 200, { jsonrpc: '2.0', id: id ?? null, error: { code, message } });
+}
+
+/* ── server/discover (SEP-2575) — VERIFY result shape against final spec ── */
+function buildDiscoverResult(id: unknown): Record<string, unknown> {
+  return {
+    jsonrpc: '2.0',
+    id: id ?? null,
+    result: {
+      server: { name: '{{serverName}}', version: '{{serverVersion}}' },
+      protocolRevision: PROTOCOL_REVISION,
+      capabilities: {
+        tools: { count: {{tools.length}} },
+{{#if hasResources}}
+        resources: {},
+{{/if}}
+{{#if hasPrompts}}
+        prompts: {},
+{{/if}}
+      },
+      extensions: [
+{{#if hasAsyncTools}}
+        'tasks',
+{{/if}}
+{{#if hasOAuth}}
+        'oauth',
+{{/if}}
+      ],
+      cacheTtlSeconds: 300,
+    },
+  };
+}
+
+/* ── MCP server factory ──────────────────────────────────────────────────
+ * Builds a fully-registered McpServer. In stateless mode a fresh instance is
+ * created per request (a single McpServer connected to multiple transports
+ * concurrently races on its internal transport reference). */
+function createMcpServer(config: ReturnType<typeof loadConfig>): McpServer {
+  const server = new McpServer({
+    name: '{{serverName}}',
+    version: '{{serverVersion}}',
+  });
+  registerAllTools(server, config);
+{{#if hasResources}}
+  registerAllResources(server, config);
+{{/if}}
+{{#if hasPrompts}}
+  registerAllPrompts(server);
+{{/if}}
+  return server;
+}
+
+/* ── Bootstrap ───────────────────────────────────────────────────────── */
+
+const config = loadConfig();
+const transportMode = process.env.TRANSPORT ?? 'stdio';
+
+if (transportMode === 'http') {
+  const port = parseInt(process.env.PORT ?? '3000', 10);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    log('error', 'Invalid PORT value, must be 1-65535', { PORT: process.env.PORT });
+    process.exit(1);
+  }
+  const allowedOrigin = process.env.ALLOWED_ORIGIN;
+  const authToken = process.env.MCP_AUTH_TOKEN;
+  /* Stateless by default (2026-07-28). MCP_STATEFUL=true keeps Mcp-Session-Id
+   * sessions during the migration / for clients that need resumable streams. */
+  const stateful = process.env.MCP_STATEFUL === 'true';
+  let isReady = false;
+
+  /* Stateful mode keeps one McpServer + transport PER SESSION, keyed by the
+   * Mcp-Session-Id the SDK assigns on `initialize`, so concurrent clients get
+   * independent, isolated sessions (a single shared transport cannot multiplex
+   * them). Stateless mode builds a fresh server + transport per request. */
+  const sessions = new Map<string, { server: McpServer; transport: StreamableHTTPServerTransport }>();
+
+  function isInitializeRequest(body: unknown): boolean {
+    return (
+      !!body &&
+      typeof body === 'object' &&
+      !Array.isArray(body) &&
+      (body as { method?: unknown }).method === 'initialize'
+    );
+  }
+
+  async function dispatchToTransport(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    parsedBody?: unknown,
+  ): Promise<void> {
+    /* Bind W3C Trace Context for this request (continuing an inbound trace or
+     * starting one) so upstream API calls made inside the tool handlers carry
+     * the traceparent and the distributed trace spans the API hop. */
+    const trace = deriveContext(
+      headerValue(req.headers['traceparent']),
+      headerValue(req.headers['tracestate']),
+    );
+    await runWithTrace(trace, async () => {
+      if (stateful) {
+        const sessionId = headerValue(req.headers['mcp-session-id']);
+        const existing = sessionId ? sessions.get(sessionId) : undefined;
+        if (existing) {
+          await existing.transport.handleRequest(req, res, parsedBody);
+          return;
+        }
+        if (!sessionId && isInitializeRequest(parsedBody)) {
+          // New session: create a dedicated server + transport and register it
+          // under the session id the SDK generates during initialize.
+          const server = createMcpServer(config);
+          const transport = new StreamableHTTPServerTransport({
+            sessionIdGenerator: () => crypto.randomUUID(),
+            onsessioninitialized: (sid: string) => {
+              sessions.set(sid, { server, transport });
+            },
+          });
+          transport.onclose = () => {
+            const sid = transport.sessionId;
+            if (sid) sessions.delete(sid);
+            void server.close();
+          };
+          await server.connect(transport);
+          await transport.handleRequest(req, res, parsedBody);
+          return;
+        }
+        // Stateful, but no live session and not an initialize → the client must
+        // initialize (to obtain a session id) before sending other requests.
+        rpcError(res, null, -32600, 'Missing or unknown Mcp-Session-Id — send initialize first');
+        return;
+      }
+      const reqServer = createMcpServer(config);
+      const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+      res.on('close', () => {
+        void transport.close();
+        void reqServer.close();
+      });
+      await reqServer.connect(transport);
+      await transport.handleRequest(req, res, parsedBody);
+    });
+  }
+
+  const httpServer = http.createServer(async (req, res) => {
+    const url = new URL(req.url ?? '/', `http://localhost:${port}`);
+    const method = req.method ?? 'GET';
+
+    /* ── Authentication ─────────────────────────────────────────────
+     * Every endpoint except /health, /ready{{#if hasOAuth}}, and the public
+     * OAuth metadata{{/if}} requires a valid bearer token when MCP_AUTH_TOKEN
+     * is set. This is the in-container line of defense; the hosting backend
+     * also validates before proxying. */
+    const isPublicPath =
+      url.pathname === '/health' ||
+      url.pathname === '/ready'{{#if hasOAuth}} ||
+      url.pathname === '/.well-known/oauth-authorization-server'{{/if}};
+    if (!isPublicPath && !isAuthorized(req, authToken)) {
+      log('error', 'Unauthorized request rejected', { path: url.pathname });
+      res.writeHead(401, {
+        'Content-Type': 'application/json',
+        'WWW-Authenticate': 'Bearer',
+      });
+      res.end(JSON.stringify({ error: 'Unauthorized: missing or invalid bearer token' }));
+      return;
+    }
+
+    /* ── Routing-header observability (SEP-2243, additive) ─────────── */
+    const mcpMethod = req.headers['mcp-method'];
+    const mcpName = req.headers['mcp-name'];
+    if (mcpMethod || mcpName) {
+      log('info', 'mcp-meta-headers', { mcpMethod, mcpName, path: url.pathname });
+    }
+
+{{#if hasOAuth}}
+    /* ── OAuth Authorization Server Metadata (RFC 8414) ─────────────
+     * Public discovery endpoint (the 2026-07-28 auth changes clarify
+     * .well-known discovery; DCR is retained, not replaced). */
+    if (url.pathname === '/.well-known/oauth-authorization-server') {
+      if (method !== 'GET') {
+        res.writeHead(405, { Allow: 'GET' });
+        res.end();
+        return;
+      }
+      const authorizationUrl = config.oauth2AuthorizationUrl;
+      const tokenUrl = config.oauth2TokenUrl;
+      if (!authorizationUrl || !tokenUrl) {
+        sendJson(res, 503, { error: 'OAuth is not configured' });
+        return;
+      }
+      const proto = req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http';
+      const issuer = allowedOrigin ?? `${proto}://${req.headers.host ?? 'localhost'}`;
+      sendJson(
+        res,
+        200,
+        getAuthServerMetadata(
+          {
+            clientId: config.oauth2ClientId ?? '',
+            clientSecret: config.oauth2ClientSecret,
+            authorizationUrl,
+            tokenUrl,
+            scopes: [],
+            redirectUri: config.oauth2RedirectUri ?? '',
+          },
+          issuer,
+        ),
+      );
+      return;
+    }
+
+{{/if}}
+{{#if hasAsyncTools}}
+    /* ── Task management REST routes (retained during the grace period) ── */
+    if (handleTaskSse(req, res, url)) return;
+    if (handleTaskRoutes(req, res, url)) return;
+
+{{/if}}
+    if (url.pathname === '/mcp') {
+      /* Origin validation (DNS-rebinding protection per MCP spec) */
+      const origin = req.headers.origin;
+      if (allowedOrigin) {
+        if (origin && origin !== allowedOrigin) {
+          log('error', 'Origin rejected', { origin, allowedOrigin });
+          res.writeHead(403, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Forbidden: invalid origin' }));
+          return;
+        }
+      } else if (origin) {
+        /* No allowlist configured but Origin header present — reject cross-origin requests */
+        log('error', 'Cross-origin request rejected (ALLOWED_ORIGIN not set)', { origin });
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Forbidden: ALLOWED_ORIGIN not configured' }));
+        return;
+      }
+
+      /* POST carries a JSON-RPC body: peek for server/discover + tasks/* and
+       * forward the parsed body to the transport. GET/DELETE (SSE stream /
+       * session teardown) pass straight through. */
+      if (method === 'POST') {
+        const raw = await readBody(req);
+        if (raw === null) {
+          rpcError(res, null, -32600, 'Request body too large');
+          return;
+        }
+        if (raw.length === 0) {
+          rpcError(res, null, -32600, 'Empty request body');
+          return;
+        }
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(raw.toString('utf-8'));
+        } catch {
+          rpcError(res, null, -32700, 'Parse error');
+          return;
+        }
+
+        /* Intercept single-object JSON-RPC extension methods the SDK doesn't
+         * dispatch yet. Batches are forwarded untouched. */
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          const rpcMethod = (parsed as { method?: unknown }).method;
+          const rpcId = (parsed as { id?: unknown }).id;
+          if (rpcMethod === 'server/discover') {
+            sendJson(res, 200, buildDiscoverResult(rpcId));
+            return;
+          }
+{{#if hasAsyncTools}}
+          if (typeof rpcMethod === 'string' && rpcMethod.startsWith('tasks/')) {
+            const handled = handleTaskRpc(rpcMethod, (parsed as { params?: unknown }).params, rpcId);
+            if (handled) {
+              sendJson(res, 200, handled);
+              return;
+            }
+          }
+{{/if}}
+        }
+
+        await dispatchToTransport(req, res, parsed);
+        return;
+      }
+
+      await dispatchToTransport(req, res);
+    } else if (url.pathname === '/health') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ status: 'ok' }));
+    } else if (url.pathname === '/ready') {
+      if (isReady) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ status: 'ready' }));
+      } else {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ status: 'not ready' }));
+      }
+    } else {
+      res.writeHead(404);
+      res.end('Not found');
+    }
+  });
+
+  // Sessions are created lazily on `initialize` (stateful) or per request
+  // (stateless), so readiness gates on the listener being up in both modes.
+  httpServer.listen(port, () => {
+    isReady = true;
+    log('info', 'MCP server running', {
+      name: '{{serverName}}',
+      port,
+      endpoint: '/mcp',
+      mode: stateful ? 'stateful' : 'stateless',
+    });
+  });
+
+  /* ── Graceful shutdown ─────────────────────────────────────────────── */
+
+  process.on('SIGTERM', () => {
+    log('info', 'SIGTERM received, shutting down');
+    isReady = false;
+
+    httpServer.close(async () => {
+      try {
+        // Close every live session's server + transport.
+        for (const { server, transport } of sessions.values()) {
+          await transport.close().catch(() => {});
+          await server.close();
+        }
+        sessions.clear();
+      } catch (err) {
+        log('error', 'Error closing MCP server', { err: String(err) });
+      }
+      log('info', 'Server closed');
+      process.exit(0);
+    });
+
+    /* Force exit after 5 seconds if in-flight requests don't complete */
+    setTimeout(() => {
+      log('error', 'Shutdown timed out after 5 s, forcing exit');
+      process.exit(1);
+    }, 5000).unref();
+  });
+} else {
+  const server = createMcpServer(config);
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+  log('info', 'MCP server running on stdio', { name: '{{serverName}}' });
+}

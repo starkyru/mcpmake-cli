@@ -1,0 +1,105 @@
+/**
+ * Server-Sent Events endpoint for real-time task status notifications.
+ */
+
+import type { IncomingMessage, ServerResponse } from 'node:http';
+import { taskEvents, type TaskStatusChangeEvent } from './task-manager.js';
+
+interface SseConnection {
+  res: ServerResponse;
+  taskIdFilter: string | null;
+}
+
+const connections = new Set<SseConnection>();
+
+const HEARTBEAT_INTERVAL_MS = 30000;
+let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+
+function ensureHeartbeat(): void {
+  if (heartbeatTimer) return;
+  heartbeatTimer = setInterval(() => {
+    for (const conn of connections) {
+      if (!conn.res.writableEnded) {
+        conn.res.write(':ping\n\n');
+      }
+    }
+  }, HEARTBEAT_INTERVAL_MS);
+  heartbeatTimer.unref();
+}
+
+function stopHeartbeatIfEmpty(): void {
+  if (connections.size === 0 && heartbeatTimer) {
+    clearInterval(heartbeatTimer);
+    heartbeatTimer = null;
+  }
+}
+
+function broadcast(eventName: string, data: unknown, taskId: string): void {
+  const payload = `event: ${eventName}\ndata: ${JSON.stringify(data)}\n\n`;
+  for (const conn of connections) {
+    if (conn.res.writableEnded) continue;
+    if (conn.taskIdFilter && conn.taskIdFilter !== taskId) continue;
+    conn.res.write(payload);
+  }
+}
+
+/* Subscribe to task status changes and broadcast SSE events */
+taskEvents.on('statusChange', (event: TaskStatusChangeEvent) => {
+  const { task } = event;
+
+  broadcast('task.status', {
+    taskId: task.id,
+    status: task.status,
+    updatedAt: task.updatedAt,
+  }, task.id);
+
+  if (task.status === 'completed') {
+    broadcast('task.completed', {
+      taskId: task.id,
+      status: 'completed',
+      result: task.result,
+    }, task.id);
+  } else if (task.status === 'failed') {
+    broadcast('task.failed', {
+      taskId: task.id,
+      status: 'failed',
+      error: task.error,
+    }, task.id);
+  }
+});
+
+/**
+ * Handle the SSE endpoint: GET /tasks/events
+ * Returns true if the request was handled.
+ */
+export function handleTaskSse(
+  req: IncomingMessage,
+  res: ServerResponse,
+  url: URL,
+): boolean {
+  if (url.pathname !== '/tasks/events' || (req.method ?? 'GET') !== 'GET') {
+    return false;
+  }
+
+  const taskIdFilter = url.searchParams.get('taskId') ?? null;
+
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    Connection: 'keep-alive',
+  });
+
+  // Initial comment to confirm connection
+  res.write(':connected\n\n');
+
+  const conn: SseConnection = { res, taskIdFilter };
+  connections.add(conn);
+  ensureHeartbeat();
+
+  req.on('close', () => {
+    connections.delete(conn);
+    stopHeartbeatIfEmpty();
+  });
+
+  return true;
+}

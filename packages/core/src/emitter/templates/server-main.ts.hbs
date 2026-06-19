@@ -1,0 +1,40 @@
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+{{#if hasStaticTools}}
+import { registerAllTools } from './tools/index.js';
+{{/if}}
+{{#if hasDynamicDiscovery}}
+import { registerDiscoveryTools } from './discovery.js';
+{{/if}}
+{{#if hasResources}}
+import { registerAllResources } from './resources.js';
+{{/if}}
+{{#if hasPrompts}}
+import { registerAllPrompts } from './prompts.js';
+{{/if}}
+import { loadConfig } from './config.js';
+
+const config = loadConfig();
+
+const server = new McpServer({
+  name: '{{serverName}}',
+  version: '{{serverVersion}}',
+});
+
+{{#if hasStaticTools}}
+registerAllTools(server, config);
+{{/if}}
+{{#if hasDynamicDiscovery}}
+registerDiscoveryTools(server, config);
+{{/if}}
+{{#if hasResources}}
+registerAllResources(server, config);
+{{/if}}
+{{#if hasPrompts}}
+registerAllPrompts(server);
+{{/if}}
+
+const transport = new StdioServerTransport();
+await server.connect(transport);
+
+console.error('{{serverName}} MCP server running on stdio');
