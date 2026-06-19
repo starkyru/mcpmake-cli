@@ -16,13 +16,31 @@
  */
 
 import os from 'node:os';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { consola } from 'consola';
 import { logger } from './logger.js';
 import { loadConfig, globalConfig } from '../config/mcpmake-config.js';
 import { DEFAULT_PRICING_SERVER } from '../pricing.js';
 
-/** Keep in sync with `meta.version` in src/index.ts. */
-const CLI_VERSION = '0.1.0';
+/**
+ * Read this package's version from its own package.json at runtime so the
+ * reported version never drifts from the published one. `package.json` always
+ * sits two levels up from the compiled `dist/utils/fail.js` (and from this
+ * source file), and npm always ships it. Best-effort: this runs on the failure
+ * path, so any read/parse error degrades to `'unknown'` rather than throwing.
+ */
+function readCliVersion(): string {
+  try {
+    const pkgPath = fileURLToPath(new URL('../../package.json', import.meta.url));
+    const pkg = JSON.parse(readFileSync(pkgPath, 'utf8')) as { version?: unknown };
+    return typeof pkg.version === 'string' ? pkg.version : 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
+
+const CLI_VERSION = readCliVersion();
 
 /** How long to wait for the report POST before giving up (never blocks longer). */
 const REPORT_TIMEOUT_MS = 4_000;

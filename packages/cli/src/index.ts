@@ -1,5 +1,23 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { defineCommand, runMain } from 'citty';
 import { logger } from '@mcpmake/core';
+
+/**
+ * Read this package's version from its own package.json at runtime so `--version`
+ * never drifts from the published one. `package.json` sits one level up from the
+ * compiled `dist/index.js` (and from this source file), and npm always ships it.
+ * Best-effort: degrade to `'unknown'` rather than crashing CLI startup.
+ */
+function readVersion(): string {
+  try {
+    const pkgPath = fileURLToPath(new URL('../package.json', import.meta.url));
+    const pkg = JSON.parse(readFileSync(pkgPath, 'utf8')) as { version?: unknown };
+    return typeof pkg.version === 'string' ? pkg.version : 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
 import openapiCommand from './commands/from/openapi.js';
 import harCommand from './commands/from/har.js';
 import urlCommand from './commands/from/url.js';
@@ -37,7 +55,7 @@ const fromCommand = defineCommand({
 const main = defineCommand({
   meta: {
     name: 'mcpmake',
-    version: '0.1.0',
+    version: readVersion(),
     description: 'Generate MCP servers from API specifications',
   },
   subCommands: {
