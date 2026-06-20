@@ -28,6 +28,9 @@ import stainlessCommand from './commands/from/stainless.js';
 import verifyCommand from './commands/verify.js';
 import updateCommand from './commands/update.js';
 import deployCommand from './commands/deploy.js';
+import loginCommand from './commands/login.js';
+import logoutCommand from './commands/logout.js';
+import whoamiCommand from './commands/whoami.js';
 import publishCommand from './commands/publish.js';
 import mergeCommand from './commands/merge.js';
 import lintCommand from './commands/lint.js';
@@ -67,6 +70,9 @@ const main = defineCommand({
     merge: mergeCommand,
     verify: verifyCommand,
     update: updateCommand,
+    login: loginCommand,
+    logout: logoutCommand,
+    whoami: whoamiCommand,
     deploy: deployCommand,
     publish: withUpsellFooter(publishCommand),
     lint: lintCommand,

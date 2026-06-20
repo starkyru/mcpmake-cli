@@ -5,6 +5,7 @@ import http from 'node:http';
 import https from 'node:https';
 import { logger } from '@mcpmake/core';
 import { fail } from '@mcpmake/core';
+import { loadCredentials, resolveDeployToken } from '../auth/credentials.js';
 
 const MAX_SPEC_SIZE = 5 * 1024 * 1024; // 5 MB
 
@@ -27,17 +28,16 @@ export default defineConfigurableCommand('deploy', {
     server: {
       type: 'string',
       alias: 's',
-      description: 'Cloud server URL',
-      default: 'http://localhost:3001',
+      description: 'Cloud server URL (defaults to the one you logged in to)',
     },
     token: {
       type: 'string',
       alias: 't',
-      description: 'Admin token (or set MCPMAKE_ADMIN_TOKEN) for gated backends',
+      description: 'Deploy token (mfd_…). Usually unnecessary — run `mcpmake login` first',
     },
     insecure: {
       type: 'boolean',
-      description: 'Allow sending the admin token to a non-HTTPS, non-localhost target',
+      description: 'Allow sending the deploy token to a non-HTTPS, non-localhost target',
       default: false,
     },
     'show-token': {
@@ -69,8 +69,14 @@ export default defineConfigurableCommand('deploy', {
       await fail('Invalid file type. Accepted: .yaml, .yml, .json, .har');
     }
 
+    // Resolve the target + credential: an explicit --server wins, else the
+    // backend the user logged in to, else the local dev default.
+    const stored = await loadCredentials();
+    const serverUrl = (args.server ?? stored?.serverUrl ?? 'http://localhost:3001').replace(
+      /\/+$/,
+      '',
+    );
     logger.info(`Deploying spec: ${specPath}`);
-    const serverUrl = args.server;
     logger.info(`Target: ${serverUrl}`);
 
     // Read the spec file
@@ -101,15 +107,34 @@ export default defineConfigurableCommand('deploy', {
 
     const body = Buffer.concat(parts);
 
-    const adminToken = args.token ?? process.env.MCPMAKE_ADMIN_TOKEN;
+    // Per-user deploy token from `mcpmake login` (or --token / MCPMAKE_DEPLOY_TOKEN
+    // for CI). No admin token is ever used here.
+    const token = resolveDeployToken({ explicit: args.token, serverUrl, stored });
 
-    // Guard the credential channel: refuse to send the admin token over an
+    // A remote backend requires a deploy token (the tokenless path is loopback-
+    // only on the server). Fail early with a helpful message instead of a 403.
+    if (!token) {
+      let remote = false;
+      try {
+        remote = !isLoopbackHost(new URL(serverUrl).hostname);
+      } catch {
+        remote = false;
+      }
+      if (remote) {
+        return await fail(
+          'Not logged in. Run `mcpmake login` first ' +
+            '(or pass --token mfd_… / set MCPMAKE_DEPLOY_TOKEN for CI).',
+        );
+      }
+    }
+
+    // Guard the credential channel: refuse to send the deploy token over an
     // unencrypted, non-loopback link unless the user explicitly opts in.
-    if (adminToken) {
+    if (token) {
       const insecureChannel = await assertTokenChannel(serverUrl, args.insecure ?? false);
       if (insecureChannel) {
         console.warn(
-          `WARNING: Sending the admin token to ${serverUrl} over an unencrypted channel. ` +
+          `WARNING: Sending the deploy token to ${serverUrl} over an unencrypted channel. ` +
             'The credential is exposed in transit; use HTTPS in production.',
         );
       }
@@ -119,7 +144,7 @@ export default defineConfigurableCommand('deploy', {
     logger.info('Uploading spec...');
 
     try {
-      const result = await postMultipart(serverUrl, '/api/servers', boundary, body, adminToken);
+      const result = await postMultipart(serverUrl, '/api/servers', boundary, body, token);
 
       logger.success('Server deployed!');
       logger.info('');
@@ -181,7 +206,7 @@ async function assertTokenChannel(serverUrl: string, insecure: boolean): Promise
   if (insecure || process.env.MCPMAKE_INSECURE === '1') return true;
 
   return fail(
-    `Refusing to send the admin token to ${serverUrl} over an unencrypted (non-HTTPS) channel. ` +
+    `Refusing to send the deploy token to ${serverUrl} over an unencrypted (non-HTTPS) channel. ` +
       'Use an https:// URL, or pass --insecure (or set MCPMAKE_INSECURE=1) to override for trusted networks.',
   );
 }
@@ -216,7 +241,7 @@ function postMultipart(
   path: string,
   boundary: string,
   body: Buffer,
-  adminToken?: string,
+  token?: string,
 ): Promise<DeployResult> {
   return new Promise((resolve, reject) => {
     const url = new URL(path, serverUrl);
@@ -226,8 +251,8 @@ function postMultipart(
       'Content-Type': `multipart/form-data; boundary=${boundary}`,
       'Content-Length': body.length,
     };
-    if (adminToken) {
-      headers['Authorization'] = `Bearer ${adminToken}`;
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
     }
 
     const req = transport.request(
