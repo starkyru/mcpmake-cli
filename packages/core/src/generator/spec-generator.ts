@@ -50,10 +50,12 @@ export async function generateSpecFromDescription(options: GenerateSpecOptions):
     throw new Error('Unexpected response format from Claude');
   }
 
-  // Extract JSON — strip markdown fences if present
-  let json = content.text.trim();
-  if (json.startsWith('```')) {
-    json = json.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
+  // OpenAPI specs are recursive, so structured outputs can't enforce the shape.
+  // Instead, extract the first balanced JSON object — robust to markdown fences,
+  // leading/trailing prose, and braces that appear inside string values.
+  const json = extractJsonObject(content.text);
+  if (json === null) {
+    throw new Error('Claude did not return a JSON object. Try again or refine your description.');
   }
 
   // Validate it's parseable JSON
@@ -64,4 +66,36 @@ export async function generateSpecFromDescription(options: GenerateSpecOptions):
   }
 
   return json;
+}
+
+/**
+ * Return the substring spanning the first balanced top-level `{...}` object in
+ * `text`, or null if none. String-aware (ignores braces inside quoted strings)
+ * and linear-time — no regex, so no catastrophic-backtracking risk.
+ */
+function extractJsonObject(text: string): string | null {
+  const start = text.indexOf('{');
+  if (start === -1) return null;
+
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === '"') inString = false;
+    } else if (ch === '"') {
+      inString = true;
+    } else if (ch === '{') {
+      depth++;
+    } else if (ch === '}') {
+      depth--;
+      if (depth === 0) return text.slice(start, i + 1);
+    }
+  }
+
+  return null;
 }

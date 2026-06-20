@@ -1,6 +1,34 @@
 import Anthropic from '@anthropic-ai/sdk';
+import { jsonSchemaOutputFormat } from '@anthropic-ai/sdk/helpers/json-schema';
 import type { OperationDescriptor } from '../types/index.js';
 import { logger } from '../utils/logger.js';
+
+/**
+ * Structured-output schema for the naming response. Using a strict schema means
+ * the model is constrained to return valid, parseable JSON of exactly this
+ * shape — no markdown fences, no prose, no hand-rolled extraction. Flat (no
+ * recursion), so it is fully supported by the structured-outputs API.
+ */
+const NAMING_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['improvements'],
+  properties: {
+    improvements: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['index', 'operationId', 'summary'],
+        properties: {
+          index: { type: 'integer' },
+          operationId: { type: 'string' },
+          summary: { type: 'string' },
+        },
+      },
+    },
+  },
+} as const;
 
 /**
  * Use Claude to generate better tool names and descriptions
@@ -28,30 +56,24 @@ export async function improveToolNames(
     tags: op.tags,
   }));
 
-  const prompt = `Given these API operations captured from network traffic, suggest better operationId names and descriptions. Return a JSON array with one object per operation: { "index": number, "operationId": "camelCase name", "summary": "one-line description" }. Keep names concise (camelCase, under 40 chars). Only output JSON, no explanation.
+  const prompt = `Given these API operations captured from network traffic, suggest better operationId names and descriptions. Return one object per operation with its zero-based "index" in the list below, a camelCase "operationId" (under 40 chars), and a one-line "summary".
 
 Operations:
 ${JSON.stringify(operationSummaries, null, 2)}`;
 
   try {
     logger.info('Improving tool names with Claude...');
-    const message = await client.messages.create({
+    const message = await client.messages.parse({
       model: model ?? 'claude-sonnet-4-6',
       max_tokens: 2048,
       messages: [{ role: 'user', content: prompt }],
+      output_config: { format: jsonSchemaOutputFormat(NAMING_SCHEMA) },
     });
 
-    const content = message.content[0];
-    if (content.type !== 'text') return operations;
+    const parsed = message.parsed_output;
+    if (!parsed) return operations;
 
-    let json = content.text.trim();
-    if (json.startsWith('```')) {
-      json = json.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
-    }
-
-    const improvements: Array<{ index: number; operationId: string; summary: string }> =
-      JSON.parse(json);
-
+    const improvements = parsed.improvements;
     const result = operations.map((op, i) => {
       const improvement = improvements.find((imp) => imp.index === i);
       if (!improvement) return op;
