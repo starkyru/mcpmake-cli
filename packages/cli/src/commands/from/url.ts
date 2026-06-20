@@ -16,7 +16,7 @@ import {
   resolveTransport,
   printWorkerNextSteps,
 } from './target-support.js';
-import { apiKeyArg, applyApiKey } from '../api-key.js';
+import { apiKeyArg, applyApiKey, modelArg } from '../api-key.js';
 import { logger } from '@mcpmake/core';
 import { fail } from '@mcpmake/core';
 import { confirmOperations } from '@mcpmake/core';
@@ -96,6 +96,7 @@ export default defineCommand({
       default: false,
     },
     'api-key': apiKeyArg,
+    model: modelArg,
     'resource-names': {
       type: 'boolean',
       description:
@@ -167,7 +168,7 @@ export default defineCommand({
 
     // LLM-assisted naming
     if (args['improve-names']) {
-      allOperations = await improveToolNames(allOperations);
+      allOperations = await improveToolNames(allOperations, args.model);
     }
 
     // Apply include/exclude filters

@@ -15,7 +15,7 @@ import { buildAllTools } from '@mcpmake/core';
 import { emitSiteProject } from '@mcpmake/core';
 import { logger } from '@mcpmake/core';
 import { fail } from '@mcpmake/core';
-import { apiKeyArg, applyApiKey } from '../api-key.js';
+import { apiKeyArg, applyApiKey, modelArg } from '../api-key.js';
 import type { SiteProjectManifest, BrowserConfig, SiteToolDefinition } from '@mcpmake/core';
 
 function toPackageName(name: string): string {
@@ -121,6 +121,7 @@ export default defineConfigurableCommand('website', {
         'Goal-directed crawl: use an LLM to navigate toward a goal instead of BFS crawling (requires ANTHROPIC_API_KEY)',
     },
     'api-key': apiKeyArg,
+    model: modelArg,
   },
   async run({ args }) {
     applyApiKey(args);
@@ -156,6 +157,7 @@ export default defineConfigurableCommand('website', {
         goal,
         maxSteps: maxPages,
         headless: args.headless ?? false,
+        model: args.model,
       });
       siteDescriptor = result.siteDescriptor;
       screenshots = result.screenshots;
@@ -190,7 +192,7 @@ export default defineConfigurableCommand('website', {
 
     // Semantic analysis (optional, requires ANTHROPIC_API_KEY)
     if (args['improve-names']) {
-      siteDescriptor.pages = await analyzeSemantics(siteDescriptor.pages, screenshots);
+      siteDescriptor.pages = await analyzeSemantics(siteDescriptor.pages, screenshots, args.model);
     }
 
     // Auth flow detection

@@ -36,3 +36,15 @@ export function applyApiKey(args: Record<string, unknown>): void {
   }
   process.env.ANTHROPIC_API_KEY = key;
 }
+
+/**
+ * Citty arg definition for selecting the LLM model — spread into an LLM-using
+ * command's `args` block. Forwarded to the core helpers, which resolve it
+ * against the live Models API (a bad id surfaces as a clear API error).
+ */
+export const modelArg = {
+  type: 'string' as const,
+  alias: 'm' as const,
+  description:
+    'LLM model to use (default: auto-resolved; prefers claude-sonnet-4-6 / claude-haiku-4-5)',
+};

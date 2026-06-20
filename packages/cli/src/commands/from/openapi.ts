@@ -14,7 +14,7 @@ import { buildResources, buildPrompts } from '@mcpmake/core';
 import { applyClientCompat, type ClientMode } from '@mcpmake/core';
 import { emitProject, emitPythonProject } from '@mcpmake/core';
 import { printWorkerNextSteps } from './target-support.js';
-import { apiKeyArg, applyApiKey } from '../api-key.js';
+import { apiKeyArg, applyApiKey, modelArg } from '../api-key.js';
 import { generateMcpb } from '@mcpmake/core';
 import { getProvider, getProviderNames } from '@mcpmake/core';
 import { logger } from '@mcpmake/core';
@@ -122,6 +122,7 @@ export default defineConfigurableCommand('openapi', {
       default: false,
     },
     'api-key': apiKeyArg,
+    model: modelArg,
     'resource-names': {
       type: 'boolean',
       description:
@@ -191,7 +192,7 @@ export default defineConfigurableCommand('openapi', {
 
     // LLM-assisted naming
     if (args['improve-names']) {
-      operations = await improveToolNames(operations);
+      operations = await improveToolNames(operations, args.model);
     }
 
     const filtered = filterOperations(operations, {

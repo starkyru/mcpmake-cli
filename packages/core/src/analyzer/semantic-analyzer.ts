@@ -76,6 +76,7 @@ const MAX_TOKENS = 4096;
 export async function analyzeSemantics(
   pages: PageDescriptor[],
   _screenshots?: Map<string, Buffer>,
+  model?: string,
 ): Promise<PageDescriptor[]> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
@@ -84,7 +85,7 @@ export async function analyzeSemantics(
   }
 
   const client = new Anthropic({ apiKey });
-  const model = await resolveModel(client, 'fast');
+  const resolvedModel = await resolveModel(client, 'fast', model);
 
   // Build compact page summaries for the prompt
   const summaries: PageSummary[] = pages.map((page, pageIndex) => ({
@@ -146,7 +147,7 @@ ${JSON.stringify(summaries, null, 2)}`;
   try {
     logger.info('Analyzing page semantics with LLM...');
     const message = await client.messages.create({
-      model,
+      model: resolvedModel,
       max_tokens: MAX_TOKENS,
       messages: [{ role: 'user', content: prompt }],
     });

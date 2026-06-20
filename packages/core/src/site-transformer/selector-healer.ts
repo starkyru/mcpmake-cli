@@ -14,6 +14,7 @@ export async function healBrokenSelector(
   accessibilityTree: string,
   brokenSelector: SelectorSet,
   elementDescription: string,
+  model?: string,
 ): Promise<SelectorSet | null> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
@@ -59,7 +60,7 @@ ${safeTree}`;
   try {
     logger.info(`Healing broken selector: ${brokenSelector.primary}`);
     const message = await client.messages.create({
-      model: await resolveModel(client, 'fast'),
+      model: await resolveModel(client, 'fast', model),
       max_tokens: 512,
       messages: [{ role: 'user', content: prompt }],
     });

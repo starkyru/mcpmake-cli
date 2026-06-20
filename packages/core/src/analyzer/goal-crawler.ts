@@ -29,6 +29,7 @@ export interface GoalCrawlOptions {
   maxSteps?: number;
   headless?: boolean;
   viewport?: { width: number; height: number };
+  model?: string;
 }
 
 /**
@@ -46,7 +47,7 @@ export async function goalDirectedCrawl(options: GoalCrawlOptions): Promise<Craw
   }
 
   const client = new Anthropic({ apiKey });
-  const model = await resolveModel(client, 'fast');
+  const model = await resolveModel(client, 'fast', options.model);
 
   // Sanitize site-derived text (page titles, link labels/hrefs) before placing
   // it in the LLM prompt: strip control characters and bound the length so a
