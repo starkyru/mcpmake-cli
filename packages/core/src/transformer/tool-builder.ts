@@ -49,7 +49,10 @@ export function buildToolDefinition(op: OperationDescriptor): ToolDefinition {
 
   return {
     name: mcpName ? sanitizeIdentifier(mcpName) : toToolName(op.operationId),
-    title: mcpName ? mcpName : toToolTitle(op.operationId),
+    // Escaped because it is emitted into a single-quoted string literal
+    // (`title: '<title>'`) in the tool-handler templates. x-mcp-name is
+    // untrusted spec input, and the operationId fallback is now slug-safe.
+    title: escapeStringLiteral(mcpName ? mcpName : toToolTitle(op.operationId)),
     description: mcpDesc ? escapeTemplateLiteral(mcpDesc) : description,
     inputSchemaCode,
     outputSchemaCode,

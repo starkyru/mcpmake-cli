@@ -38,27 +38,12 @@ const providers: Record<string, ProviderConfig> = {
     auth: { type: 'bearer', envVar: 'SLACK_TOKEN' },
     suggestedIncludes: ['chat', 'channels', 'users', 'files'],
   },
-  notion: {
-    name: 'notion',
-    description: 'Notion API',
-    specUrl: 'https://bump.sh/notion-hq/doc/notion/specification',
-    baseUrl: 'https://api.notion.com/v1',
-    auth: { type: 'bearer', envVar: 'NOTION_API_KEY', headerName: 'Authorization' },
-  },
-  linear: {
-    name: 'linear',
-    description: 'Linear project management',
-    specUrl: 'https://studio.apollographql.com/public/Linear-API/variant/current/home',
-    baseUrl: 'https://api.linear.app',
-    auth: { type: 'bearer', envVar: 'LINEAR_API_KEY' },
-  },
-  shopify: {
-    name: 'shopify',
-    description: 'Shopify Admin API',
-    specUrl: 'https://shopify.dev/docs/admin-api/rest/reference',
-    baseUrl: 'https://{store}.myshopify.com/admin/api/2024-01',
-    auth: { type: 'bearer', envVar: 'SHOPIFY_ACCESS_TOKEN' },
-  },
+  // NOTE: notion / linear / shopify shortcuts were removed — their `specUrl`s
+  // pointed at HTML documentation or a GraphQL (Apollo) console, not a
+  // machine-readable OpenAPI spec, so `mcpmake from <name>` always failed.
+  // Linear is GraphQL-only (no OpenAPI surface); Notion publishes no official
+  // OpenAPI spec; Shopify's REST reference is HTML. Re-add only with a verified
+  // spec URL that `loadOpenApiSpec` can actually parse.
 };
 
 export function getProvider(name: string): ProviderConfig | undefined {

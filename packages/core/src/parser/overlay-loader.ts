@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { parse as parseYaml } from 'yaml';
 import { logger } from '../utils/logger.js';
+import { isDangerousKey } from '../utils/sanitize.js';
 
 interface OverlayAction {
   target: string;
@@ -87,8 +88,8 @@ function applySingleAction(
     } else {
       // If target doesn't exist, try creating it by setting on parent
       const parent = navigateTo(spec, segments.slice(0, -1));
-      if (parent && typeof parent === 'object') {
-        const lastKey = segments[segments.length - 1];
+      const lastKey = segments[segments.length - 1];
+      if (parent && typeof parent === 'object' && !isDangerousKey(lastKey)) {
         (parent as Record<string, unknown>)[lastKey] = action.update;
         logger.info(`Overlay: created ${segments.join('.')}`);
       } else {
@@ -188,6 +189,8 @@ function navigateTo(obj: unknown, segments: string[]): unknown {
     if (current === null || current === undefined || typeof current !== 'object') {
       return undefined;
     }
+    // Never traverse into prototype-pollution keys from an untrusted overlay.
+    if (isDangerousKey(segment)) return undefined;
     current = (current as Record<string, unknown>)[segment];
   }
   return current;
@@ -195,6 +198,10 @@ function navigateTo(obj: unknown, segments: string[]): unknown {
 
 function deepMerge(target: Record<string, unknown>, source: Record<string, unknown>): void {
   for (const [key, value] of Object.entries(source)) {
+    // Skip prototype-pollution keys (`__proto__`, `constructor`, `prototype`).
+    // Both YAML and JSON parse a literal `__proto__` as an own enumerable key,
+    // so without this guard `update: { __proto__: {...} }` pollutes the prototype.
+    if (isDangerousKey(key)) continue;
     if (
       typeof value === 'object' &&
       value !== null &&

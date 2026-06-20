@@ -22,9 +22,38 @@ export interface WorkflowOptions {
   version: string;
 }
 
-/** Shell-quote a value for safe interpolation into a `run:` step. */
+/** Relative file paths (spec, output dir). */
+const SAFE_PATH = /^[A-Za-z0-9._/-]+$/;
+/** Server name and npm version/tag. */
+const SAFE_TOKEN = /^[A-Za-z0-9._-]+$/;
+
+/**
+ * Reject values that could break out of the generated shell `run:` step or YAML.
+ * These are operator-supplied (spec path, output dir, server name, version) and
+ * flow into a CI shell command; restricting them to filename/identifier
+ * characters removes every command-substitution / expansion vector.
+ */
+function assertCiSafe(value: string, label: string, pattern: RegExp): void {
+  if (!pattern.test(value)) {
+    throw new Error(
+      `Unsafe ${label} for the CI workflow: "${value}". ` +
+        `Only letters, digits and ${pattern === SAFE_PATH ? '. _ / -' : '. _ -'} are allowed.`,
+    );
+  }
+}
+
+/**
+ * Quote a value for a double-quoted shell string. Escapes backslash first, then
+ * the characters that remain special inside double quotes (`$`, backtick, `"`).
+ * Combined with assertCiSafe this is defense-in-depth against command injection.
+ */
 function q(value: string): string {
-  return `"${value.replace(/"/g, '\\"')}"`;
+  const escaped = value
+    .replace(/\\/g, '\\\\')
+    .replace(/`/g, '\\`')
+    .replace(/\$/g, '\\$')
+    .replace(/"/g, '\\"');
+  return `"${escaped}"`;
 }
 
 /**
@@ -36,6 +65,11 @@ function q(value: string): string {
  * workflow). It also runs `mcpmake verify` for OpenAPI specs.
  */
 export function buildWorkflowYaml(opts: WorkflowOptions): string {
+  assertCiSafe(opts.spec, 'spec path', SAFE_PATH);
+  assertCiSafe(opts.output, 'output directory', SAFE_PATH);
+  assertCiSafe(opts.version, 'mcpmake version', SAFE_TOKEN);
+  if (opts.name !== undefined) assertCiSafe(opts.name, 'server name', SAFE_TOKEN);
+
   const runner = `npx --yes mcpmake@${opts.version}`;
   const genFlags = [
     `-o ${q(opts.output)}`,
@@ -151,6 +185,22 @@ const initCommand = defineCommand({
     }
     if (!TRANSPORTS.has(transport)) {
       await fail(`Invalid --transport "${transport}". Use one of: stdio, http.`);
+    }
+
+    // Reject shell/YAML-unsafe values up front with a friendly message (the same
+    // checks are enforced inside buildWorkflowYaml as a hard safety net).
+    const version = String(args['mcpmake-version']);
+    if (!SAFE_PATH.test(args.spec)) {
+      await fail(`Unsafe spec path "${args.spec}". Use a plain relative path (letters, digits, . _ / -).`);
+    }
+    if (!SAFE_PATH.test(String(args.output))) {
+      await fail(`Unsafe --output "${args.output}". Use a plain relative path (letters, digits, . _ / -).`);
+    }
+    if (args.name !== undefined && !SAFE_TOKEN.test(String(args.name))) {
+      await fail(`Unsafe --name "${args.name}". Use letters, digits, . _ - only.`);
+    }
+    if (!SAFE_TOKEN.test(version)) {
+      await fail(`Unsafe --mcpmake-version "${version}". Use letters, digits, . _ - only.`);
     }
 
     const workflowPath = resolve('.github/workflows/mcpmake.yaml');

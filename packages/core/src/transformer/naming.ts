@@ -1,9 +1,9 @@
 export function toToolName(operationId: string): string {
-  return toSnakeCase(operationId);
+  return toSnakeCase(operationId) || 'tool';
 }
 
 export function toToolTitle(operationId: string): string {
-  const snake = toSnakeCase(operationId);
+  const snake = toSnakeCase(operationId) || 'tool';
   return snake
     .split('_')
     .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
@@ -11,24 +11,34 @@ export function toToolTitle(operationId: string): string {
 }
 
 export function toFileName(operationId: string): string {
-  return toSnakeCase(operationId)
-    .replace(/_/g, '-')
-    .replace(/\.\./g, '')
-    .replace(/[/\\]/g, '')
-    .replace(/[^a-z0-9\-]/g, '');
+  return (
+    toSnakeCase(operationId)
+      .replace(/_/g, '-')
+      .replace(/[^a-z0-9\-]/g, '') || 'tool'
+  );
 }
 
 export function toFunctionName(operationId: string): string {
-  const snake = toSnakeCase(operationId);
-  return snake.replace(/_([a-z])/g, (_, c: string) => c.toUpperCase());
+  const snake = toSnakeCase(operationId) || 'tool';
+  const camel = snake.replace(/_([a-z0-9])/g, (_, c: string) => c.toUpperCase());
+  // A function name must be a valid JS identifier — prefix when it would start
+  // with a digit (operationIds like "2fa" snake to "2fa").
+  return /^[A-Za-z_]/.test(camel) ? camel : `_${camel}`;
 }
 
+/**
+ * Normalize to snake_case AND strip to a safe identifier charset `[a-z0-9_]`.
+ * The charset strip is load-bearing for codegen safety: operationIds, tags and
+ * param names flow into generated source as tool names / titles / identifiers,
+ * and an unsanitized `'` or backtick would break out of the emitted literal.
+ */
 function toSnakeCase(str: string): string {
   return str
     .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
     .replace(/([A-Z])([A-Z][a-z])/g, '$1_$2')
     .replace(/[\s\-]+/g, '_')
     .toLowerCase()
+    .replace(/[^a-z0-9_]/g, '_')
     .replace(/^_+|_+$/g, '')
     .replace(/_+/g, '_');
 }

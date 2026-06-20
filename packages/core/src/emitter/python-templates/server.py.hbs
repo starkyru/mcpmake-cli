@@ -3,6 +3,7 @@
 import os
 import json
 import httpx
+from urllib.parse import quote
 from dotenv import load_dotenv
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
@@ -57,11 +58,14 @@ def _headers() -> dict[str, str]:
 
 {{#each tools}}
 @server.tool()
-async def {{functionName}}({{#each pathParams}}{{this}}: str, {{/each}}{{#each queryParams}}{{this}}: str = "", {{/each}}{{#if hasRequestBody}}body: dict | None = None{{/if}}) -> list[TextContent]:
+async def {{functionName}}({{#each pyPathParams}}{{pyName}}: str, {{/each}}{{#each pyQueryParams}}{{pyName}}: str = "", {{/each}}{{#if hasRequestBody}}body: dict | None = None{{/if}}) -> list[TextContent]:
     """{{pyDocstring description}}"""
-    url = f"{BASE_URL}{{{pathTemplate}}}"
-    {{#if queryParams.length}}
-    params = { {{#each queryParams}}"{{this}}": {{this}}, {{/each}} }
+    url = BASE_URL + "{{pyStr pathTemplate}}"
+    {{#each pyPathParams}}
+    url = url.replace("{{pyStr brace}}", quote(str({{pyName}}), safe=""))
+    {{/each}}
+    {{#if pyQueryParams.length}}
+    params = { {{#each pyQueryParams}}"{{pyStr apiName}}": {{pyName}}, {{/each}} }
     params = {k: v for k, v in params.items() if v}
     {{/if}}
     try:

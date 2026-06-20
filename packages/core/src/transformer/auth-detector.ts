@@ -1,5 +1,6 @@
 import type { OpenAPIV3 } from 'openapi-types';
 import type { AuthScheme, EnvVarDescriptor } from '../types/index.js';
+import { sanitizeHeaderName, sanitizeEnvVarName } from '../utils/sanitize.js';
 
 export interface OAuthFlowInfo {
   authorizationUrl?: string;
@@ -48,21 +49,27 @@ export function detectAuthSchemes(
 
   for (const [name, scheme] of entries) {
     if (scheme.type === 'apiKey') {
-      const envVarName = name === renameTarget ? options!.envVarName! : 'API_KEY';
+      const envVarName = sanitizeEnvVarName(
+        name === renameTarget ? options!.envVarName! : 'API_KEY',
+      );
       authSchemes.push({
         type: 'apiKey',
         envVarName,
-        headerName: scheme.name,
+        // scheme.name (the header/query/cookie key) is untrusted spec input and
+        // is emitted into a string literal in the auth/config templates.
+        headerName: sanitizeHeaderName(scheme.name),
         in: scheme.in as 'header' | 'query' | 'cookie',
         description: `API key for ${name}`,
       });
       envVars.push({
         name: envVarName,
-        description: `API key (sent as ${scheme.in} "${scheme.name}")`,
+        description: `API key (sent as ${scheme.in} "${sanitizeHeaderName(scheme.name)}")`,
         required: true,
       });
     } else if (scheme.type === 'http' && scheme.scheme === 'bearer') {
-      const envVarName = name === renameTarget ? options!.envVarName! : 'BEARER_TOKEN';
+      const envVarName = sanitizeEnvVarName(
+        name === renameTarget ? options!.envVarName! : 'BEARER_TOKEN',
+      );
       authSchemes.push({
         type: 'http-bearer',
         envVarName,

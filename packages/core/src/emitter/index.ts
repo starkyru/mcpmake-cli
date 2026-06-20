@@ -10,6 +10,8 @@ import { renderPythonTemplate } from './python-template-loader.js';
 import { renderWorkerTemplate } from './worker-template-loader.js';
 import { buildCatalog } from '../transformer/catalog-builder.js';
 import { logger } from '../utils/logger.js';
+import { sanitizeUrlLiteral, sanitizePyIdentifier } from '../utils/sanitize.js';
+import type { ToolDefinition } from '../types/index.js';
 
 export interface EmitOptions {
   outputDir: string;
@@ -41,6 +43,11 @@ export async function emitProject(manifest: ProjectManifest, options: EmitOption
       `Invalid server name: "${manifest.serverName}". Must match /^[a-z0-9][a-z0-9._-]*$/`,
     );
   }
+
+  // baseUrl is emitted into string literals across TS/Python/TOML/.env targets.
+  // Sanitize once here so a malicious spec/flag value cannot break out of any of
+  // them (lossless for real URLs).
+  manifest = { ...manifest, baseUrl: sanitizeUrlLiteral(manifest.baseUrl) };
 
   if (!SAFE_VERSION_RE.test(manifest.serverVersion)) {
     logger.warn(`Unsafe server version "${manifest.serverVersion}" sanitized to "0.0.0"`);
@@ -179,6 +186,11 @@ export async function emitWorkerProject(
       `Invalid server name: "${manifest.serverName}". Must match /^[a-z0-9][a-z0-9._-]*$/`,
     );
   }
+
+  // baseUrl is emitted into string literals across TS/Python/TOML/.env targets.
+  // Sanitize once here so a malicious spec/flag value cannot break out of any of
+  // them (lossless for real URLs).
+  manifest = { ...manifest, baseUrl: sanitizeUrlLiteral(manifest.baseUrl) };
   if (!SAFE_VERSION_RE.test(manifest.serverVersion)) {
     logger.warn(`Unsafe server version "${manifest.serverVersion}" sanitized to "0.0.0"`);
     manifest = { ...manifest, serverVersion: '0.0.0' };
@@ -277,6 +289,11 @@ export async function emitSiteProject(
     );
   }
 
+  // baseUrl is emitted into string literals across TS/Python/TOML/.env targets.
+  // Sanitize once here so a malicious spec/flag value cannot break out of any of
+  // them (lossless for real URLs).
+  manifest = { ...manifest, baseUrl: sanitizeUrlLiteral(manifest.baseUrl) };
+
   if (!SAFE_VERSION_RE.test(manifest.serverVersion)) {
     logger.warn(`Unsafe server version "${manifest.serverVersion}" sanitized to "0.0.0"`);
     manifest = { ...manifest, serverVersion: '0.0.0' };
@@ -325,6 +342,35 @@ function getSiteToolTemplate(tool: SiteToolDefinition): string {
 }
 
 /**
+ * Build a Python-safe view of a tool. Path/query param names become valid,
+ * de-duplicated Python identifiers (used as function args and locals), while the
+ * original API name is preserved for the URL path token and query-string key.
+ * This lets server.py.hbs build the URL with plain `str.replace()` instead of an
+ * f-string, removing the brace-expression evaluation / breakout vectors.
+ */
+function toPythonToolView(tool: ToolDefinition): Record<string, unknown> {
+  const used = new Set<string>();
+  const uniquePyName = (apiName: string): string => {
+    let base = sanitizePyIdentifier(apiName);
+    let candidate = base;
+    let i = 1;
+    while (used.has(candidate)) candidate = `${base}_${i++}`;
+    used.add(candidate);
+    return candidate;
+  };
+  const pyPathParams = tool.pathParams.map((apiName) => ({
+    apiName,
+    pyName: uniquePyName(apiName),
+    brace: `{${apiName}}`,
+  }));
+  const pyQueryParams = tool.queryParams.map((apiName) => ({
+    apiName,
+    pyName: uniquePyName(apiName),
+  }));
+  return { ...tool, pyPathParams, pyQueryParams };
+}
+
+/**
  * Emit a Python MCP server project.
  * Generates a single server.py file with all tools, plus requirements.txt.
  */
@@ -338,10 +384,16 @@ export async function emitPythonProject(
     );
   }
 
+  // baseUrl is emitted into string literals across TS/Python/TOML/.env targets.
+  // Sanitize once here so a malicious spec/flag value cannot break out of any of
+  // them (lossless for real URLs).
+  manifest = { ...manifest, baseUrl: sanitizeUrlLiteral(manifest.baseUrl) };
+
   const units: CodeUnit[] = [];
 
   const templateData = {
     ...manifest,
+    tools: manifest.tools.map(toPythonToolView),
     authEnvVars: manifest.envVars.filter((v) => v.name !== 'BASE_URL'),
     environmentsJson: environmentsJson(manifest),
   };

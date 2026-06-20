@@ -19,6 +19,7 @@ import type {
 } from '../types/site.js';
 import { buildBrowserLifecycleTools } from './browser-tools.js';
 import { toToolName, toToolTitle, toFileName, toFunctionName } from '../transformer/naming.js';
+import { escapeTemplateLiteral } from '../utils/sanitize.js';
 
 /**
  * Generate all tools from a site descriptor.
@@ -96,9 +97,12 @@ function buildFormTool(
   }
   if (form.submitButton) selectors.push(form.submitButton);
 
-  const description =
+  // Built from untrusted crawled DOM text — emitted into a backtick literal in
+  // the site tool-handler templates, so escape for that context.
+  const description = escapeTemplateLiteral(
     form.description ||
-    `Fill and submit the ${form.semanticName || 'form'} on ${page.title || page.url}`;
+      `Fill and submit the ${form.semanticName || 'form'} on ${page.title || page.url}`,
+  );
 
   return {
     name,
@@ -136,9 +140,10 @@ function buildButtonTool(
   sessionId: z.string().max(64).regex(/^[a-zA-Z0-9_-]+$/).optional().describe('Browser session ID'),
 })`;
 
-  const description =
+  const description = escapeTemplateLiteral(
     button.description ||
-    `Click the "${button.text || button.ariaLabel}" button on ${page.title || page.url}`;
+      `Click the "${button.text || button.ariaLabel}" button on ${page.title || page.url}`,
+  );
 
   return {
     name,
@@ -175,7 +180,7 @@ function buildLinkTool(
   sessionId: z.string().max(64).regex(/^[a-zA-Z0-9_-]+$/).optional().describe('Browser session ID'),
 })`;
 
-  const description = `Navigate to "${link.text}" at ${link.href}`;
+  const description = escapeTemplateLiteral(`Navigate to "${link.text}" at ${link.href}`);
 
   return {
     name,
@@ -207,7 +212,7 @@ function buildNavigationTool(
   return {
     name,
     title: toToolTitle(rawName),
-    description,
+    description: escapeTemplateLiteral(description),
     inputSchemaCode: `z.object({
   sessionId: z.string().max(64).regex(/^[a-zA-Z0-9_-]+$/).optional().describe('Browser session ID'),
 })`,

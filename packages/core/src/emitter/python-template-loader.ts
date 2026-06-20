@@ -6,6 +6,7 @@ import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Handlebars from 'handlebars';
+import { escapePyString } from '../utils/sanitize.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PYTHON_TEMPLATE_DIR = resolve(__dirname, 'python-templates');
@@ -19,6 +20,11 @@ Handlebars.registerHelper('eq', function (a: unknown, b: unknown) {
 Handlebars.registerHelper('pyDocstring', function (str: string) {
   if (!str) return '';
   return str.replace(/"""/g, '\\"\\"\\"').replace(/\\/g, '\\\\');
+});
+
+// Escape a value for embedding in a double-quoted Python string literal.
+Handlebars.registerHelper('pyStr', function (str: unknown) {
+  return escapePyString(String(str ?? ''));
 });
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

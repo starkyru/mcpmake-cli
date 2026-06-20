@@ -27,17 +27,19 @@ export function buildResources(operations: OperationDescriptor[]): ResourceDefin
     );
 
     if (!op.path.includes('{')) {
-      // Static resource — list endpoint
+      // Static resource — list endpoint. `path` is emitted into a backtick URL
+      // literal (`\`${config.baseUrl}<path>\``) in resources.ts.hbs, so escape it.
       resources.push({
         name,
         uri: `api://${name}`,
-        path: op.path,
+        path: escapeTemplateLiteral(op.path),
         description,
       });
     } else {
-      // Template resource — detail endpoint with path params
+      // Template resource — detail endpoint with path params. Param names are
+      // emitted into the single-quoted `uri` literal, so sanitize them.
       const pathParams = op.parameters.filter((p) => p.in === 'path').map((p) => p.name);
-      const uriTemplate = `api://${name}/${pathParams.map((p) => `{${p}}`).join('/')}`;
+      const uriTemplate = `api://${name}/${pathParams.map((p) => `{${sanitizeIdentifier(p)}}`).join('/')}`;
 
       // Pre-compute URL body to avoid Handlebars/curly-brace conflicts.
       // Resource handler receives (uri: URL, extra) — extract params from uri.pathname.
@@ -90,7 +92,9 @@ export function buildPrompts(operations: OperationDescriptor[]): PromptDefinitio
       .map((op) => `- ${toToolName(op.operationId)}: ${op.summary ?? op.path}`)
       .join('\\n');
     prompts.push({
-      name: `${tag}_workflow`,
+      // `name` is emitted into a single-quoted literal; the tag is untrusted
+      // spec input, so derive a slug-safe name from it.
+      name: `${toToolName(tag)}_workflow`,
       description: escapeTemplateLiteral(`Work with ${tag} — available operations`),
       template: escapeTemplateLiteral(
         `You have the following ${tag} tools available:\\n${toolList}\\n\\nWhat would you like to do?`,
