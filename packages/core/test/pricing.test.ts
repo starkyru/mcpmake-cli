@@ -11,7 +11,7 @@ describe('formatPrice', () => {
     expect(formatPrice(FAMILY_A_PRICING.cli)).toBe('Free forever');
     expect(formatPrice(FAMILY_A_PRICING.syncSolo)).toBe('$19/mo');
     expect(formatPrice(FAMILY_A_PRICING.syncTeam)).toBe('$499/mo');
-    expect(formatPrice(FAMILY_A_PRICING.selfHostLicense)).toBe('from $8,000/yr');
+    expect(formatPrice(FAMILY_A_PRICING.enterpriseSupport)).toBe('from $8,000/yr');
     expect(formatPrice(FAMILY_A_PRICING.migration)).toBe('$5,000–$20,000 one-off');
   });
 });

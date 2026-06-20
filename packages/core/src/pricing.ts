@@ -2,7 +2,8 @@
  * Canonical pricing for mcpmake's lead commercial offering ("Family A").
  *
  * Family A is the *non-cloud* product: the local compiler (CLI), the CI sync
- * subscription, the self-hosted license, and done-for-you migration services.
+ * subscription, an enterprise support + indemnity plan, and done-for-you
+ * migration services.
  *
  * Family B (managed cloud hosting) is a separate convenience add-on; its
  * limits and plan enforcement live in the hosting backend, not in this package.
@@ -57,13 +58,17 @@ export const FAMILY_A_PRICING: Record<string, PricePoint> = {
     period: 'monthly',
     summary: 'Multi-repo CI sync, policy checks, support.',
   },
-  selfHostLicense: {
-    id: 'self-host-license',
-    name: 'Self-hosted license',
+  // NB: the CLI is Apache-2.0 — running the generator on your own infra is
+  // already free, so this is NOT a code license. It sells the commercial
+  // wrapper enterprises actually need around the OSS: a support SLA, IP
+  // indemnity, and a vendor contract/MSA.
+  enterpriseSupport: {
+    id: 'enterprise-support',
+    name: 'Enterprise Support & Indemnity',
     priceUsd: 8_000,
     priceMaxUsd: 40_000,
     period: 'yearly',
-    summary: 'Run the generator + sync on your own infra; governance + support SLA.',
+    summary: 'Support SLA, IP indemnity + commercial contract around the OSS. On-prem platform licensed separately.',
   },
   migration: {
     id: 'migration',
