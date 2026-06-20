@@ -97,17 +97,24 @@ function isPricePoint(v: unknown): v is PricePoint {
  * when the backend is unreachable, slow, or returns anything unexpected — the
  * CLI must still work offline.
  *
- * @param serverUrl Backend base URL (defaults to {@link DEFAULT_PRICING_SERVER}).
+ * Server precedence: an explicit `serverUrl` wins; otherwise the `MCPMAKE_SERVER`
+ * env var (so the CLI can be pointed at a staging backend, matching the telemetry
+ * reporter in `utils/fail.ts`); otherwise {@link DEFAULT_PRICING_SERVER}.
+ *
+ * @param serverUrl Backend base URL. Defaults to `$MCPMAKE_SERVER`, then {@link DEFAULT_PRICING_SERVER}.
  * @param timeoutMs Abort the request after this long (default 4000 ms).
  */
 export async function fetchPricing(
-  serverUrl: string = DEFAULT_PRICING_SERVER,
+  serverUrl?: string,
   timeoutMs = 4_000,
 ): Promise<{ pricing: Record<string, PricePoint>; source: 'backend' | 'bundled' }> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const base = serverUrl.replace(/\/+$/, '');
+    const base = (serverUrl ?? process.env.MCPMAKE_SERVER ?? DEFAULT_PRICING_SERVER).replace(
+      /\/+$/,
+      '',
+    );
     const res = await fetch(`${base}/api/pricing`, {
       headers: { accept: 'application/json' },
       signal: controller.signal,

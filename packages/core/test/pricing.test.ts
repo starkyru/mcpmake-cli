@@ -66,6 +66,29 @@ describe('fetchPricing', () => {
     expect(pricing).toBe(FAMILY_A_PRICING);
   });
 
+  it('honors $MCPMAKE_SERVER (trailing slash trimmed) when no URL is passed', async () => {
+    const calls: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: unknown) => {
+        calls.push(String(url));
+        return new Response(JSON.stringify({ familyA: { cli: FAMILY_A_PRICING.cli } }), {
+          status: 200,
+        });
+      }),
+    );
+    const prev = process.env.MCPMAKE_SERVER;
+    process.env.MCPMAKE_SERVER = 'https://staging.example.test/';
+    try {
+      const { source } = await fetchPricing();
+      expect(source).toBe('backend');
+      expect(calls[0]).toBe('https://staging.example.test/api/pricing');
+    } finally {
+      if (prev === undefined) delete process.env.MCPMAKE_SERVER;
+      else process.env.MCPMAKE_SERVER = prev;
+    }
+  });
+
   it('defaults to the production pricing server', () => {
     expect(DEFAULT_PRICING_SERVER).toBe('https://mcpmake.dev');
   });

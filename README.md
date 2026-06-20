@@ -47,6 +47,13 @@ server has **no runtime dependency on mcpmake and no strings attached**. Edit it
 host it, ship it, sell it. The output is plain TypeScript (or Python, or a
 Cloudflare Worker) that you control.
 
+## Pricing
+
+The CLI is free. Paid plans (sync, team, self-hosting, migration) are listed by
+`mcpmake pricing`, fetched live from mcpmake.dev. **Prices are subject to
+change — see [mcpmake.dev/#pricing](https://mcpmake.dev/#pricing) for the
+latest.**
+
 ## Development
 
 ```bash

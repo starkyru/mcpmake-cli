@@ -35,20 +35,23 @@ import diffCommand from './commands/diff.js';
 import bundleCommand from './commands/bundle.js';
 import ciCommand from './commands/ci.js';
 import rescanCommand from './commands/rescan.js';
+import pricingCommand from './commands/pricing.js';
+import { withUpsellFooter } from './upsell.js';
 
 const fromCommand = defineCommand({
   meta: {
     name: 'from',
     description: 'Generate an MCP server from a source',
   },
+  // Each generator prints a one-line, opt-out pricing tip on success (see upsell.ts).
   subCommands: {
-    openapi: openapiCommand,
-    har: harCommand,
-    url: urlCommand,
-    describe: describeCommand,
-    postman: postmanCommand,
-    website: websiteCommand,
-    stainless: stainlessCommand,
+    openapi: withUpsellFooter(openapiCommand),
+    har: withUpsellFooter(harCommand),
+    url: withUpsellFooter(urlCommand),
+    describe: withUpsellFooter(describeCommand),
+    postman: withUpsellFooter(postmanCommand),
+    website: withUpsellFooter(websiteCommand),
+    stainless: withUpsellFooter(stainlessCommand),
   },
 });
 
@@ -64,12 +67,13 @@ const main = defineCommand({
     verify: verifyCommand,
     update: updateCommand,
     deploy: deployCommand,
-    publish: publishCommand,
+    publish: withUpsellFooter(publishCommand),
     lint: lintCommand,
     diff: diffCommand,
     bundle: bundleCommand,
     ci: ciCommand,
     rescan: rescanCommand,
+    pricing: pricingCommand,
   },
 });
 
