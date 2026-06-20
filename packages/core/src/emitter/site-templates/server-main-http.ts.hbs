@@ -14,12 +14,19 @@ function log(level: string, message: string, data?: Record<string, unknown>): vo
 const config = loadConfig();
 initBrowserManager(config.browser);
 
-const server = new McpServer({
-  name: '{{serverName}}',
-  version: '{{serverVersion}}',
-});
-
-registerAllTools(server, config);
+/* Build a fully-registered McpServer. A single McpServer connected to multiple
+ * transports concurrently races on its internal transport reference (the API
+ * HTTP template documents the same hazard), so HTTP requests get a fresh,
+ * stateless server + transport per request instead of sharing one global
+ * instance. */
+function createMcpServer(): McpServer {
+  const server = new McpServer({
+    name: '{{serverName}}',
+    version: '{{serverVersion}}',
+  });
+  registerAllTools(server, config);
+  return server;
+}
 
 let isReady = false;
 
@@ -72,8 +79,17 @@ if (process.env.TRANSPORT === 'http') {
         }
       }
 
+      // Fresh stateless server + transport per request. Both are closed when
+      // the response finishes or the connection aborts, so transports and
+      // their listeners are never leaked and concurrent requests can't
+      // misroute through a shared transport reference.
+      const reqServer = createMcpServer();
       const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-      await server.connect(transport);
+      res.on('close', () => {
+        void transport.close();
+        void reqServer.close();
+      });
+      await reqServer.connect(transport);
       await transport.handleRequest(req, res);
       return;
     }
@@ -97,6 +113,8 @@ if (process.env.TRANSPORT === 'http') {
   process.on('SIGTERM', shutdown);
   process.on('SIGINT', shutdown);
 } else {
+  // Stdio is inherently single-connection, so one long-lived server is correct.
+  const server = createMcpServer();
   const transport = new StdioServerTransport();
   await server.connect(transport);
   isReady = true;

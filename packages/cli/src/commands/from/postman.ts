@@ -103,9 +103,7 @@ export default defineConfigurableCommand('postman', {
     const { operations: rawOperations, baseUrl, detectedAuth } = clustersToOperations(clusters);
 
     // Deterministic REST resource-tree naming (offline; no API key).
-    const allOperations = args['resource-names']
-      ? resourceTreeNames(rawOperations)
-      : rawOperations;
+    const allOperations = args['resource-names'] ? resourceTreeNames(rawOperations) : rawOperations;
 
     let operations = filterOperations(allOperations, {
       include: args.include?.split(',').map((s) => s.trim()),

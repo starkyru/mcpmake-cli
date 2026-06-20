@@ -38,7 +38,12 @@ API_KEY = os.environ.get("{{envVarName}}", "")
 {{/each}}
 
 server = Server("{{serverName}}")
-client = httpx.AsyncClient(timeout=30.0)
+
+# Hard per-request deadline (seconds) and response-size cap (bytes). A stalled or
+# runaway upstream otherwise keeps tool calls alive indefinitely or exhausts memory.
+_REQUEST_TIMEOUT_S = float(os.environ.get("MCP_REQUEST_TIMEOUT_MS", "30000")) / 1000.0
+_MAX_RESPONSE_BYTES = int(os.environ.get("MCP_MAX_RESPONSE_BYTES", str(10 * 1024 * 1024)))
+client = httpx.AsyncClient(timeout=_REQUEST_TIMEOUT_S)
 
 
 def _headers() -> dict[str, str]:
@@ -49,16 +54,39 @@ def _headers() -> dict[str, str]:
         headers["Authorization"] = f"Bearer {BEARER_TOKEN}"
 {{/if}}
 {{#if (eq type "apiKey")}}
+{{#if (eq in "header")}}
     if API_KEY:
-        headers["{{headerName}}"] = API_KEY
+        headers["{{pyStr headerName}}"] = API_KEY
+{{/if}}
+{{#if (eq in "cookie")}}
+    # API key sent as a cookie — appended to the Cookie header.
+    if API_KEY:
+        _existing = headers.get("Cookie")
+        _pair = "{{pyStr headerName}}=" + quote(str(API_KEY), safe="")
+        headers["Cookie"] = (_existing + "; " + _pair) if _existing else _pair
+{{/if}}
 {{/if}}
 {{/each}}
     return headers
 
 
+def _auth_query_params() -> dict[str, str]:
+    # apiKey-in-query auth: the key is sent as a query parameter, not a header.
+    params: dict[str, str] = {}
+{{#each authSchemes}}
+{{#if (eq type "apiKey")}}
+{{#if (eq in "query")}}
+    if API_KEY:
+        params["{{pyStr headerName}}"] = API_KEY
+{{/if}}
+{{/if}}
+{{/each}}
+    return params
+
+
 {{#each tools}}
 @server.tool()
-async def {{functionName}}({{#each pyPathParams}}{{pyName}}: str, {{/each}}{{#each pyQueryParams}}{{pyName}}: str = "", {{/each}}{{#if hasRequestBody}}body: dict | None = None{{/if}}) -> list[TextContent]:
+async def {{functionName}}({{#each pyPathParams}}{{pyName}}: str, {{/each}}{{#each pyQueryParams}}{{pyName}}: str = "", {{/each}}{{#each pyHeaderParams}}{{pyName}}: str = "", {{/each}}{{#each pyCookieParams}}{{pyName}}: str = "", {{/each}}{{#if hasRequestBody}}body: dict | None = None{{/if}}) -> list[TextContent]:
     """{{pyDocstring description}}"""
     url = BASE_URL + "{{pyStr pathTemplate}}"
     {{#each pyPathParams}}
@@ -67,19 +95,57 @@ async def {{functionName}}({{#each pyPathParams}}{{pyName}}: str, {{/each}}{{#ea
     {{#if pyQueryParams.length}}
     params = { {{#each pyQueryParams}}"{{pyStr apiName}}": {{pyName}}, {{/each}} }
     params = {k: v for k, v in params.items() if v}
+    {{#if @root.hasQueryApiKey}}
+    params.update(_auth_query_params())
+    {{/if}}
+    {{else}}
+    {{#if @root.hasQueryApiKey}}
+    params = _auth_query_params()
+    {{/if}}
+    {{/if}}
+    {{#if (or pyHeaderParams.length pyCookieParams.length)}}
+    # Per-request header/cookie params (D-H2): sent under their original wire
+    # names, merged over the auth headers. Empty values are omitted.
+    req_headers = dict(_headers())
+    {{#each pyHeaderParams}}
+    if {{pyName}}:
+        req_headers["{{pyStr wireName}}"] = {{pyName}}
+    {{/each}}
+    {{#if pyCookieParams.length}}
+    _cookie_parts = []
+    {{#each pyCookieParams}}
+    if {{pyName}}:
+        _cookie_parts.append("{{pyStr wireName}}=" + quote(str({{pyName}}), safe=""))
+    {{/each}}
+    if _cookie_parts:
+        _existing = req_headers.get("Cookie")
+        _joined = "; ".join(_cookie_parts)
+        req_headers["Cookie"] = (_existing + "; " + _joined) if _existing else _joined
+    {{/if}}
     {{/if}}
     try:
         resp = await client.request(
             "{{method}}",
             url,
-            headers=_headers(),
-            {{#if queryParams.length}}
+            headers={{#if (or pyHeaderParams.length pyCookieParams.length)}}req_headers{{else}}_headers(){{/if}},
+            {{#if (or queryParams.length @root.hasQueryApiKey)}}
             params=params,
             {{/if}}
             {{#if hasRequestBody}}
+            {{#if (eq bodyEncoding "form")}}
+            data=body,
+            {{else}}
+            {{#if (eq bodyEncoding "multipart")}}
+            files=body,
+            {{else}}
             json=body,
             {{/if}}
+            {{/if}}
+            {{/if}}
         )
+        # Cap the buffered response so a runaway upstream cannot exhaust memory.
+        if len(resp.content) > _MAX_RESPONSE_BYTES:
+            return [TextContent(type="text", text=f"Error: response exceeded {_MAX_RESPONSE_BYTES}-byte cap")]
         data = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else resp.text
         return [TextContent(type="text", text=json.dumps(data, indent=2) if isinstance(data, (dict, list)) else str(data))]
     except Exception as e:

@@ -18,6 +18,16 @@ const sessions = new Map<string, BrowserSession>();
 let idleTimer: ReturnType<typeof setInterval> | undefined;
 let config: BrowserConfig;
 
+// In-flight session creations, keyed by session id. Single-flighting per id
+// means concurrent no-ID calls (which all resolve to DEFAULT_SESSION) and
+// repeated calls with the same explicit id share one Chromium context instead
+// of racing to create several.
+const sessionCreations = new Map<string, Promise<{ page: Page; sessionId: string }>>();
+
+// Single-flight the browser launch so concurrent cold starts can't spawn
+// multiple Chromium processes.
+let browserLaunch: Promise<Browser> | undefined;
+
 const DEFAULT_SESSION = '__default__';
 
 /**
@@ -79,9 +89,36 @@ export async function resolveSelector(
 }
 
 /**
+ * Launch the shared browser, single-flighting concurrent cold starts so two
+ * simultaneous requests can never spawn two Chromium processes.
+ */
+async function getBrowser(): Promise<Browser> {
+  if (browser && browser.isConnected()) return browser;
+  if (browserLaunch) return browserLaunch;
+
+  // Only disable sandbox when running as root in a container.
+  const isRoot = process.getuid?.() === 0;
+  browserLaunch = chromium
+    .launch({
+      headless: config.headless,
+      args: isRoot ? ['--no-sandbox', '--disable-setuid-sandbox'] : [],
+    })
+    .then((b) => {
+      browser = b;
+      return b;
+    })
+    .finally(() => {
+      browserLaunch = undefined;
+    });
+  return browserLaunch;
+}
+
+/**
  * Get or create a browser session.
  * If sessionId is provided, reuses an existing session or creates one with that ID.
- * If not, creates a new session with a generated ID.
+ * If not, reuses (or creates) a single shared default session under a fixed ID,
+ * so repeat no-ID calls and `take_screenshot` without an ID all hit the same
+ * context instead of leaking a new Chromium context per call.
  * Throws if the session pool is at capacity (maxSessions).
  */
 export async function getOrCreateSession(sessionId?: string): Promise<{ page: Page; sessionId: string }> {
@@ -95,7 +132,23 @@ export async function getOrCreateSession(sessionId?: string): Promise<{ page: Pa
     return { page: existing.page, sessionId: id };
   }
 
-  // Check capacity before creating a new session
+  // Coalesce concurrent creations for the same id (notably the default
+  // session) onto one promise so we don't create duplicate contexts or
+  // double-count capacity.
+  const inFlight = sessionCreations.get(id);
+  if (inFlight) return inFlight;
+
+  const creation = createSession(id).finally(() => {
+    sessionCreations.delete(id);
+  });
+  sessionCreations.set(id, creation);
+  return creation;
+}
+
+async function createSession(id: string): Promise<{ page: Page; sessionId: string }> {
+  // Reserve the capacity slot BEFORE any await so concurrent creations of
+  // distinct ids can't all pass the gate and then blow past maxSessions. We
+  // insert a placeholder entry now and fill in the real handles below.
   const maxSessions = config.maxSessions ?? 10;
   if (sessions.size >= maxSessions) {
     throw new Error(
@@ -103,38 +156,33 @@ export async function getOrCreateSession(sessionId?: string): Promise<{ page: Pa
       'Close an existing session before creating a new one.'
     );
   }
-
-  // Launch browser if not running
-  if (!browser || !browser.isConnected()) {
-    // Only disable sandbox when running as root in a container
-    const isRoot = process.getuid?.() === 0;
-    browser = await chromium.launch({
-      headless: config.headless,
-      args: isRoot ? ['--no-sandbox', '--disable-setuid-sandbox'] : [],
-    });
-  }
-
-  // Create new session
-  const context = await browser.newContext({
-    viewport: config.viewport,
-    ...(config.userAgent ? { userAgent: config.userAgent } : {}),
-  });
-  const page = await context.newPage();
-
-  // Generate final session ID upfront to avoid race conditions
-  const finalId = id === DEFAULT_SESSION
-    ? `session_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`
-    : id;
-
-  sessions.set(finalId, {
-    context,
-    page,
+  const reserved: BrowserSession = {
+    context: undefined as unknown as BrowserContext,
+    page: undefined as unknown as Page,
     lastAccessedAt: Date.now(),
-  });
+  };
+  sessions.set(id, reserved);
 
-  resetIdleTimer();
+  try {
+    const activeBrowser = await getBrowser();
+    const context = await activeBrowser.newContext({
+      viewport: config.viewport,
+      ...(config.userAgent ? { userAgent: config.userAgent } : {}),
+    });
+    const page = await context.newPage();
 
-  return { page, sessionId: finalId };
+    reserved.context = context;
+    reserved.page = page;
+    reserved.lastAccessedAt = Date.now();
+
+    resetIdleTimer();
+
+    return { page, sessionId: id };
+  } catch (err) {
+    // Release the reserved slot if context creation failed.
+    sessions.delete(id);
+    throw err;
+  }
 }
 
 /**
@@ -145,7 +193,7 @@ export async function closeSession(sessionId?: string): Promise<void> {
   const session = sessions.get(id);
   if (!session) return;
 
-  await session.context.close().catch(() => {});
+  await session.context?.close().catch(() => {});
   sessions.delete(id);
 
   // If no sessions remain, close the browser
@@ -161,7 +209,7 @@ export async function closeBrowser(): Promise<void> {
   clearIdleTimer();
 
   for (const [id, session] of sessions) {
-    await session.context.close().catch(() => {});
+    await session.context?.close().catch(() => {});
     sessions.delete(id);
   }
 
@@ -207,8 +255,9 @@ function resetIdleTimer(): void {
   clearIdleTimer();
   idleTimer = setInterval(() => {
     const now = Date.now();
-    // Close idle sessions
+    // Close idle sessions. Skip slots still being created (no context yet).
     for (const [id, session] of sessions) {
+      if (!session.context) continue;
       if (now - session.lastAccessedAt > config.idleTimeoutMs) {
         session.context.close().catch(() => {});
         sessions.delete(id);

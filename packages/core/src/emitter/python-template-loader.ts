@@ -17,6 +17,12 @@ Handlebars.registerHelper('eq', function (a: unknown, b: unknown) {
   return a === b;
 });
 
+// Logical OR for block conditionals (e.g. emit a section when either of two
+// param lists is non-empty). Handlebars has no built-in `or`.
+Handlebars.registerHelper('or', function (a: unknown, b: unknown) {
+  return a || b;
+});
+
 Handlebars.registerHelper('pyDocstring', function (str: string) {
   if (!str) return '';
   return str.replace(/"""/g, '\\"\\"\\"').replace(/\\/g, '\\\\');

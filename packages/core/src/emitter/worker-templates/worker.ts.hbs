@@ -30,6 +30,11 @@ const SUPPORTED_PROTOCOL_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03-26'];
 const PROTOCOL_REVISION = '2026-07-28'; // server/discover preflight only (SEP-2575); NOT the negotiated initialize version
 const SERVER_INFO = { name: '{{serverName}}', version: '{{serverVersion}}' } as const;
 const MAX_BODY = 4 * 1024 * 1024; // 4 MB
+// A 4 MB body can carry a huge JSON-RPC batch; dispatching every element at once
+// (Promise.all) lets one request fan out into thousands of simultaneous upstream
+// calls. Cap the batch length and process it through a bounded-concurrency pool.
+const MAX_BATCH = 50;
+const BATCH_CONCURRENCY = 5;
 
 const toolByName = new Map<string, ToolEntry>(tools.map((t) => [t.definition.name, t]));
 
@@ -162,6 +167,26 @@ async function handleToolCall(
   return ok(id, result);
 }
 
+/* Map `items` through `fn` with at most `limit` in flight at once, preserving
+ * input order in the result. Bounds the upstream fan-out of a JSON-RPC batch so
+ * one request cannot launch an unbounded burst of concurrent tool calls. */
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const workers = new Array(Math.min(limit, items.length)).fill(0).map(async () => {
+    while (next < items.length) {
+      const index = next++;
+      results[index] = await fn(items[index], index);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
 /** Dispatch one JSON-RPC message. Returns null for notifications (no reply). */
 async function handleRpc(
   msg: { id?: unknown; method?: unknown; params?: unknown } | null,
@@ -267,8 +292,14 @@ export default {
 
     return runWithTrace(trace, async () => {
       if (Array.isArray(parsed)) {
-        const settled = await Promise.all(
-          parsed.map((m) => handleRpc(m as { id?: unknown; method?: unknown }, config, env)),
+        if (parsed.length === 0) {
+          return rpcErrorResponse(null, -32600, 'Empty JSON-RPC batch');
+        }
+        if (parsed.length > MAX_BATCH) {
+          return rpcErrorResponse(null, -32600, `Batch too large (max ${MAX_BATCH})`);
+        }
+        const settled = await mapWithConcurrency(parsed, BATCH_CONCURRENCY, (m) =>
+          handleRpc(m as { id?: unknown; method?: unknown }, config, env),
         );
         const responses = settled.filter((r): r is object => r !== null);
         if (responses.length === 0) {

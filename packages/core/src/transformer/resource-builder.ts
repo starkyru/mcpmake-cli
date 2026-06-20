@@ -45,7 +45,10 @@ export function buildResources(operations: OperationDescriptor[]): ResourceDefin
       // Resource handler receives (uri: URL, extra) — extract params from uri.pathname.
       const urlLines: string[] = [];
       urlLines.push(`      const pathParts = uri.pathname.split('/').filter(Boolean);`);
-      urlLines.push(`      let url = \`\${config.baseUrl}${escapeStringLiteral(op.path)}\`;`);
+      // op.path is interpolated into a BACKTICK template literal here, so it must
+      // be escaped for that sink: escapeStringLiteral leaves backticks and `${}`
+      // live, allowing expression evaluation (D-C2). Use escapeTemplateLiteral.
+      urlLines.push(`      let url = \`\${config.baseUrl}${escapeTemplateLiteral(op.path)}\`;`);
       // Replace path params using positional extraction from the URI
       const pathSegments = op.path.split('/').filter(Boolean);
       for (let i = 0; i < pathSegments.length; i++) {

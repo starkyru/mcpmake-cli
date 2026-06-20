@@ -49,9 +49,13 @@ describe('overlay-loader prototype-pollution guard', () => {
 
   it('still applies legitimate updates', async () => {
     const overlay = writeOverlay(
-      ['overlay: 1.0.0', 'actions:', '  - target: "$.info"', '    update:', '      title: "patched"'].join(
-        '\n',
-      ),
+      [
+        'overlay: 1.0.0',
+        'actions:',
+        '  - target: "$.info"',
+        '    update:',
+        '      title: "patched"',
+      ].join('\n'),
     );
     const spec: Record<string, unknown> = { info: { title: 'orig' } };
     await applyOverlay(spec, overlay);

@@ -174,8 +174,50 @@ if (transportMode === 'http') {
   /* Stateful mode keeps one McpServer + transport PER SESSION, keyed by the
    * Mcp-Session-Id the SDK assigns on `initialize`, so concurrent clients get
    * independent, isolated sessions (a single shared transport cannot multiplex
-   * them). Stateless mode builds a fresh server + transport per request. */
-  const sessions = new Map<string, { server: McpServer; transport: StreamableHTTPServerTransport }>();
+   * them). Stateless mode builds a fresh server + transport per request.
+   *
+   * Sessions are bounded: a client that abandons a session without sending the
+   * SDK's close (so `transport.onclose` never fires) would otherwise retain its
+   * server/transport graph forever. We cap the live count, stamp a last-access
+   * time on every request, evict idle sessions on access and via a periodic
+   * reaper, and reject new sessions once at capacity. The limits are overridable
+   * via env so an operator can tune them without editing the generated source. */
+  interface Session {
+    server: McpServer;
+    transport: StreamableHTTPServerTransport;
+    lastAccess: number;
+  }
+  const sessions = new Map<string, Session>();
+
+  function envInt(name: string, fallback: number): number {
+    const n = parseInt(process.env[name] ?? '', 10);
+    return Number.isInteger(n) && n > 0 ? n : fallback;
+  }
+  const MAX_SESSIONS = envInt('MCP_MAX_SESSIONS', 1000);
+  const SESSION_IDLE_MS = envInt('MCP_SESSION_IDLE_MS', 5 * 60 * 1000);
+  const SESSION_REAP_MS = envInt('MCP_SESSION_REAP_MS', 60 * 1000);
+
+  /* Close + drop a single session (best-effort; never throws). */
+  function destroySession(sid: string, session: Session): void {
+    sessions.delete(sid);
+    void session.transport.close().catch(() => {});
+    void session.server.close().catch(() => {});
+  }
+
+  /* Evict every session whose last access is older than the idle window. */
+  function evictIdleSessions(now: number): void {
+    for (const [sid, session] of sessions) {
+      if (now - session.lastAccess > SESSION_IDLE_MS) {
+        log('info', 'Evicting idle session', { sid });
+        destroySession(sid, session);
+      }
+    }
+  }
+
+  /* Periodic reaper — sweeps idle sessions even when no traffic arrives.
+   * `unref()` so it never keeps the process alive on its own. */
+  const reaper = setInterval(() => evictIdleSessions(Date.now()), SESSION_REAP_MS);
+  reaper.unref();
 
   function isInitializeRequest(body: unknown): boolean {
     return (
@@ -200,26 +242,39 @@ if (transportMode === 'http') {
     );
     await runWithTrace(trace, async () => {
       if (stateful) {
+        const now = Date.now();
+        // Sweep idle sessions on every access so an idle map is reclaimed even
+        // between reaper ticks (and before a capacity check can spuriously fail).
+        evictIdleSessions(now);
         const sessionId = headerValue(req.headers['mcp-session-id']);
         const existing = sessionId ? sessions.get(sessionId) : undefined;
         if (existing) {
+          existing.lastAccess = now;
           await existing.transport.handleRequest(req, res, parsedBody);
           return;
         }
         if (!sessionId && isInitializeRequest(parsedBody)) {
+          // Reject new sessions once at capacity rather than growing unbounded.
+          if (sessions.size >= MAX_SESSIONS) {
+            log('error', 'Session capacity reached, rejecting initialize', {
+              maxSessions: MAX_SESSIONS,
+            });
+            rpcError(res, null, -32000, 'Server at session capacity — retry later');
+            return;
+          }
           // New session: create a dedicated server + transport and register it
           // under the session id the SDK generates during initialize.
           const server = createMcpServer(config);
           const transport = new StreamableHTTPServerTransport({
             sessionIdGenerator: () => crypto.randomUUID(),
             onsessioninitialized: (sid: string) => {
-              sessions.set(sid, { server, transport });
+              sessions.set(sid, { server, transport, lastAccess: Date.now() });
             },
           });
           transport.onclose = () => {
             const sid = transport.sessionId;
             if (sid) sessions.delete(sid);
-            void server.close();
+            void server.close().catch(() => {});
           };
           await server.connect(transport);
           await transport.handleRequest(req, res, parsedBody);
@@ -412,6 +467,7 @@ if (transportMode === 'http') {
   process.on('SIGTERM', () => {
     log('info', 'SIGTERM received, shutting down');
     isReady = false;
+    clearInterval(reaper);
 
     httpServer.close(async () => {
       try {

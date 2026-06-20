@@ -72,9 +72,7 @@ describe('codegen injection hardening', () => {
     });
 
     it('title from raw x-mcp-name does not break the single-quoted literal', () => {
-      const tool = buildToolDefinition(
-        makeOp({ mcpExtensions: { name: TS_STRING_BREAKOUT } }),
-      );
+      const tool = buildToolDefinition(makeOp({ mcpExtensions: { name: TS_STRING_BREAKOUT } }));
       const src = renderTemplate('tool-handler.ts', tool);
       assertParses(src, 'title injection');
       // The payload's `'` must be escaped (preceded by a backslash), i.e. it never
@@ -87,7 +85,11 @@ describe('codegen injection hardening', () => {
   describe('resources and prompts', () => {
     it('stays valid TS with adversarial path and tag', () => {
       const ops = [
-        makeOp({ operationId: `r${TS_STRING_BREAKOUT}`, method: 'get', path: `/a${TS_TEMPLATE_BREAKOUT}` }),
+        makeOp({
+          operationId: `r${TS_STRING_BREAKOUT}`,
+          method: 'get',
+          path: `/a${TS_TEMPLATE_BREAKOUT}`,
+        }),
         makeOp({
           operationId: 'detail',
           method: 'get',
@@ -98,9 +100,7 @@ describe('codegen injection hardening', () => {
       const resources = buildResources(ops);
       assertParses(renderTemplate('resources.ts', { resources }), 'resources');
 
-      const prompts = buildPrompts([
-        makeOp({ tags: [`tag${TS_STRING_BREAKOUT}`] }),
-      ]);
+      const prompts = buildPrompts([makeOp({ tags: [`tag${TS_STRING_BREAKOUT}`] })]);
       expect(prompts[0].name).toMatch(/^[a-zA-Z0-9_-]+$/);
       assertParses(renderTemplate('prompts.ts', { prompts }), 'prompts');
     });
@@ -158,7 +158,7 @@ describe('codegen injection hardening', () => {
             links: [
               {
                 text: `About ${DOLLAR_BREAKOUT}`,
-                href: "https://x/`); evil(); //",
+                href: 'https://x/`); evil(); //',
                 isNavigation: true,
                 selector: { primary: '#l', fallbacks: [], strategy: 'id', confidence: 0.9 },
               },
@@ -173,11 +173,180 @@ describe('codegen injection hardening', () => {
         t.toolType === 'page-action' ? 'tool-handler-form.ts' : 'tool-handler-action.ts';
       for (const tool of tools) {
         if (tool.toolType === 'browser-lifecycle') {
-          assertParses(renderSiteTemplate('tool-handler-lifecycle.ts', tool), `lifecycle ${tool.name}`);
+          assertParses(
+            renderSiteTemplate('tool-handler-lifecycle.ts', tool),
+            `lifecycle ${tool.name}`,
+          );
         } else {
           assertParses(renderSiteTemplate(templateFor(tool), tool), `site ${tool.name}`);
         }
       }
+    });
+  });
+
+  describe('request body media type (D-C1)', () => {
+    const MEDIA_BREAKOUT = "x'+((globalThis as any).PWNED=true)+'y";
+
+    it('neutralizes an adversarial media type in node + worker handlers', () => {
+      const op = makeOp({
+        operationId: 'createThing',
+        method: 'post',
+        path: '/things',
+        requestBody: {
+          required: true,
+          contentType: MEDIA_BREAKOUT,
+          schema: { type: 'object' },
+        },
+      });
+      const tool = buildToolDefinition(op);
+
+      // Malformed media type is replaced with the safe default and escaped.
+      expect(tool.requestBodyContentType).toBe('application/json');
+
+      const node = renderTemplate('tool-handler.ts', tool);
+      const worker = renderWorkerTemplate('tool-handler.ts', tool);
+      assertParses(node, 'node media-type');
+      assertParses(worker, 'worker media-type');
+      for (const src of [node, worker]) {
+        expect(src).not.toContain('PWNED');
+        expect(src).toContain("contentType: 'application/json'");
+      }
+    });
+
+    it('preserves a benign media type with parameters', () => {
+      const tool = buildToolDefinition(
+        makeOp({
+          operationId: 'up',
+          method: 'post',
+          path: '/u',
+          requestBody: {
+            required: true,
+            contentType: 'application/json; charset=utf-8',
+            schema: { type: 'object' },
+          },
+        }),
+      );
+      expect(tool.requestBodyContentType).toBe('application/json; charset=utf-8');
+      expect(tool.bodyEncoding).toBe('json');
+    });
+
+    it('selects form / multipart encodings (D-H3)', () => {
+      const form = buildToolDefinition(
+        makeOp({
+          operationId: 'f',
+          method: 'post',
+          path: '/f',
+          requestBody: {
+            required: true,
+            contentType: 'application/x-www-form-urlencoded',
+            schema: { type: 'object' },
+          },
+        }),
+      );
+      expect(form.bodyEncoding).toBe('form');
+
+      const multipart = buildToolDefinition(
+        makeOp({
+          operationId: 'm',
+          method: 'post',
+          path: '/m',
+          requestBody: {
+            required: true,
+            contentType: 'multipart/form-data',
+            schema: { type: 'object' },
+          },
+        }),
+      );
+      expect(multipart.bodyEncoding).toBe('multipart');
+      assertParses(renderTemplate('tool-handler.ts', multipart), 'multipart handler');
+    });
+  });
+
+  describe('header / cookie parameter mapping (D-H1 / D-H2)', () => {
+    it('emits a buildHeaders body that maps header and cookie params by wire name', () => {
+      const tool = buildToolDefinition(
+        makeOp({
+          operationId: 'h',
+          method: 'get',
+          path: '/h',
+          parameters: [
+            { name: 'X-Tenant-Id', in: 'header', required: true, schema: { type: 'string' } },
+            { name: 'session', in: 'cookie', required: false, schema: { type: 'string' } },
+          ],
+        }),
+      );
+      // Wire names are preserved; input keys equal them here (D-H1).
+      expect(tool.paramMappings).toContainEqual({
+        inputKey: 'X-Tenant-Id',
+        wireName: 'X-Tenant-Id',
+        in: 'header',
+      });
+      expect(tool.buildHeadersBody).toContain("headers['X-Tenant-Id']");
+      expect(tool.buildHeadersBody).toContain("cookieParts.push('session=");
+      assertParses(renderTemplate('tool-handler.ts', tool), 'header/cookie handler');
+      assertParses(renderWorkerTemplate('tool-handler.ts', tool), 'worker header/cookie handler');
+    });
+
+    it('does not break the handler with an adversarial header param name', () => {
+      const tool = buildToolDefinition(
+        makeOp({
+          operationId: 'h2',
+          method: 'get',
+          path: '/h2',
+          parameters: [
+            { name: `X${TS_STRING_BREAKOUT}`, in: 'header', required: false, schema: {} },
+          ],
+        }),
+      );
+      const src = renderTemplate('tool-handler.ts', tool);
+      // assertParses is the breakout check: were the `'` to terminate the
+      // single-quoted header-name literal, the injected statement would still
+      // parse as module code, but transpileModule catches the resulting syntax.
+      assertParses(src, 'adversarial header name');
+      // The header-name literal must carry the payload's quote escaped (`\'`),
+      // proving it never closed the single-quoted string in the headers[...] sink.
+      expect(src).toContain("headers['X\\'");
+    });
+  });
+
+  describe('template resource path (D-C2)', () => {
+    it('neutralizes ${} / backtick in a template-resource path', () => {
+      const ops = [
+        makeOp({
+          operationId: 'detail',
+          method: 'get',
+          path: `/items/{id}${DOLLAR_BREAKOUT}`,
+          parameters: [{ name: 'id', in: 'path', required: true, schema: {} }],
+        }),
+      ];
+      const resources = buildResources(ops);
+      const src = renderTemplate('resources.ts', { resources });
+      // assertParses is the breakout check: an unescaped `${...}` in the backtick
+      // URL literal would evaluate on resource read; transpileModule still parses
+      // it, but the build of the whole project proves intent — here we assert the
+      // backtick `let url = ` line carries the payload escaped (`\${`).
+      assertParses(src, 'template resource path');
+      const backtickLine = src.split('\n').find((l) => l.includes('let url = `')) ?? '';
+      expect(backtickLine).toContain('\\${(globalThis as any).PWNED');
+      expect(backtickLine).not.toMatch(/[^\\]\$\{\(globalThis/);
+    });
+  });
+
+  describe('generated tool test (D-C3)', () => {
+    it('cannot escape a comment via a newline in the path', () => {
+      const tool = buildToolDefinition(
+        makeOp({
+          operationId: 'safe',
+          method: 'get',
+          path: '/safe\n(globalThis as any).PWNED=true;//',
+        }),
+      );
+      const src = renderTemplate('tool-test.ts', tool);
+      assertParses(src, 'tool test newline path');
+      // The path is JSON.stringify'd into a constant — the injected statement is
+      // inert string content, never module-level code.
+      expect(src).not.toMatch(/^\(globalThis as any\)\.PWNED=true;/m);
+      expect(src).toContain('const operation = {');
     });
   });
 
@@ -216,9 +385,13 @@ describe('codegen injection hardening', () => {
         expect(py).toMatch(/order_by: str = ""/);
         expect(py).not.toMatch(/[(,]\s*order-by/);
 
-        // baseUrl double-quote breakout neutralized (sanitized at emit boundary).
+        // baseUrl double-quote breakout neutralized: the closing quote that would
+        // end the literal and start code is backslash-escaped, so the payload is
+        // inert string content rather than an executable Python statement (D-M4
+        // keeps the URL text but escapes the literal sink instead of stripping).
         const baseLine = py.split('\n').find((l) => l.includes('BASE_URL"')) ?? '';
-        expect(baseLine).not.toContain('import os');
+        expect(baseLine).toContain('\\");');
+        expect(baseLine).not.toMatch(/[^\\]"\); import os/);
       } finally {
         rmSync(dir, { recursive: true, force: true });
       }

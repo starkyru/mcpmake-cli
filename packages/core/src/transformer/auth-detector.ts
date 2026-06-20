@@ -60,6 +60,7 @@ export function detectAuthSchemes(
         headerName: sanitizeHeaderName(scheme.name),
         in: scheme.in as 'header' | 'query' | 'cookie',
         description: `API key for ${name}`,
+        schemeName: name,
       });
       envVars.push({
         name: envVarName,
@@ -74,6 +75,7 @@ export function detectAuthSchemes(
         type: 'http-bearer',
         envVarName,
         description: `Bearer token for ${name}`,
+        schemeName: name,
       });
       envVars.push({
         name: envVarName,
@@ -85,6 +87,7 @@ export function detectAuthSchemes(
         type: 'http-basic',
         envVarName: 'BASIC_USERNAME',
         description: `Basic auth for ${name}`,
+        schemeName: name,
       });
       envVars.push(
         { name: 'BASIC_USERNAME', description: 'Basic auth username', required: true },
@@ -95,6 +98,7 @@ export function detectAuthSchemes(
         type: 'oauth2',
         envVarName: 'OAUTH2_CLIENT_ID',
         description: `OAuth2 for ${name}`,
+        schemeName: name,
       });
 
       // Extract flow details

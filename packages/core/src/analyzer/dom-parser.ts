@@ -133,10 +133,16 @@ async function extractFormFields(
           ariaLabel: el.getAttribute('aria-label') || '',
           // Get associated label
           label: input.labels?.[0]?.textContent?.trim() || '',
-          // Get select options
-          options:
+          // Get select options as label/value pairs. The visible label and
+          // the submitted value routinely differ; Playwright's selectOption
+          // matches by value, so we must preserve both rather than collapsing
+          // to one string.
+          optionPairs:
             el.tagName === 'SELECT'
-              ? Array.from((el as HTMLSelectElement).options).map((o) => o.text || o.value)
+              ? Array.from((el as HTMLSelectElement).options).map((o) => ({
+                  label: (o.text || o.value || '').trim(),
+                  value: o.value ?? '',
+                }))
               : undefined,
         };
       });
@@ -155,7 +161,10 @@ async function extractFormFields(
         label: label || undefined,
         placeholder: attrs.placeholder || undefined,
         required: attrs.required,
-        options: attrs.options,
+        // Keep the visible labels for human-facing enum docs, plus the
+        // label/value pairs the handler needs to drive selectOption by value.
+        options: attrs.optionPairs ? attrs.optionPairs.map((o) => o.label) : undefined,
+        optionPairs: attrs.optionPairs,
         defaultValue: attrs.value || undefined,
       });
     } catch (err) {
@@ -252,7 +261,10 @@ async function extractLinks(page: Page): Promise<LinkDescriptor[]> {
       // Skip non-http links (javascript:, mailto:, tel:, #)
       if (!attrs.href.startsWith('http')) continue;
 
-      const isNavigation = attrs.href.startsWith(pageOrigin) && !attrs.href.includes('#');
+      // Same-origin must be decided by parsed URL.origin, never a string
+      // prefix: `https://example.com.attacker.test` starts with
+      // `https://example.com` but is a different origin.
+      const isNavigation = isSameOrigin(attrs.href, pageOrigin) && !attrs.href.includes('#');
 
       const selector = await buildSelectorSet(page, linkEl);
       const linkId = generateStableId('link', normalizedHref);
@@ -299,6 +311,20 @@ function mapFieldType(tagName: string, type: string): FormFieldType {
   };
 
   return typeMap[type] || 'other';
+}
+
+/**
+ * True only when `href` parses to the exact same origin as `origin`.
+ * Guards against prefix-spoofing hosts such as
+ * `https://example.com.attacker.test` matching base `https://example.com`.
+ * Exported for regression testing of the same-origin admission logic.
+ */
+export function isSameOrigin(href: string, origin: string): boolean {
+  try {
+    return new URL(href).origin === origin;
+  } catch {
+    return false;
+  }
 }
 
 function normalizeHref(href: string): string {

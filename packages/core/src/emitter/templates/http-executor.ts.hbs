@@ -1,4 +1,4 @@
-import { getAuthHeaders } from './auth.js';
+import { getAuthHeaders, type AuthRequirement } from './auth.js';
 import { traceHeaders } from './trace.js';
 import type { AppConfig } from './config.js';
 
@@ -7,6 +7,14 @@ export interface RequestOptions {
   url: string;
   body?: unknown;
   contentType?: string;
+  /**
+   * How to serialize `body` for the upstream request:
+   *   - `json` (default): JSON.stringify, Content-Type stays as given.
+   *   - `form`: URLSearchParams (application/x-www-form-urlencoded).
+   *   - `multipart`: FormData (the runtime sets multipart Content-Type + boundary;
+   *     a per-field { __file__, content, filename } object is sent as a file part).
+   */
+  bodyEncoding?: 'json' | 'form' | 'multipart';
   headers: Record<string, string>;
   config: AppConfig;
   /**
@@ -14,6 +22,71 @@ export interface RequestOptions {
    * absent and `MCP_IDEMPOTENCY_AUTO=true`, a UUID is generated automatically.
    */
   idempotencyKey?: string;
+  /**
+   * Per-operation outbound-auth requirement (D-H2). Forwarded to getAuthHeaders
+   * so a public operation (`security: []`) sends no auth and a scheme-scoped
+   * operation sends only its scheme(s). Omitted → every configured scheme.
+   */
+  authRequirement?: AuthRequirement;
+}
+
+/**
+ * Hard per-request deadline (ms). Without it a stalled upstream keeps a tool
+ * call (and, in async-task mode, the background promise) alive indefinitely.
+ * Override with MCP_REQUEST_TIMEOUT_MS; defaults to 30s.
+ */
+const REQUEST_TIMEOUT_MS = (() => {
+  const raw = typeof process !== 'undefined' ? process.env?.MCP_REQUEST_TIMEOUT_MS : undefined;
+  const n = raw ? Number(raw) : NaN;
+  return Number.isFinite(n) && n > 0 ? n : 30_000;
+})();
+
+/**
+ * Maximum upstream response body size (bytes). A malicious or runaway upstream
+ * can otherwise exhaust memory in a single response. Override with
+ * MCP_MAX_RESPONSE_BYTES; defaults to 10 MiB.
+ */
+const MAX_RESPONSE_BYTES = (() => {
+  const raw = typeof process !== 'undefined' ? process.env?.MCP_MAX_RESPONSE_BYTES : undefined;
+  const n = raw ? Number(raw) : NaN;
+  return Number.isFinite(n) && n > 0 ? n : 10 * 1024 * 1024;
+})();
+
+/** Serialize a request body according to its declared encoding. */
+function serializeBody(
+  body: unknown,
+  encoding: 'json' | 'form' | 'multipart' | undefined,
+): { body: string | URLSearchParams | FormData; setContentType: boolean } {
+  if (encoding === 'form') {
+    const params = new URLSearchParams();
+    if (body && typeof body === 'object') {
+      for (const [k, v] of Object.entries(body as Record<string, unknown>)) {
+        if (v !== undefined && v !== null) params.append(k, String(v));
+      }
+    }
+    return { body: params, setContentType: true };
+  }
+  if (encoding === 'multipart') {
+    const form = new FormData();
+    if (body && typeof body === 'object') {
+      for (const [k, v] of Object.entries(body as Record<string, unknown>)) {
+        if (v === undefined || v === null) continue;
+        if (
+          typeof v === 'object' &&
+          '__file__' in (v as Record<string, unknown>) &&
+          'content' in (v as Record<string, unknown>)
+        ) {
+          const f = v as { content: string; filename?: string };
+          form.append(k, new Blob([f.content]), f.filename ?? k);
+        } else {
+          form.append(k, String(v));
+        }
+      }
+    }
+    // Let the runtime set multipart/form-data with the correct boundary.
+    return { body: form, setContentType: false };
+  }
+  return { body: JSON.stringify(body), setContentType: true };
 }
 
 export interface ApiResponse {
@@ -75,7 +148,7 @@ export async function executeRequest(options: RequestOptions): Promise<ApiRespon
   }
   lastRequestTime = Date.now();
 
-  const authHeaders = await getAuthHeaders(config);
+  const authHeaders = await getAuthHeaders(config, options.authRequirement);
   // Header precedence (lowest → highest): auth, runtime default headers
   // (MCP_DEFAULT_HEADERS), W3C Trace Context, then per-call headers.
   // Propagate W3C Trace Context to the upstream API (no-op outside an HTTP
@@ -88,8 +161,15 @@ export async function executeRequest(options: RequestOptions): Promise<ApiRespon
     ...options.headers,
   };
 
-  if (options.body && options.contentType) {
-    headers['Content-Type'] = options.contentType;
+  // Serialize the body for its declared encoding. FormData must NOT carry a
+  // manual Content-Type — the runtime appends the multipart boundary itself.
+  let serializedBody: string | URLSearchParams | FormData | undefined;
+  if (options.body !== undefined && options.body !== null) {
+    const { body, setContentType } = serializeBody(options.body, options.bodyEncoding);
+    serializedBody = body;
+    if (setContentType && options.contentType) {
+      headers['Content-Type'] = options.contentType;
+    }
   }
 
   // Idempotency-Key for mutating requests (explicit per-call, or auto when enabled).
@@ -101,11 +181,16 @@ export async function executeRequest(options: RequestOptions): Promise<ApiRespon
   let lastError: Error | undefined;
 
   for (let attempt = 0; attempt <= config.maxRetries; attempt++) {
+    // Per-attempt hard deadline. AbortError is not retryable — a timed-out
+    // upstream should fail fast rather than multiply the wait by the retry count.
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
     try {
       const response = await fetch(options.url, {
         method,
         headers,
-        body: options.body ? JSON.stringify(options.body) : undefined,
+        body: serializedBody,
+        signal: controller.signal,
       });
 
       if (RETRYABLE_STATUS_CODES.includes(response.status) && attempt < config.maxRetries) {
@@ -134,24 +219,82 @@ export async function executeRequest(options: RequestOptions): Promise<ApiRespon
       };
     } catch (error) {
       lastError = error as Error;
+      // A request that hit the hard deadline is cancelled, not retried.
+      const isAbort =
+        error instanceof Error && (error.name === 'AbortError' || error.name === 'TimeoutError');
+      if (isAbort) {
+        throw new Error(`Request timed out after ${REQUEST_TIMEOUT_MS}ms`);
+      }
       if (error instanceof ApiError && !RETRYABLE_STATUS_CODES.includes(error.status)) {
         throw error;
       }
       if (attempt < config.maxRetries) {
         await sleep(1000 * Math.pow(2, attempt));
       }
+    } finally {
+      clearTimeout(timer);
     }
   }
 
   throw lastError ?? new Error('Request failed after retries');
 }
 
+/**
+ * Read a response body with a hard byte cap. Streaming the body lets us abort as
+ * soon as the cap is exceeded instead of buffering an unbounded (or dishonest
+ * Content-Length) payload into memory.
+ */
+async function readBounded(response: Response): Promise<string> {
+  const declared = Number(response.headers.get('content-length'));
+  if (Number.isFinite(declared) && declared > MAX_RESPONSE_BYTES) {
+    throw new Error(`Response too large (${declared} bytes > ${MAX_RESPONSE_BYTES} cap)`);
+  }
+  if (!response.body) {
+    return response.text();
+  }
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) {
+        total += value.byteLength;
+        if (total > MAX_RESPONSE_BYTES) {
+          await reader.cancel();
+          throw new Error(`Response exceeded ${MAX_RESPONSE_BYTES}-byte cap (truncated)`);
+        }
+        chunks.push(value);
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return new TextDecoder().decode(concatChunks(chunks, total));
+}
+
+function concatChunks(chunks: Uint8Array[], total: number): Uint8Array {
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const c of chunks) {
+    out.set(c, offset);
+    offset += c.byteLength;
+  }
+  return out;
+}
+
 async function parseResponseBody(response: Response): Promise<unknown> {
   const contentType = response.headers.get('content-type') ?? '';
+  const text = await readBounded(response);
   if (contentType.includes('application/json')) {
-    return response.json();
+    try {
+      return JSON.parse(text);
+    } catch {
+      return text;
+    }
   }
-  return response.text();
+  return text;
 }
 
 function sleep(ms: number): Promise<void> {

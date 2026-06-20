@@ -60,7 +60,7 @@ describe('schema-converter', () => {
         deprecated: false,
       };
 
-      const code = buildOperationInputSchema(op);
+      const { code } = buildOperationInputSchema(op);
       expect(code).toContain('z.object');
       expect(code).toContain('userId');
       expect(code).toContain('fields');
@@ -88,8 +88,9 @@ describe('schema-converter', () => {
         deprecated: false,
       };
 
-      const code = buildOperationInputSchema(op);
-      expect(code).toContain('body:');
+      const { code } = buildOperationInputSchema(op);
+      // Keys are JSON.stringify'd so any name is a legal TS object key (D-H1).
+      expect(code).toContain('"body":');
     });
 
     it('returns empty object schema for no params', () => {
@@ -104,11 +105,11 @@ describe('schema-converter', () => {
         deprecated: false,
       };
 
-      const code = buildOperationInputSchema(op);
+      const { code } = buildOperationInputSchema(op);
       expect(code).toBe('z.object({})');
     });
 
-    it('skips header params', () => {
+    it('exposes header params and maps them to their wire name (D-H2)', () => {
       const op: OperationDescriptor = {
         operationId: 'getData',
         method: 'get',
@@ -127,8 +128,38 @@ describe('schema-converter', () => {
         deprecated: false,
       };
 
-      const code = buildOperationInputSchema(op);
-      expect(code).toBe('z.object({})');
+      const { code, mappings } = buildOperationInputSchema(op);
+      // Header params are no longer dropped from the schema; the key is
+      // JSON.stringify'd so a name with a hyphen is still legal TS.
+      expect(code).toContain('"X-Request-Id":');
+      expect(mappings).toContainEqual({
+        inputKey: 'X-Request-Id',
+        wireName: 'X-Request-Id',
+        in: 'header',
+      });
+    });
+
+    it('emits hyphenated / digit-leading param names as valid TS keys (D-H1)', () => {
+      const op: OperationDescriptor = {
+        operationId: 'list',
+        method: 'get',
+        path: '/list',
+        tags: [],
+        parameters: [
+          { name: 'page-size', in: 'query', required: false, schema: { type: 'integer' } },
+          { name: '2fa', in: 'query', required: false, schema: { type: 'string' } },
+        ],
+        responses: [],
+        security: [],
+        deprecated: false,
+      };
+
+      const { code, mappings } = buildOperationInputSchema(op);
+      // Unquoted `page-size:` / `2fa:` would be a syntax error; JSON.stringify'd
+      // keys are legal and the original wire name is preserved for the request.
+      expect(code).toContain('"page-size":');
+      expect(code).toContain('"2fa":');
+      expect(mappings.map((m) => m.wireName)).toEqual(['page-size', '2fa']);
     });
   });
 });

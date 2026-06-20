@@ -28,6 +28,18 @@ export interface RecordingResult {
 const MAX_ENTRIES = 10_000;
 const MAX_RESPONSE_BODY_BYTES = 5 * 1024 * 1024; // 5 MB
 const SKIP_BODY_MIME_TYPES = ['image/', 'video/', 'audio/', 'font/', 'application/octet-stream'];
+// Playwright resource types that are large-by-nature; skip body capture for
+// them at the header level rather than buffering and discarding afterwards.
+const SKIP_BODY_RESOURCE_TYPES = new Set([
+  'image',
+  'media',
+  'font',
+  'stylesheet',
+  'websocket',
+  'eventsource',
+  'manifest',
+  'texttrack',
+]);
 
 export async function recordBrowserSession(options: RecorderOptions): Promise<RecordingResult> {
   const idleTimeout = options.timeout ?? 5 * 60 * 1000;
@@ -59,13 +71,15 @@ export async function recordBrowserSession(options: RecorderOptions): Promise<Re
     // Capture responses
     page.on('response', async (response) => {
       lastActivityTime = Date.now();
-      if (entries.length >= MAX_ENTRIES) return;
       const request = response.request();
       const pending = pendingRequests.get(request);
       if (!pending) return;
-      pendingRequests.delete(request);
-
+      // Always free the pending entry, even when we drop this response below.
+      // Returning before the delete (e.g. at the MAX_ENTRIES cap) leaks the
+      // pendingRequests map across a long interactive session.
       try {
+        if (entries.length >= MAX_ENTRIES) return;
+
         const entry = await buildHarEntry(request, response, pending.startTime);
         entries.push(entry);
         if (entries.length === MAX_ENTRIES) {
@@ -73,6 +87,8 @@ export async function recordBrowserSession(options: RecorderOptions): Promise<Re
         }
       } catch {
         // Some responses can't be read (e.g., redirects, aborted)
+      } finally {
+        pendingRequests.delete(request);
       }
     });
 
@@ -183,15 +199,31 @@ async function buildHarEntry(
     value,
   }));
 
-  // Response body — skip large or binary responses
+  // Response body — skip large or binary responses BEFORE buffering. The cap
+  // must be enforced at the header/resource-type level: once `response.body()`
+  // resolves, Playwright has already buffered the whole response into memory,
+  // so a post-hoc `body.length` check does nothing to protect us against a
+  // missing/dishonest Content-Length. We therefore skip body capture for
+  // large-by-type resources and for responses whose declared length exceeds
+  // the cap, and only fall back to reading when the size is known and bounded.
   let responseText: string | undefined;
   const responseMimeType = response.headers()['content-type'] ?? '';
-  const skipBody = SKIP_BODY_MIME_TYPES.some((m) => responseMimeType.startsWith(m));
-  const contentLength = parseInt(response.headers()['content-length'] ?? '0', 10);
+  const skipBody =
+    SKIP_BODY_MIME_TYPES.some((m) => responseMimeType.startsWith(m)) ||
+    SKIP_BODY_RESOURCE_TYPES.has(request.resourceType());
+  const rawContentLength = response.headers()['content-length'];
+  const parsedLength = rawContentLength === undefined ? NaN : parseInt(rawContentLength, 10);
+  const lengthKnown = Number.isFinite(parsedLength) && parsedLength >= 0;
+  const tooLargeByHeader = lengthKnown && parsedLength > MAX_RESPONSE_BODY_BYTES;
 
-  if (!skipBody && contentLength <= MAX_RESPONSE_BODY_BYTES) {
+  // Only buffer when we won't blow the cap: either the declared length is known
+  // and within the cap, or the length is unknown but the resource type is one
+  // we expect to be small (text/json/xhr/fetch/document).
+  if (!skipBody && !tooLargeByHeader) {
     try {
       const body = await response.body();
+      // Backstop: a dishonest/absent Content-Length can still under-report, so
+      // discard anything that turns out to exceed the cap after the fact.
       if (body.length <= MAX_RESPONSE_BODY_BYTES) {
         responseText = body.toString('utf-8');
       }

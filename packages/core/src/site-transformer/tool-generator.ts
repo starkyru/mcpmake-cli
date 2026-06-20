@@ -20,6 +20,7 @@ import type {
 import { buildBrowserLifecycleTools } from './browser-tools.js';
 import { toToolName, toToolTitle, toFileName, toFunctionName } from '../transformer/naming.js';
 import { escapeTemplateLiteral } from '../utils/sanitize.js';
+import { logger } from '../utils/logger.js';
 
 /**
  * Generate all tools from a site descriptor.
@@ -79,20 +80,46 @@ function buildFormTool(
   form: FormDescriptor,
   usedNames: Set<string>,
 ): SiteToolDefinition | null {
-  // Skip forms with no visible fields
-  const visibleFields = form.fields.filter((f) => f.fieldType !== 'hidden');
+  // Skip forms with no visible fields. File inputs are dropped here (with a
+  // warning) rather than emitted: Playwright fills them via setInputFiles, not
+  // page.fill, and modeling them as strings would generate a tool that looks
+  // valid but can never upload a file. (D-H6 / D-M6)
+  const visibleFields: FormFieldDescriptor[] = [];
+  for (const field of form.fields) {
+    if (field.fieldType === 'hidden') continue;
+    if (field.fieldType === 'file') {
+      logger.warn(
+        `Omitting file input "${field.name || field.label || '(unnamed)'}" from form ` +
+          `${form.semanticName || form.formId}: file uploads are not supported by generated ` +
+          `website tools.`,
+      );
+      continue;
+    }
+    visibleFields.push(field);
+  }
   if (visibleFields.length === 0) return null;
+
+  // Assign each field a stable, deduplicated MCP input key. The generated
+  // schema property and the generated handler key must agree, and the raw DOM
+  // name (e.g. "first-name", "user[email]") is rarely a valid/unique JS
+  // identifier. Selectors still drive the actual DOM, so the original name is
+  // not needed at fill time. (D-H4)
+  const keyedFields = assignInputKeys(visibleFields);
 
   // Generate tool name from semantic name or form fields
   const rawName = form.semanticName || inferFormName(form);
   const name = deduplicateName(toToolName(rawName), usedNames);
 
   // Build Zod input schema from form fields
-  const inputSchemaCode = buildFormInputSchema(visibleFields);
+  const inputSchemaCode = buildFormInputSchema(keyedFields);
+
+  // Pass the file-filtered, input-key-annotated fields to the handler template
+  // so it iterates exactly the same set of keys the schema declares.
+  const handlerForm: FormDescriptor = { ...form, fields: keyedFields };
 
   // Collect all selectors this tool depends on
   const selectors: SelectorSet[] = [form.selector];
-  for (const field of visibleFields) {
+  for (const field of keyedFields) {
     selectors.push(field.selector);
   }
   if (form.submitButton) selectors.push(form.submitButton);
@@ -114,7 +141,7 @@ function buildFormTool(
     toolType: 'page-action',
     pageId: page.pageId,
     pageUrl: page.url,
-    form,
+    form: handlerForm,
     selectors,
     returnsScreenshot: true,
     annotations: { readOnlyHint: false },
@@ -237,12 +264,40 @@ function buildFormInputSchema(fields: FormFieldDescriptor[]): string {
     const zodType = mapFieldToZodType(field);
     const desc = field.label || field.placeholder || field.name;
     const required = field.required ? '' : '.optional()';
+    // Emit the property as a JSON-stringified key so any input key (incl. ones
+    // with hyphens or leading digits) is a valid, quoted object key — and use
+    // the SAME stable inputKey the handler reads.
+    const key = field.inputKey ?? sanitizeFieldName(field.name);
     fieldLines.push(
-      `  ${sanitizeFieldName(field.name)}: ${zodType}${required}.describe('${escapeString(desc)}'),`,
+      `  ${JSON.stringify(key)}: ${zodType}${required}.describe('${escapeString(desc)}'),`,
     );
   }
 
   return `z.object({\n${fieldLines.join('\n')}\n})`;
+}
+
+/**
+ * Build a Zod enum from a select/radio field's options. <select> options carry
+ * distinct labels and submit *values*; Playwright's selectOption matches by
+ * value, so the schema must validate against values, not visible labels.
+ */
+function buildOptionEnum(field: FormFieldDescriptor): string | null {
+  // Prefer the label/value pairs (values are what get submitted/matched).
+  if (field.optionPairs && field.optionPairs.length > 0) {
+    const values = field.optionPairs.map((o) => o.value);
+    const unique = [...new Set(values)];
+    if (unique.length > 0) {
+      const opts = unique.map((v) => `'${escapeString(v)}'`).join(', ');
+      return `z.enum([${opts}])`;
+    }
+  }
+  // Fallback for older descriptors that only captured labels.
+  if (field.options && field.options.length > 0) {
+    const unique = [...new Set(field.options)];
+    const opts = unique.map((o) => `'${escapeString(o)}'`).join(', ');
+    return `z.enum([${opts}])`;
+  }
+  return null;
 }
 
 function mapFieldToZodType(field: FormFieldDescriptor): string {
@@ -257,17 +312,9 @@ function mapFieldToZodType(field: FormFieldDescriptor): string {
     case 'url':
       return 'z.string().url()';
     case 'select':
-      if (field.options && field.options.length > 0) {
-        const opts = field.options.map((o) => `'${escapeString(o)}'`).join(', ');
-        return `z.enum([${opts}])`;
-      }
-      return 'z.string()';
+      return buildOptionEnum(field) ?? 'z.string()';
     case 'radio':
-      if (field.options && field.options.length > 0) {
-        const opts = field.options.map((o) => `'${escapeString(o)}'`).join(', ');
-        return `z.enum([${opts}])`;
-      }
-      return 'z.string()';
+      return buildOptionEnum(field) ?? 'z.string()';
     default:
       return 'z.string()';
   }
@@ -321,6 +368,29 @@ function sanitizeFieldName(name: string): string {
   // Make valid JS identifier
   const sanitized = name.replace(/[^a-zA-Z0-9_]/g, '_').replace(/^[0-9]/, '_$&');
   return sanitized || '_field';
+}
+
+/**
+ * Return clones of the given fields, each annotated with a stable, unique
+ * `inputKey`. Sanitization can map distinct DOM names onto the same key
+ * (e.g. `foo-bar` and `foo_bar`), which would otherwise produce duplicate
+ * schema properties and a key the handler can't disambiguate; collisions are
+ * resolved by appending a numeric suffix. The handler and schema both read
+ * this key, so they always agree.
+ */
+function assignInputKeys(fields: FormFieldDescriptor[]): FormFieldDescriptor[] {
+  const usedKeys = new Set<string>(['sessionId']);
+  return fields.map((field) => {
+    const base = sanitizeFieldName(field.name || field.label || 'field');
+    let candidate = base;
+    let suffix = 2;
+    while (usedKeys.has(candidate)) {
+      candidate = `${base}_${suffix}`;
+      suffix++;
+    }
+    usedKeys.add(candidate);
+    return { ...field, inputKey: candidate };
+  });
 }
 
 function escapeString(str: string): string {

@@ -2,7 +2,11 @@ import type { ProjectManifest } from '../types/index.js';
 import type { SiteProjectManifest, SiteToolDefinition } from '../types/site.js';
 import type { CodeUnit } from './code-writer.js';
 import { writeCodeUnits } from './code-writer.js';
-import { scaffoldProjectFiles, scaffoldSharedModules } from './project-scaffolder.js';
+import {
+  scaffoldProjectFiles,
+  scaffoldSharedModules,
+  escapeDotenvValue,
+} from './project-scaffolder.js';
 import { scaffoldSiteProjectFiles, scaffoldSiteSharedModules } from './site-scaffolder.js';
 import { renderTemplate } from './template-loader.js';
 import { renderSiteTemplate } from './site-template-loader.js';
@@ -20,6 +24,29 @@ export interface EmitOptions {
 }
 
 const SAFE_VERSION_RE = /^[0-9a-zA-Z._+-]{1,50}$/;
+
+/**
+ * Whether any configured auth scheme sends the API key as a query parameter.
+ * Query-string API-key auth cannot be applied as a header, so the generated
+ * tool handler appends it during URL construction instead (D-H2). Used to gate
+ * the `apiKeyQueryName` config field and the handler's append logic so projects
+ * without query auth are byte-for-byte unchanged.
+ */
+function hasQueryApiKey(manifest: ProjectManifest): boolean {
+  return manifest.authSchemes.some((s) => s.type === 'apiKey' && s.in === 'query');
+}
+
+/**
+ * Per-tool render data for the handler templates. Carries the manifest-level
+ * `hasQueryApiKey` flag onto each tool so the template can emit the query
+ * API-key append without needing access to the whole manifest.
+ */
+function toToolHandlerView(
+  tool: ToolDefinition,
+  manifest: ProjectManifest,
+): Record<string, unknown> {
+  return { ...tool, hasQueryApiKey: hasQueryApiKey(manifest) };
+}
 
 /**
  * Serialize named environments for the generated `.env.example` / `.dev.vars`
@@ -108,7 +135,7 @@ export async function emitProject(manifest: ProjectManifest, options: EmitOption
       for (const tool of staticTools) {
         units.push({
           filePath: `src/tools/${tool.fileName}.ts`,
-          content: renderTemplate('tool-handler.ts', tool),
+          content: renderTemplate('tool-handler.ts', toToolHandlerView(tool, manifest)),
         });
       }
       units.push({
@@ -126,7 +153,7 @@ export async function emitProject(manifest: ProjectManifest, options: EmitOption
     for (const tool of manifest.tools) {
       units.push({
         filePath: `src/tools/${tool.fileName}.ts`,
-        content: renderTemplate('tool-handler.ts', tool),
+        content: renderTemplate('tool-handler.ts', toToolHandlerView(tool, manifest)),
       });
     }
 
@@ -242,7 +269,19 @@ export async function emitWorkerProject(
     { filePath: 'README.md', content: renderWorkerTemplate('readme.md', templateData) },
     {
       filePath: '.dev.vars.example',
-      content: renderWorkerTemplate('dev-vars.example', templateData),
+      // Escape the dotenv VALUES (baseUrl, defaultEnvironment) at this emit
+      // boundary so a value with a CR/LF or `#` cannot inject an extra
+      // KEY=value line into the operator's `.dev.vars` (D-M3). Env NAMES are
+      // already validated upstream in the Stainless translator. The wider
+      // templateData keeps the raw (url-literal-sanitized) baseUrl for the
+      // non-dotenv sinks (wrangler.toml, config.ts).
+      content: renderWorkerTemplate('dev-vars.example', {
+        ...templateData,
+        baseUrl: escapeDotenvValue(manifest.baseUrl),
+        defaultEnvironment: manifest.defaultEnvironment
+          ? escapeDotenvValue(manifest.defaultEnvironment)
+          : manifest.defaultEnvironment,
+      }),
     },
     { filePath: '.gitignore', content: renderWorkerTemplate('gitignore', templateData) },
     // Runtime-agnostic modules reused from the Node templates (fetch / Buffer /
@@ -259,7 +298,7 @@ export async function emitWorkerProject(
   for (const tool of manifest.tools) {
     units.push({
       filePath: `src/tools/${tool.fileName}.ts`,
-      content: renderWorkerTemplate('tool-handler.ts', tool),
+      content: renderWorkerTemplate('tool-handler.ts', toToolHandlerView(tool, manifest)),
     });
   }
   units.push({
@@ -367,7 +406,23 @@ function toPythonToolView(tool: ToolDefinition): Record<string, unknown> {
     apiName,
     pyName: uniquePyName(apiName),
   }));
-  return { ...tool, pyPathParams, pyQueryParams };
+  // Header/cookie request params (D-H2). Driven off paramMappings so the
+  // function arg uses a sanitized, de-duplicated Python identifier while the
+  // upstream request still uses the original wire name. De-duplicated by wire
+  // name so a header/cookie repeated across mappings cannot emit two args.
+  const dedupeByWire = (kind: 'header' | 'cookie'): { wireName: string; pyName: string }[] => {
+    const seen = new Set<string>();
+    const out: { wireName: string; pyName: string }[] = [];
+    for (const m of tool.paramMappings) {
+      if (m.in !== kind || seen.has(m.wireName)) continue;
+      seen.add(m.wireName);
+      out.push({ wireName: m.wireName, pyName: uniquePyName(m.wireName) });
+    }
+    return out;
+  };
+  const pyHeaderParams = dedupeByWire('header');
+  const pyCookieParams = dedupeByWire('cookie');
+  return { ...tool, pyPathParams, pyQueryParams, pyHeaderParams, pyCookieParams };
 }
 
 /**
@@ -396,6 +451,8 @@ export async function emitPythonProject(
     tools: manifest.tools.map(toPythonToolView),
     authEnvVars: manifest.envVars.filter((v) => v.name !== 'BASE_URL'),
     environmentsJson: environmentsJson(manifest),
+    // Gate the apiKey-in-query merge so projects without query auth are unchanged.
+    hasQueryApiKey: hasQueryApiKey(manifest),
   };
 
   units.push({
@@ -410,7 +467,18 @@ export async function emitPythonProject(
 
   units.push({
     filePath: '.env.example',
-    content: renderPythonTemplate('env.example', templateData),
+    // Escape the dotenv VALUES (baseUrl, defaultEnvironment) at this emit
+    // boundary so a value with a CR/LF or `#` cannot inject an extra KEY=value
+    // line into the operator's `.env` (D-M3). Env NAMES are already validated
+    // upstream. The wider templateData keeps the raw (url-literal-sanitized)
+    // baseUrl for the Python string-literal sink in server.py.
+    content: renderPythonTemplate('env.example', {
+      ...templateData,
+      baseUrl: escapeDotenvValue(manifest.baseUrl),
+      defaultEnvironment: manifest.defaultEnvironment
+        ? escapeDotenvValue(manifest.defaultEnvironment)
+        : manifest.defaultEnvironment,
+    }),
   });
 
   if (manifest.transport === 'http') {

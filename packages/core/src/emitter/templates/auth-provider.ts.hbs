@@ -3,55 +3,116 @@ import type { AppConfig } from './config.js';
 import { getAccessToken } from './oauth.js';
 {{/if}}
 
+/**
+ * Per-operation outbound-auth requirement (D-H2), forwarded from the tool
+ * handler. Mirrors the generator's ToolAuthRequirement:
+ *   - undefined            → apply every configured scheme (global default).
+ *   - { mode: 'public' }   → apply NO auth (operation declared `security: []`).
+ *   - { mode: 'schemes' }  → apply ONLY the listed OpenAPI scheme names.
+ */
+export type AuthRequirement =
+  | { mode: 'public' }
+  | { mode: 'schemes'; schemeNames: string[] };
+
+/** Whether the scheme named `name` should be applied for this requirement. */
+function schemeApplies(req: AuthRequirement | undefined, name: string): boolean {
+  if (!req) return true; // no per-op requirement → legacy global behavior
+  if (req.mode === 'public') return false; // explicit `security: []`
+  return req.schemeNames.includes(name);
+}
+
 {{#if hasOAuth}}
-export async function getAuthHeaders(config: AppConfig): Promise<Record<string, string>> {
+export async function getAuthHeaders(
+  config: AppConfig,
+  requirement?: AuthRequirement,
+): Promise<Record<string, string>> {
 {{else}}
-export function getAuthHeaders(config: AppConfig): Record<string, string> {
+export function getAuthHeaders(
+  config: AppConfig,
+  requirement?: AuthRequirement,
+): Record<string, string> {
 {{/if}}
   const headers: Record<string, string> = {};
 
 {{#each authSchemes}}
 {{#if (eq type "apiKey")}}
 {{#if (eq in "header")}}
-  if (config.apiKey) {
+  if (config.apiKey && schemeApplies(requirement, {{{json schemeName}}})) {
     headers['{{headerName}}'] = config.apiKey;
   }
 {{/if}}
+{{#if (eq in "cookie")}}
+  // API key sent as a cookie — appended to the Cookie header so it survives
+  // alongside any per-operation cookie parameters set by the handler.
+  if (config.apiKey && schemeApplies(requirement, {{{json schemeName}}})) {
+    const existing = headers['Cookie'];
+    const pair = '{{headerName}}=' + encodeURIComponent(config.apiKey);
+    headers['Cookie'] = existing ? existing + '; ' + pair : pair;
+  }
+{{/if}}
 {{#if (eq in "query")}}
-  // API key sent as query parameter — handled in request URL construction
+  // API key is sent as a query parameter (`{{headerName}}`). Query-string auth is
+  // applied during URL construction (apiKeyQueryName/apiKeyQueryValue in config),
+  // not as a header, so there is nothing to add here.
 {{/if}}
 {{/if}}
 {{#if (eq type "http-bearer")}}
-  if (config.bearerToken) {
+  if (config.bearerToken && schemeApplies(requirement, {{{json schemeName}}})) {
     headers['Authorization'] = `Bearer ${config.bearerToken}`;
   }
 {{/if}}
 {{#if (eq type "http-basic")}}
-  if (config.basicUsername && config.basicPassword) {
+  if (config.basicUsername && config.basicPassword && schemeApplies(requirement, {{{json schemeName}}})) {
     const encoded = Buffer.from(`${config.basicUsername}:${config.basicPassword}`).toString('base64');
     headers['Authorization'] = `Basic ${encoded}`;
   }
 {{/if}}
 {{#if (eq type "oauth2")}}
   // OAuth2 — use token management with refresh
-  try {
-    const token = await getAccessToken({
-      clientId: config.oauth2ClientId ?? '',
-      clientSecret: config.oauth2ClientSecret,
-      authorizationUrl: config.oauth2AuthorizationUrl ?? '',
-      tokenUrl: config.oauth2TokenUrl ?? '',
-      scopes: [],
-      redirectUri: config.oauth2RedirectUri ?? 'http://localhost:3000/callback',
-    });
-    headers['Authorization'] = `Bearer ${token}`;
-  } catch {
-    // Fallback to pre-obtained token
-    if (config.oauth2Token) {
-      headers['Authorization'] = `Bearer ${config.oauth2Token}`;
+  if (schemeApplies(requirement, {{{json schemeName}}})) {
+    try {
+      const token = await getAccessToken({
+        clientId: config.oauth2ClientId ?? '',
+        clientSecret: config.oauth2ClientSecret,
+        authorizationUrl: config.oauth2AuthorizationUrl ?? '',
+        tokenUrl: config.oauth2TokenUrl ?? '',
+        scopes: [],
+        redirectUri: config.oauth2RedirectUri ?? 'http://localhost:3000/callback',
+      });
+      headers['Authorization'] = `Bearer ${token}`;
+    } catch {
+      // Fallback to pre-obtained token
+      if (config.oauth2Token) {
+        headers['Authorization'] = `Bearer ${config.oauth2Token}`;
+      }
     }
   }
 {{/if}}
 {{/each}}
 
   return headers;
+}
+
+/**
+ * Query-string auth parameters (apiKey-in-query schemes), keyed by query-param
+ * name. Applied by the tool handler during URL construction — a query parameter
+ * cannot be sent as a request header (D-H2). Respects the same per-operation
+ * requirement as the headers: a public operation gets none, a scheme-scoped one
+ * gets only its scheme(s).
+ */
+export function getAuthQueryParams(
+  config: AppConfig,
+  requirement?: AuthRequirement,
+): Record<string, string> {
+  const params: Record<string, string> = {};
+{{#each authSchemes}}
+{{#if (eq type "apiKey")}}
+{{#if (eq in "query")}}
+  if (config.apiKey && config.apiKeyQueryName && schemeApplies(requirement, {{{json schemeName}}})) {
+    params[config.apiKeyQueryName] = config.apiKey;
+  }
+{{/if}}
+{{/if}}
+{{/each}}
+  return params;
 }

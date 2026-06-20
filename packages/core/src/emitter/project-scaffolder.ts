@@ -8,6 +8,28 @@ import { renderTemplate } from './template-loader.js';
  */
 const DISCOVERY_RECOMMEND_THRESHOLD = 50;
 
+/**
+ * Escape an arbitrary string for use as a single-line dotenv value in the
+ * generated `.env.example` (the file users are told to copy to `.env`).
+ *
+ * Untrusted values (e.g. a Stainless `defaultEnvironment` name, a base URL) are
+ * interpolated raw by Handlebars (`noEscape: true`), so a value containing a
+ * newline or `#` could inject extra `KEY=value` lines or a comment — config
+ * injection into the operator's `.env`. We collapse all line breaks to a single
+ * space and wrap the value in double quotes (dotenv treats a quoted value as a
+ * single token) whenever it contains a character that would otherwise change how
+ * dotenv parses the line. Lossless for benign values (those are returned as-is).
+ */
+export function escapeDotenvValue(raw: string): string {
+  // Neutralize any CR/LF — these are what break out into new dotenv lines.
+  const oneLine = raw.replace(/[\r\n]+/g, ' ');
+  // A bare value is safe only when it has no characters dotenv treats specially
+  // at the start/inside an unquoted value (#, quotes, backslash, surrounding ws).
+  const needsQuoting = /[#"'\\]/.test(oneLine) || /^\s|\s$/.test(oneLine) || oneLine !== raw;
+  if (!needsQuoting) return oneLine;
+  return `"${oneLine.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+}
+
 export function scaffoldProjectFiles(manifest: ProjectManifest): CodeUnit[] {
   const dynamicDiscovery = manifest.dynamicDiscovery ?? false;
   const units: CodeUnit[] = [
@@ -23,9 +45,16 @@ export function scaffoldProjectFiles(manifest: ProjectManifest): CodeUnit[] {
       filePath: '.env.example',
       content: renderTemplate('env.example', {
         ...manifest,
+        // Serialize every untrusted scalar through the dotenv escaper at this
+        // emit boundary so a value with a newline/`#` cannot inject extra lines.
+        baseUrl: escapeDotenvValue(manifest.baseUrl),
+        defaultEnvironment: manifest.defaultEnvironment
+          ? escapeDotenvValue(manifest.defaultEnvironment)
+          : manifest.defaultEnvironment,
         authEnvVars: manifest.envVars.filter((v) => v.name !== 'BASE_URL'),
         // Pre-seed MCP_ENVIRONMENTS when an importer carried over named
         // environments (e.g. Stainless `environments:`); omitted otherwise.
+        // JSON.stringify already escapes the keys/values into a single token.
         environmentsJson:
           manifest.environments && Object.keys(manifest.environments).length > 0
             ? JSON.stringify(manifest.environments)

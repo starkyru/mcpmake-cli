@@ -2,6 +2,9 @@ import { z } from 'zod';
 import { executeRequest } from '../http.js';
 import { applyJqFilter } from '../response-filter.js';
 import type { AppConfig } from '../config.js';
+{{#if hasQueryApiKey}}
+import { getAuthQueryParams } from '../auth.js';
+{{/if}}
 
 // Per-call control arguments shared by every generated tool. Optional and
 // stripped before the upstream request, so omitting them is a no-op.
@@ -70,18 +73,30 @@ export async function handler(
 async function runRequest(rawInput: Record<string, unknown>, config: AppConfig): Promise<unknown> {
   // Pull off the per-call control args so they are never forwarded upstream.
   const { jq_filter: jqFilter, idempotency_key: idempotencyKey, ...input } = rawInput;
+{{#if hasQueryApiKey}}
+  let url = buildUrl(input, config.baseUrl);
+  // apiKey-in-query auth: append the key as a query parameter (it cannot be sent
+  // as a header). Respects the per-operation security requirement (D-H2).
+  url = appendQueryParams(url, getAuthQueryParams(config, {{#if authRequirement}}{{{json authRequirement}}}{{else}}undefined{{/if}}));
+{{else}}
   const url = buildUrl(input, config.baseUrl);
+{{/if}}
 
   const response = await executeRequest({
     method: '{{method}}',
     url,
 {{#if hasRequestBody}}
-    body: input.body,
+    body: input.{{bodyInputKey}},
     contentType: '{{requestBodyContentType}}',
+    bodyEncoding: '{{bodyEncoding}}',
 {{/if}}
-    headers: {},
+    headers: buildHeaders(input),
     config,
     idempotencyKey: typeof idempotencyKey === 'string' ? idempotencyKey : undefined,
+{{#if authRequirement}}
+    // Per-operation outbound-auth requirement derived from OpenAPI `security` (D-H2).
+    authRequirement: {{{json authRequirement}}},
+{{/if}}
   });
 
   let result: unknown = response.data;
@@ -101,3 +116,23 @@ async function runRequest(rawInput: Record<string, unknown>, config: AppConfig):
 function buildUrl(params: Record<string, unknown>, baseUrl: string): string {
 {{{buildUrlBody}}}
 }
+
+// Build the upstream header/cookie set from the tool input. Header and cookie
+// parameters are sent under their original API names (see paramMappings).
+function buildHeaders(params: Record<string, unknown>): Record<string, string> {
+{{{buildHeadersBody}}}
+}
+{{#if hasQueryApiKey}}
+
+// Append extra query parameters (apiKey-in-query auth) onto an already-built URL,
+// preserving any existing query string and URL-encoding name and value.
+function appendQueryParams(url: string, extra: Record<string, string>): string {
+  const keys = Object.keys(extra);
+  if (keys.length === 0) return url;
+  const sep = url.includes('?') ? '&' : '?';
+  const qs = keys
+    .map((k) => encodeURIComponent(k) + '=' + encodeURIComponent(extra[k]))
+    .join('&');
+  return url + sep + qs;
+}
+{{/if}}

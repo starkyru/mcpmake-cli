@@ -7,7 +7,7 @@ import { chromium } from 'playwright';
 import type { Browser, Page, Request, Response } from 'playwright';
 import type { Entry, Header } from 'har-format';
 import type { SiteDescriptor, PageDescriptor } from '../types/site.js';
-import { parsePage } from './dom-parser.js';
+import { parsePage, isSameOrigin } from './dom-parser.js';
 import { captureViewportScreenshot } from './screenshot-capture.js';
 import { logger } from '../utils/logger.js';
 import crypto from 'node:crypto';
@@ -59,6 +59,9 @@ export async function crawlSite(options: CrawlOptions): Promise<CrawlResult> {
     throw new Error('Only http/https URLs are supported');
   }
   const baseUrl = `${parsedUrl.protocol}//${parsedUrl.host}`;
+  // Normalized origin used for same-origin admission. A string-prefix check on
+  // baseUrl would admit prefix-spoofing hosts (e.g. example.com.attacker.test).
+  const baseOrigin = parsedUrl.origin;
 
   const captureHar = options.captureHar ?? false;
 
@@ -87,12 +90,15 @@ export async function crawlSite(options: CrawlOptions): Promise<CrawlResult> {
         const request = response.request();
         const pending = pendingRequests.get(request);
         if (!pending) return;
-        pendingRequests.delete(request);
         try {
           const entry = await buildCrawlHarEntry(request, response, pending.startTime);
           harEntries.push(entry);
         } catch {
           // Some responses can't be read (redirects, aborted)
+        } finally {
+          // Always free the pending entry, even on read failure, so the map
+          // can't grow unbounded across a long crawl.
+          pendingRequests.delete(request);
         }
       });
     }
@@ -104,9 +110,11 @@ export async function crawlSite(options: CrawlOptions): Promise<CrawlResult> {
       const item = queue.shift()!;
       const normalizedUrl = normalizeUrl(item.url);
 
-      // Skip if already visited or different origin
+      // Skip if already visited or different origin. Origin is compared via
+      // parsed URL.origin, never a string prefix, so a malicious link to
+      // `https://<base>.attacker.test` cannot pull the crawler off-origin.
       if (visited.has(normalizedUrl)) continue;
-      if (!item.url.startsWith(baseUrl)) continue;
+      if (!isSameOrigin(item.url, baseOrigin)) continue;
 
       visited.add(normalizedUrl);
 
@@ -144,7 +152,11 @@ export async function crawlSite(options: CrawlOptions): Promise<CrawlResult> {
         // Queue navigation links for further crawling
         if (item.currentDepth < depth) {
           for (const link of pageDescriptor.links) {
-            if (link.isNavigation && !visited.has(normalizeUrl(link.href))) {
+            if (
+              link.isNavigation &&
+              isSameOrigin(link.href, baseOrigin) &&
+              !visited.has(normalizeUrl(link.href))
+            ) {
               queue.push({ url: link.href, currentDepth: item.currentDepth + 1 });
             }
           }
@@ -192,6 +204,18 @@ export async function crawlSite(options: CrawlOptions): Promise<CrawlResult> {
 
 const MAX_RESPONSE_BODY_BYTES = 5 * 1024 * 1024;
 const SKIP_BODY_MIME_TYPES = ['image/', 'video/', 'audio/', 'font/', 'application/octet-stream'];
+// Large-by-nature Playwright resource types; skip body capture at the header
+// level instead of buffering the whole response and discarding it afterwards.
+const SKIP_BODY_RESOURCE_TYPES = new Set([
+  'image',
+  'media',
+  'font',
+  'stylesheet',
+  'websocket',
+  'eventsource',
+  'manifest',
+  'texttrack',
+]);
 
 async function buildCrawlHarEntry(
   request: Request,
@@ -217,12 +241,22 @@ async function buildCrawlHarEntry(
     value,
   }));
 
+  // Enforce the body cap at the header/resource-type level: once
+  // `response.body()` resolves, Playwright has already buffered the whole
+  // response, so a post-hoc length check can't protect memory against a
+  // missing or dishonest Content-Length. Skip large-by-type resources and
+  // over-cap declared lengths up front; the post-read check is only a backstop.
   let responseText: string | undefined;
   const responseMimeType = response.headers()['content-type'] ?? '';
-  const skipBody = SKIP_BODY_MIME_TYPES.some((m) => responseMimeType.startsWith(m));
-  const contentLength = parseInt(response.headers()['content-length'] ?? '0', 10);
+  const skipBody =
+    SKIP_BODY_MIME_TYPES.some((m) => responseMimeType.startsWith(m)) ||
+    SKIP_BODY_RESOURCE_TYPES.has(request.resourceType());
+  const rawContentLength = response.headers()['content-length'];
+  const parsedLength = rawContentLength === undefined ? NaN : parseInt(rawContentLength, 10);
+  const lengthKnown = Number.isFinite(parsedLength) && parsedLength >= 0;
+  const tooLargeByHeader = lengthKnown && parsedLength > MAX_RESPONSE_BODY_BYTES;
 
-  if (!skipBody && contentLength <= MAX_RESPONSE_BODY_BYTES) {
+  if (!skipBody && !tooLargeByHeader) {
     try {
       const body = await response.body();
       if (body.length <= MAX_RESPONSE_BODY_BYTES) {

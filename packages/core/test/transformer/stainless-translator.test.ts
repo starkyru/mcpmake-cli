@@ -9,7 +9,9 @@ import {
   translateStainless,
   toolNameFromTree,
   singularize,
+  isSafeEnvironmentName,
 } from '../../src/transformer/stainless-translator.js';
+import { escapeDotenvValue } from '../../src/emitter/project-scaffolder.js';
 
 /** A fresh spec per test — translateStainless mutates the document in place. */
 function makeApi(): OpenAPIV3.Document {
@@ -197,6 +199,55 @@ describe('translateStainless — environments', () => {
     const api = makeApi();
     const t = translateStainless({ environments: { staging: 'https://staging.acme.com' } }, api);
     expect(t.defaultEnvironment).toBe('staging');
+  });
+});
+
+describe('D-M3 — environment-name injection into .env.example', () => {
+  it('drops an environment whose name contains a newline (dotenv line injection)', () => {
+    const api = makeApi();
+    const t = translateStainless(
+      {
+        environments: {
+          'evil\nMCP_AUTH_TOKEN=attacker': 'https://evil.acme.com',
+          production: 'https://api.acme.com/v1',
+        },
+      },
+      api,
+    );
+    // The malicious key must not survive into the emitted environments map…
+    expect(Object.keys(t.environments ?? {})).toEqual(['production']);
+    expect(t.defaultEnvironment).toBe('production');
+    // …and the operator is warned about the rejection.
+    expect(t.warnings.join('\n')).toMatch(/not a safe token/);
+  });
+
+  it('rejects names with quotes/whitespace but keeps benign token names', () => {
+    expect(isSafeEnvironmentName('production')).toBe(true);
+    expect(isSafeEnvironmentName('us-east_1.prod')).toBe(true);
+    expect(isSafeEnvironmentName('evil\nINJECT=1')).toBe(false);
+    expect(isSafeEnvironmentName('has space')).toBe(false);
+    expect(isSafeEnvironmentName('has"quote')).toBe(false);
+    expect(isSafeEnvironmentName('')).toBe(false);
+  });
+
+  describe('escapeDotenvValue', () => {
+    it('returns benign values unchanged (no over-escaping)', () => {
+      expect(escapeDotenvValue('production')).toBe('production');
+      expect(escapeDotenvValue('https://api.example.com/v1')).toBe('https://api.example.com/v1');
+    });
+
+    it('collapses newlines so a value cannot inject extra dotenv lines', () => {
+      const out = escapeDotenvValue('evil\nMCP_AUTH_TOKEN=attacker');
+      expect(out).not.toContain('\n');
+      // A consumer parsing `KEY=<out>` sees a single line, not a second assignment.
+      expect(`API_ENVIRONMENT=${out}`.split('\n')).toHaveLength(1);
+    });
+
+    it('quotes and escapes values with dotenv-significant characters', () => {
+      expect(escapeDotenvValue('has#hash')).toBe('"has#hash"');
+      expect(escapeDotenvValue('a"b\\c')).toBe('"a\\"b\\\\c"');
+      expect(escapeDotenvValue(' leading-space')).toBe('" leading-space"');
+    });
   });
 });
 

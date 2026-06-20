@@ -25,7 +25,15 @@ function capture(): { name: string; def: Record<string, unknown>; handler: unkno
 }
 
 describe('{{name}}', () => {
-  // Tool: {{name}} — {{method}} {{pathTemplate}}
+  // Source operation metadata. Serialized via JSON.stringify on the builder side
+  // so an untrusted OpenAPI path (which can contain newlines/quotes) can never
+  // escape a comment or string literal into module-level code.
+  const operation = {{{operationMeta}}};
+
+  it('targets the source operation', () => {
+    expect(operation.method).toBe('{{method}}');
+    expect(typeof operation.path).toBe('string');
+  });
 
   it('registers exactly one tool under its name', () => {
     const calls = capture();

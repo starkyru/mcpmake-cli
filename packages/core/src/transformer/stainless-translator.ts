@@ -172,9 +172,20 @@ export function translateStainless(
   let defaultEnvironment: string | undefined;
   let baseUrl: string | undefined;
   if (config.environments && typeof config.environments === 'object') {
-    const entries = Object.entries(config.environments).filter(
-      ([, v]) => typeof v === 'string' && v,
-    ) as [string, string][];
+    const entries = (
+      Object.entries(config.environments).filter(([, v]) => typeof v === 'string' && v) as [
+        string,
+        string,
+      ][]
+    ).filter(([name]) => {
+      // The name is emitted as `API_ENVIRONMENT=<name>` (and as a JSON key in
+      // MCP_ENVIRONMENTS) into the .env.example users copy to .env. Reject any
+      // name outside a conservative token grammar so a name with a newline or
+      // shell metacharacters cannot inject extra dotenv lines (config injection).
+      if (isSafeEnvironmentName(name)) return true;
+      warnings.push(`Ignoring environment "${name}" — name is not a safe token ([A-Za-z0-9_.-]).`);
+      return false;
+    });
     if (entries.length > 0) {
       environments = Object.fromEntries(entries);
       defaultEnvironment = 'production' in environments ? 'production' : entries[0][0];
@@ -457,6 +468,15 @@ export function sanitizeEnvVarName(raw: string): string | undefined {
   let name = raw.trim().replace(/[^A-Za-z0-9_]/g, '_');
   if (name && /^[0-9]/.test(name)) name = `_${name}`;
   return name.length > 0 ? name : undefined;
+}
+
+/**
+ * A Stainless environment name is safe to emit into `.env.example` only when it
+ * matches a conservative token grammar — no whitespace (incl. newlines that
+ * would inject extra dotenv lines), quotes, or shell/dotenv metacharacters.
+ */
+export function isSafeEnvironmentName(name: string): boolean {
+  return /^[A-Za-z0-9_.-]+$/.test(name);
 }
 
 function resolveMcpServer(config: StainlessConfig): Record<string, unknown> | undefined {

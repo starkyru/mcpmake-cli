@@ -9,6 +9,7 @@ import type {
   JsonSchema,
   McpExtensions,
 } from '../types/index.js';
+import { resolveServerUrl } from '../utils/sanitize.js';
 
 const HTTP_METHODS: HttpMethod[] = ['get', 'post', 'put', 'patch', 'delete', 'head', 'options'];
 
@@ -21,7 +22,16 @@ export interface ExtractionResult {
 
 export function extractOperations(api: OpenAPIV3.Document): ExtractionResult {
   const operations: OperationDescriptor[] = [];
-  const baseUrl = api.servers?.[0]?.url ?? '';
+  const server = api.servers?.[0];
+  // Resolve OpenAPI server-variable placeholders (`{version}` etc.) from their
+  // declared defaults so the base URL keeps its real path. Stripping the braces
+  // downstream would silently route to a different endpoint (D-M4).
+  const baseUrl = server?.url
+    ? resolveServerUrl(
+        server.url,
+        server.variables as Record<string, { default?: string }> | undefined,
+      )
+    : '';
   const securitySchemes = (api.components?.securitySchemes ?? {}) as Record<
     string,
     OpenAPIV3.SecuritySchemeObject
@@ -57,6 +67,10 @@ export function extractOperations(api: OpenAPIV3.Document): ExtractionResult {
         ),
         responses: extractResponses(operation.responses as OpenAPIV3.ResponsesObject),
         security: extractSecurity(operation.security ?? globalSecurity),
+        // An explicit `security: []` on the operation makes it public (overrides
+        // global security). Detected here because extractSecurity flattens the
+        // distinction away (D-H2).
+        securityOptional: Array.isArray(operation.security) && operation.security.length === 0,
         deprecated: operation.deprecated ?? false,
         mcpExtensions,
       });

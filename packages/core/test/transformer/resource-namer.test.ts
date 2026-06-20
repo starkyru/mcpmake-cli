@@ -5,7 +5,13 @@ import type { OperationDescriptor } from '../../src/types/index.js';
 
 /** Minimal operation stub — resourceTreeNames only reads method/path/operationId. */
 function op(method: string, path: string, operationId = 'origId'): OperationDescriptor {
-  return { operationId, method, path, parameters: [], responses: [] } as unknown as OperationDescriptor;
+  return {
+    operationId,
+    method,
+    path,
+    parameters: [],
+    responses: [],
+  } as unknown as OperationDescriptor;
 }
 
 describe('deriveResourceName — REST resource tree → tool name', () => {

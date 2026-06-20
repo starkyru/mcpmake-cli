@@ -191,10 +191,14 @@ const initCommand = defineCommand({
     // checks are enforced inside buildWorkflowYaml as a hard safety net).
     const version = String(args['mcpmake-version']);
     if (!SAFE_PATH.test(args.spec)) {
-      await fail(`Unsafe spec path "${args.spec}". Use a plain relative path (letters, digits, . _ / -).`);
+      await fail(
+        `Unsafe spec path "${args.spec}". Use a plain relative path (letters, digits, . _ / -).`,
+      );
     }
     if (!SAFE_PATH.test(String(args.output))) {
-      await fail(`Unsafe --output "${args.output}". Use a plain relative path (letters, digits, . _ / -).`);
+      await fail(
+        `Unsafe --output "${args.output}". Use a plain relative path (letters, digits, . _ / -).`,
+      );
     }
     if (args.name !== undefined && !SAFE_TOKEN.test(String(args.name))) {
       await fail(`Unsafe --name "${args.name}". Use letters, digits, . _ - only.`);

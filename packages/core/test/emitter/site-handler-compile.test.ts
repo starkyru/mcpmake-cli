@@ -38,11 +38,21 @@ describe('generated site handlers parse as valid TypeScript', () => {
       pageUrl: 'https://example.com/signup?ref=1',
       form: {
         fields: [
-          { name: 'email', fieldType: 'text', selector: sel('#email', ['input[name="email"]']) },
-          { name: 'agree', fieldType: 'checkbox', selector: sel('#agree') },
-          { name: 'plan', fieldType: 'select', selector: sel('#plan', ['select[name="plan"]']) },
-          { name: 'tier', fieldType: 'radio', selector: sel('#tier') },
-          { name: 'csrf', fieldType: 'hidden', selector: sel('#csrf') },
+          {
+            name: 'email',
+            inputKey: 'email',
+            fieldType: 'text',
+            selector: sel('#email', ['input[name="email"]']),
+          },
+          { name: 'agree', inputKey: 'agree', fieldType: 'checkbox', selector: sel('#agree') },
+          {
+            name: 'plan',
+            inputKey: 'plan',
+            fieldType: 'select',
+            selector: sel('#plan', ['select[name="plan"]']),
+          },
+          { name: 'tier', inputKey: 'tier', fieldType: 'radio', selector: sel('#tier') },
+          { name: 'csrf', inputKey: 'csrf', fieldType: 'hidden', selector: sel('#csrf') },
         ],
         submitButton: sel('#submit', ['button[type="submit"]']),
       },
@@ -56,7 +66,7 @@ describe('generated site handlers parse as valid TypeScript', () => {
       title: 'Search',
       description: 'Search',
       inputSchemaCode: '{ q: z.string() }',
-      form: { fields: [{ name: 'q', fieldType: 'text', selector: sel('#q') }] },
+      form: { fields: [{ name: 'q', inputKey: 'q', fieldType: 'text', selector: sel('#q') }] },
     };
     assertParses(renderSiteTemplate('tool-handler-form.ts', tool), 'form-no-submit');
   });
@@ -93,7 +103,9 @@ describe('generated site handlers parse as valid TypeScript', () => {
       inputSchemaCode: '{ q: z.string() }',
       pageUrl: "https://x/'+1+'",
       form: {
-        fields: [{ name: "q'k", fieldType: 'text', selector: sel(nasty, [nasty + '2']) }],
+        fields: [
+          { name: "q'k", inputKey: 'q_k', fieldType: 'text', selector: sel(nasty, [nasty + '2']) },
+        ],
         submitButton: sel(nasty),
       },
     };

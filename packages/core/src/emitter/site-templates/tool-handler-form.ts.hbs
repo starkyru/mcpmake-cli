@@ -45,8 +45,8 @@ export function register(server: McpServer, config: AppConfig): void {
 {{#each form.fields}}
 {{#unless (eq fieldType "hidden")}}
 {{#if (eq fieldType "checkbox")}}
-        if ((input as Record<string, unknown>)['{{jsString name}}'] !== undefined) {
-          const checked = Boolean((input as Record<string, unknown>)['{{jsString name}}']);
+        if ((input as Record<string, unknown>)['{{jsString inputKey}}'] !== undefined) {
+          const checked = Boolean((input as Record<string, unknown>)['{{jsString inputKey}}']);
           const fieldSelector = await resolveSelector(page, ['{{jsString selector.primary}}'{{#each selector.fallbacks}}, '{{jsString this}}'{{/each}}]);
           if (checked) {
             await page.check(fieldSelector);
@@ -55,21 +55,23 @@ export function register(server: McpServer, config: AppConfig): void {
           }
         }
 {{else if (eq fieldType "select")}}
-        if ((input as Record<string, unknown>)['{{jsString name}}'] !== undefined) {
+        if ((input as Record<string, unknown>)['{{jsString inputKey}}'] !== undefined) {
           const fieldSelector = await resolveSelector(page, ['{{jsString selector.primary}}'{{#each selector.fallbacks}}, '{{jsString this}}'{{/each}}]);
-          await page.selectOption(fieldSelector, String((input as Record<string, unknown>)['{{jsString name}}']));
+          // The schema enum is built from option VALUES, and selectOption
+          // matches by value, so pass the value through directly.
+          await page.selectOption(fieldSelector, String((input as Record<string, unknown>)['{{jsString inputKey}}']));
         }
 {{else if (eq fieldType "radio")}}
-        if ((input as Record<string, unknown>)['{{jsString name}}'] !== undefined) {
+        if ((input as Record<string, unknown>)['{{jsString inputKey}}'] !== undefined) {
           const radioName = '{{jsString name}}';
-          const radioValue = String((input as Record<string, unknown>)['{{jsString name}}']).replace(/["\\[\]()]/g, '\\$&');
+          const radioValue = String((input as Record<string, unknown>)['{{jsString inputKey}}']).replace(/["\\[\]()]/g, '\\$&');
           const radioNameSel = radioName.replace(/["\\]/g, '\\$&');
           await page.check(`input[name="${radioNameSel}"][value="${radioValue}"]`);
         }
 {{else}}
-        if ((input as Record<string, unknown>)['{{jsString name}}'] !== undefined) {
+        if ((input as Record<string, unknown>)['{{jsString inputKey}}'] !== undefined) {
           const fieldSelector = await resolveSelector(page, ['{{jsString selector.primary}}'{{#each selector.fallbacks}}, '{{jsString this}}'{{/each}}]);
-          await page.fill(fieldSelector, String((input as Record<string, unknown>)['{{jsString name}}']));
+          await page.fill(fieldSelector, String((input as Record<string, unknown>)['{{jsString inputKey}}']));
         }
 {{/if}}
 {{/unless}}

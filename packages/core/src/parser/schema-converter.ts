@@ -1,6 +1,5 @@
 import { jsonSchemaToZod } from 'json-schema-to-zod';
-import type { OperationDescriptor, JsonSchema } from '../types/index.js';
-import { sanitizeIdentifier } from '../utils/sanitize.js';
+import type { OperationDescriptor, JsonSchema, ParamMapping } from '../types/index.js';
 import { logger } from '../utils/logger.js';
 
 const MAX_SCHEMA_DEPTH = 15;
@@ -83,20 +82,45 @@ export function jsonSchemaToOutputZodCode(schema: JsonSchema): string {
   return jsonSchemaToZodCode(wrapArrayRoot(schema));
 }
 
-export function buildOperationInputSchema(op: OperationDescriptor): string {
+export interface InputSchemaResult {
+  /** Zod object code for the tool's inputSchema. */
+  code: string;
+  /**
+   * Mapping from each emitted MCP input key to the original wire name and
+   * location. The handler uses this to build the upstream request, so the
+   * original API parameter name is preserved even when the input key differs
+   * (D-H1) and header/cookie/query params are no longer silently dropped (D-H2).
+   */
+  mappings: ParamMapping[];
+}
+
+export function buildOperationInputSchema(op: OperationDescriptor): InputSchemaResult {
   const fields: string[] = [];
-  const seenNames = new Set<string>();
+  const mappings: ParamMapping[] = [];
+  // Track the MCP input keys we have already emitted so colliding parameters
+  // (e.g. a query and a header both named `token`) get distinct keys.
+  const seenKeys = new Set<string>();
+
+  const uniqueKey = (wireName: string, location: string): string => {
+    // The wire name is emitted as a JSON.stringify'd object key, so any string
+    // is a legal property — we keep the original name as the input key for
+    // fidelity and only disambiguate true collisions.
+    let key = wireName;
+    if (seenKeys.has(key)) {
+      key = `${wireName}_${location}`;
+      logger.warn(`Parameter name collision: "${wireName}" exposed as "${key}"`);
+    }
+    let n = 1;
+    while (seenKeys.has(key)) {
+      key = `${wireName}_${location}_${n++}`;
+    }
+    seenKeys.add(key);
+    return key;
+  };
 
   for (const param of op.parameters) {
-    if (param.in === 'header') continue;
-    let safeName = sanitizeIdentifier(param.name);
-
-    // Parameter collision resolution
-    if (seenNames.has(safeName)) {
-      safeName = `${safeName}_${param.in}`;
-      logger.warn(`Parameter name collision: "${param.name}" renamed to "${safeName}"`);
-    }
-    seenNames.add(safeName);
+    const inputKey = uniqueKey(param.name, param.in);
+    mappings.push({ inputKey, wireName: param.name, in: param.in });
 
     const zodType = jsonSchemaToZodCode(param.schema);
     let field = zodType;
@@ -106,15 +130,17 @@ export function buildOperationInputSchema(op: OperationDescriptor): string {
     if (param.description) {
       field = `${field}.describe(${JSON.stringify(param.description)})`;
     }
-    fields.push(`  ${safeName}: ${field}`);
+    // The key is JSON.stringify'd so names like `page-size` or `2fa` are legal
+    // TS object keys instead of producing invalid source (D-H1).
+    fields.push(`  ${JSON.stringify(inputKey)}: ${field}`);
   }
 
   if (op.requestBody) {
     let bodyName = 'body';
-    if (seenNames.has(bodyName)) {
+    if (seenKeys.has(bodyName)) {
       bodyName = 'requestBody';
     }
-    seenNames.add(bodyName);
+    seenKeys.add(bodyName);
 
     const bodyZod = jsonSchemaToZodCode(op.requestBody.schema);
     let field = bodyZod;
@@ -124,12 +150,9 @@ export function buildOperationInputSchema(op: OperationDescriptor): string {
     if (op.requestBody.description) {
       field = `${field}.describe(${JSON.stringify(op.requestBody.description)})`;
     }
-    fields.push(`  ${bodyName}: ${field}`);
+    fields.push(`  ${JSON.stringify(bodyName)}: ${field}`);
   }
 
-  if (fields.length === 0) {
-    return 'z.object({})';
-  }
-
-  return `z.object({\n${fields.join(',\n')},\n})`;
+  const code = fields.length === 0 ? 'z.object({})' : `z.object({\n${fields.join(',\n')},\n})`;
+  return { code, mappings };
 }

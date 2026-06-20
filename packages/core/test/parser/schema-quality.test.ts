@@ -65,9 +65,11 @@ describe('schema quality', () => {
         security: [],
         deprecated: false,
       };
-      const code = buildOperationInputSchema(op);
-      expect(code).toContain('id:');
-      expect(code).toContain('id_query:');
+      const { code } = buildOperationInputSchema(op);
+      // Keys are JSON.stringify'd (D-H1); the second `id` is disambiguated by
+      // its location so both params remain addressable.
+      expect(code).toContain('"id":');
+      expect(code).toContain('"id_query":');
     });
   });
 });

@@ -54,6 +54,15 @@ export type FormFieldType =
   | 'range'
   | 'other';
 
+/** A single <option> from a <select>, preserving both the user-visible label
+ *  and the wire value submitted to the server (they routinely differ). */
+export interface SelectOption {
+  /** Visible option text shown to the user */
+  label: string;
+  /** Value attribute actually submitted / matched by Playwright's selectOption */
+  value: string;
+}
+
 export interface FormFieldDescriptor {
   /** Form field name attribute */
   name: string;
@@ -67,10 +76,20 @@ export interface FormFieldDescriptor {
   placeholder?: string;
   /** Whether the field is required */
   required: boolean;
-  /** Options for <select>, radio groups, and datalists */
+  /** Options for <select>, radio groups, and datalists (visible labels). */
   options?: string[];
+  /** Option label/value pairs for <select> fields (value drives Playwright). */
+  optionPairs?: SelectOption[];
   /** Default or current value */
   defaultValue?: string;
+  /**
+   * Stable, deduplicated MCP input key for this field. Derived from `name`
+   * but guaranteed to be a valid, unique JS identifier within the form so the
+   * generated schema property and the generated handler agree on one key. The
+   * handler still drives the DOM via `selector`, so the original `name` is not
+   * needed at fill time. Set by the site tool-generator.
+   */
+  inputKey?: string;
 }
 
 export interface FormDescriptor {
