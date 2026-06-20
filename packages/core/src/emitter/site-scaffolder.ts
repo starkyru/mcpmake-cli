@@ -2,10 +2,34 @@
  * Scaffolds the project files and shared modules for a site (Playwright-based) MCP server.
  */
 
-import type { SiteProjectManifest, SiteRegenMetadata } from '../types/site.js';
+import type { SiteProjectManifest, SiteRegenMetadata, SiteDescriptor } from '../types/site.js';
 import type { CodeUnit } from './code-writer.js';
+import { isSensitiveField } from '../analyzer/dom-parser.js';
 import { renderSiteTemplate } from './site-template-loader.js';
 import { renderTemplate } from './template-loader.js';
+
+/**
+ * Defense-in-depth before writing `site-descriptor.json`: strip any
+ * default/prefilled value from sensitive (password/credential) form fields so
+ * a captured live secret can never be serialized into the generated project,
+ * even if it slipped through an older parser or hand-edited descriptor (M9).
+ */
+function stripSensitiveDefaults(descriptor: SiteDescriptor): SiteDescriptor {
+  return {
+    ...descriptor,
+    pages: descriptor.pages.map((page) => ({
+      ...page,
+      forms: page.forms.map((form) => ({
+        ...form,
+        fields: form.fields.map((field) =>
+          field.defaultValue !== undefined && isSensitiveField(field.name, field.fieldType, '')
+            ? { ...field, defaultValue: undefined }
+            : field,
+        ),
+      })),
+    })),
+  };
+}
 
 /**
  * Generate project skeleton files (package.json, tsconfig, Dockerfile, etc.)
@@ -76,7 +100,7 @@ export function scaffoldSiteSharedModules(manifest: SiteProjectManifest): CodeUn
     },
     {
       filePath: 'src/site-descriptor.json',
-      content: JSON.stringify(manifest.siteDescriptor, null, 2),
+      content: JSON.stringify(stripSensitiveDefaults(manifest.siteDescriptor), null, 2),
     },
   ];
 }

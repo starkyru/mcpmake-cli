@@ -25,6 +25,7 @@ import { isAbsolute, relative, resolve } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import type { ArgsDef } from 'citty';
 import { logger } from '../utils/logger.js';
+import { isDangerousKey } from '../utils/sanitize.js';
 
 /** Command names that may appear as config sections (vs. global keys). */
 export const KNOWN_COMMANDS = new Set<string>([
@@ -224,6 +225,9 @@ export function applyConfigToArgs(
   const applied: string[] = [];
 
   for (const [key, value] of Object.entries(merged)) {
+    // YAML parses a literal `__proto__`/`constructor`/`prototype` as an own
+    // enumerable key, so guard the merge before touching argSpec or args.
+    if (isDangerousKey(key) || !Object.hasOwn(argSpec, key)) continue;
     const def = argSpec[key] as { type?: string } | undefined;
     if (!def) continue; // unknown global key — silently skip (may target another command)
     if (def.type === 'positional') continue; // positionals stay on the CLI

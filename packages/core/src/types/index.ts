@@ -164,6 +164,13 @@ export interface AuthScheme {
    * Optional for sources (HAR) that have no named schemes.
    */
   schemeName?: string;
+  /**
+   * For `oauth2` schemes: the union of scopes declared across the scheme's
+   * OpenAPI flows. Baked into the generated config as the default scope set
+   * (overridable at runtime via `OAUTH2_SCOPES`). Empty/absent for non-OAuth
+   * schemes and specs that declare no scopes.
+   */
+  scopes?: string[];
 }
 
 export interface EnvVarDescriptor {

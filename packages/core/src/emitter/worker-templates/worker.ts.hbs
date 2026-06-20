@@ -90,8 +90,34 @@ async function safeEqual(a: string, b: string): Promise<boolean> {
   for (let i = 0; i < da.length; i++) diff |= da[i] ^ db[i];
   return diff === 0;
 }
-async function isAuthorized(request: Request, expected: string | undefined): Promise<boolean> {
-  if (!expected) return true; // auth disabled when MCP_AUTH_TOKEN is unset (local/dev only)
+// Fail CLOSED: when MCP_AUTH_TOKEN is unset every authenticated route is denied
+// unless the operator opts in with MCP_ALLOW_UNAUTHENTICATED === 'true' (a
+// local/dev escape hatch). We warn once per isolate so the open posture is loud.
+let unauthWarned = false;
+async function isAuthorized(request: Request, env: Env): Promise<boolean> {
+  const expected = env.MCP_AUTH_TOKEN;
+  if (!expected) {
+    if (env.MCP_ALLOW_UNAUTHENTICATED === 'true') {
+      if (!unauthWarned) {
+        unauthWarned = true;
+        console.warn(
+          'SECURITY: MCP_AUTH_TOKEN is unset and MCP_ALLOW_UNAUTHENTICATED=true — ' +
+            'this Worker is serving authenticated routes WITHOUT a bearer token. ' +
+            'Set MCP_AUTH_TOKEN before exposing this endpoint.',
+        );
+      }
+      return true;
+    }
+    if (!unauthWarned) {
+      unauthWarned = true;
+      console.error(
+        'SECURITY: MCP_AUTH_TOKEN is unset — denying all authenticated routes. ' +
+          'Set MCP_AUTH_TOKEN (wrangler secret put MCP_AUTH_TOKEN), or set ' +
+          'MCP_ALLOW_UNAUTHENTICATED=true for local/dev only.',
+      );
+    }
+    return false;
+  }
   const header = request.headers.get('authorization');
   if (!header || !header.startsWith('Bearer ')) return false;
   const presented = header.slice(7).trim();
@@ -99,19 +125,41 @@ async function isAuthorized(request: Request, expected: string | undefined): Pro
   return safeEqual(presented, expected);
 }
 
-/* ── HTTP / CORS helpers ─────────────────────────────────────────────── */
-function corsHeaders(origin?: string | null): Record<string, string> {
-  return {
-    'access-control-allow-origin': origin || '*',
+/* ── HTTP / CORS helpers ───────────────────────────────────────────────
+ * These responses are credentialed (gated by a bearer token), so we never
+ * emit a blanket `Access-Control-Allow-Origin: *`. CORS headers are reflected
+ * only when the request Origin is in the MCP_ALLOWED_ORIGINS allowlist
+ * (comma-separated); otherwise the response carries no ACAO header at all. */
+function originAllowed(origin: string | null | undefined, env: Env): boolean {
+  if (!origin) return false;
+  const raw = env.MCP_ALLOWED_ORIGINS;
+  if (!raw) return false;
+  return raw
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .includes(origin);
+}
+function corsHeaders(origin: string | null | undefined, env: Env): Record<string, string> {
+  const headers: Record<string, string> = {
     'access-control-allow-methods': 'POST, GET, OPTIONS',
     'access-control-allow-headers':
       'authorization, content-type, mcp-method, mcp-name, mcp-protocol-version, traceparent, tracestate',
   };
+  if (originAllowed(origin, env)) {
+    headers['access-control-allow-origin'] = origin as string;
+    headers['vary'] = 'Origin';
+  }
+  return headers;
 }
-function json(body: unknown, status = 200, extra?: Record<string, string>): Response {
+function json(
+  body: unknown,
+  status = 200,
+  extra?: Record<string, string>,
+): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { 'content-type': 'application/json', ...corsHeaders(), ...extra },
+    headers: { 'content-type': 'application/json', ...extra },
   });
 }
 function ok(id: unknown, result: unknown): object {
@@ -120,8 +168,13 @@ function ok(id: unknown, result: unknown): object {
 function err(id: unknown, code: number, message: string): object {
   return { jsonrpc: '2.0', id: id ?? null, error: { code, message } };
 }
-function rpcErrorResponse(id: unknown, code: number, message: string): Response {
-  return json(err(id, code, message));
+function rpcErrorResponse(
+  id: unknown,
+  code: number,
+  message: string,
+  cors?: Record<string, string>,
+): Response {
+  return json(err(id, code, message), 200, cors);
 }
 
 /* ── server/discover (SEP-2575) — VERIFY result shape against the final spec ── */
@@ -235,16 +288,19 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     const origin = request.headers.get('origin');
+    // Computed once: empty unless the request Origin is in MCP_ALLOWED_ORIGINS.
+    const cors = corsHeaders(origin, env);
 
     if (request.method === 'OPTIONS') {
-      return new Response(null, { status: 204, headers: corsHeaders(origin) });
+      return new Response(null, { status: 204, headers: cors });
     }
     if (url.pathname === '/health') return json({ status: 'ok' });
     if (url.pathname === '/ready') return json({ status: 'ready' });
 
     // Bearer authentication (every path except /health and /ready).
-    if (!(await isAuthorized(request, env.MCP_AUTH_TOKEN))) {
+    if (!(await isAuthorized(request, env))) {
       return json({ error: 'Unauthorized: missing or invalid bearer token' }, 401, {
+        ...cors,
         'www-authenticate': 'Bearer',
       });
     }
@@ -256,30 +312,37 @@ export default {
       console.log(JSON.stringify({ level: 'info', msg: 'mcp-meta-headers', mcpMethod, mcpName }));
     }
 
-    if (url.pathname !== '/mcp') return json({ error: 'Not found' }, 404);
+    if (url.pathname !== '/mcp') return json({ error: 'Not found' }, 404, cors);
     if (request.method !== 'POST') {
       // Stateless: no SSE stream to open (GET) or session to delete (DELETE).
-      return rpcErrorResponse(null, -32601, 'Only POST is supported on this stateless server');
+      return rpcErrorResponse(
+        null,
+        -32601,
+        'Only POST is supported on this stateless server',
+        cors,
+      );
     }
 
     // Origin guard (DNS-rebinding protection). Enforced only when configured —
     // a Workers endpoint is public and gated by the bearer token, not by origin.
     const allowedOrigin = env.ALLOWED_ORIGIN;
     if (allowedOrigin && origin && origin !== allowedOrigin) {
-      return json({ error: 'Forbidden: invalid origin' }, 403);
+      return json({ error: 'Forbidden: invalid origin' }, 403, cors);
     }
 
     const contentLength = Number(request.headers.get('content-length') ?? '0');
-    if (contentLength > MAX_BODY) return rpcErrorResponse(null, -32600, 'Request body too large');
+    if (contentLength > MAX_BODY)
+      return rpcErrorResponse(null, -32600, 'Request body too large', cors);
     const raw = await request.text();
-    if (raw.length > MAX_BODY) return rpcErrorResponse(null, -32600, 'Request body too large');
-    if (!raw) return rpcErrorResponse(null, -32600, 'Empty request body');
+    if (raw.length > MAX_BODY)
+      return rpcErrorResponse(null, -32600, 'Request body too large', cors);
+    if (!raw) return rpcErrorResponse(null, -32600, 'Empty request body', cors);
 
     let parsed: unknown;
     try {
       parsed = JSON.parse(raw);
     } catch {
-      return rpcErrorResponse(null, -32700, 'Parse error');
+      return rpcErrorResponse(null, -32700, 'Parse error', cors);
     }
 
     const config = loadConfig(env);
@@ -293,25 +356,25 @@ export default {
     return runWithTrace(trace, async () => {
       if (Array.isArray(parsed)) {
         if (parsed.length === 0) {
-          return rpcErrorResponse(null, -32600, 'Empty JSON-RPC batch');
+          return rpcErrorResponse(null, -32600, 'Empty JSON-RPC batch', cors);
         }
         if (parsed.length > MAX_BATCH) {
-          return rpcErrorResponse(null, -32600, `Batch too large (max ${MAX_BATCH})`);
+          return rpcErrorResponse(null, -32600, `Batch too large (max ${MAX_BATCH})`, cors);
         }
         const settled = await mapWithConcurrency(parsed, BATCH_CONCURRENCY, (m) =>
           handleRpc(m as { id?: unknown; method?: unknown }, config, env),
         );
         const responses = settled.filter((r): r is object => r !== null);
         if (responses.length === 0) {
-          return new Response(null, { status: 202, headers: corsHeaders(origin) });
+          return new Response(null, { status: 202, headers: cors });
         }
-        return json(responses);
+        return json(responses, 200, cors);
       }
       const response = await handleRpc(parsed as { id?: unknown; method?: unknown }, config, env);
       if (response === null) {
-        return new Response(null, { status: 202, headers: corsHeaders(origin) });
+        return new Response(null, { status: 202, headers: cors });
       }
-      return json(response);
+      return json(response, 200, cors);
     });
   },
 };

@@ -74,11 +74,17 @@ export async function resolveModel(
       }
     }
   } catch (err) {
+    // Transient Models API failure: return the fallback for this call WITHOUT
+    // caching it, so a later call retries once the API recovers (a poisoned
+    // cache would pin the whole process to the fallback alias).
     logger.warn(
       `Could not list models (${err instanceof Error ? err.message : err}); using "${preferred}"`,
     );
+    return preferred;
   }
 
+  // Only successful resolutions are cached — the served-model list rarely
+  // changes mid-run, so one API round-trip per tier is enough.
   cache.set(tier, choice);
   return choice;
 }

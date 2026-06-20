@@ -11,44 +11,54 @@ const MAX_SCHEMA_DEPTH = 15;
 function simplifySchema(schema: JsonSchema, depth = 0, seen = new WeakSet<object>()): JsonSchema {
   if (!schema || typeof schema !== 'object') return schema;
 
-  // Circular reference detection
+  // Circular reference detection: `seen` is the set of nodes on the current DFS
+  // path (ancestors only). A hit here is a true back-edge to an ancestor, i.e. an
+  // infinite cycle. A node reused across sibling branches (DAG/diamond) is NOT an
+  // ancestor when revisited, so it is fully expanded each time instead of being
+  // falsely truncated and silently dropping fields (M2).
   if (seen.has(schema)) {
     return { type: 'object', description: 'Truncated: circular reference' };
   }
-  seen.add(schema);
 
-  // Depth limit
+  // Depth limit (independent of cycle detection; bounds even acyclic deep nesting).
   if (depth > MAX_SCHEMA_DEPTH) {
     return { type: 'object', description: 'Truncated: max depth exceeded' };
   }
 
-  // Unwrap single-item allOf (common in OpenAPI after $ref resolution)
-  if (schema.allOf && Array.isArray(schema.allOf) && schema.allOf.length === 1) {
-    const inner = schema.allOf[0] as JsonSchema;
-    const { allOf, ...rest } = schema;
-    return simplifySchema({ ...inner, ...rest }, depth + 1, seen);
-  }
-
-  // Handle nullable shorthand: { type: "string", nullable: true }
-  if (schema.nullable === true && schema.type) {
-    const { nullable, ...rest } = schema;
-    return { oneOf: [rest as JsonSchema, { type: 'null' }] };
-  }
-
-  // Recursively simplify nested schemas
-  if (schema.properties && typeof schema.properties === 'object') {
-    const simplified: Record<string, unknown> = {};
-    for (const [key, value] of Object.entries(schema.properties as Record<string, JsonSchema>)) {
-      simplified[key] = simplifySchema(value, depth + 1, seen);
+  seen.add(schema);
+  try {
+    // Unwrap single-item allOf (common in OpenAPI after $ref resolution)
+    if (schema.allOf && Array.isArray(schema.allOf) && schema.allOf.length === 1) {
+      const inner = schema.allOf[0] as JsonSchema;
+      const { allOf, ...rest } = schema;
+      return simplifySchema({ ...inner, ...rest }, depth + 1, seen);
     }
-    return { ...schema, properties: simplified };
-  }
 
-  if (schema.items && typeof schema.items === 'object') {
-    return { ...schema, items: simplifySchema(schema.items as JsonSchema, depth + 1, seen) };
-  }
+    // Handle nullable shorthand: { type: "string", nullable: true }
+    if (schema.nullable === true && schema.type) {
+      const { nullable, ...rest } = schema;
+      return { oneOf: [rest as JsonSchema, { type: 'null' }] };
+    }
 
-  return schema;
+    // Recursively simplify nested schemas
+    if (schema.properties && typeof schema.properties === 'object') {
+      const simplified: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(schema.properties as Record<string, JsonSchema>)) {
+        simplified[key] = simplifySchema(value, depth + 1, seen);
+      }
+      return { ...schema, properties: simplified };
+    }
+
+    if (schema.items && typeof schema.items === 'object') {
+      return { ...schema, items: simplifySchema(schema.items as JsonSchema, depth + 1, seen) };
+    }
+
+    return schema;
+  } finally {
+    // Remove from the DFS path once this subtree is fully processed so sibling
+    // branches that share the same node are not mistaken for cycles.
+    seen.delete(schema);
+  }
 }
 
 /**

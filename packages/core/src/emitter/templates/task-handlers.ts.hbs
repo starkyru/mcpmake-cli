@@ -18,6 +18,15 @@ const VALID_STATUSES = new Set<string>([
   'working', 'input_required', 'completed', 'failed', 'cancelled',
 ]);
 
+const TERMINAL_STATUSES = new Set<string>(['completed', 'failed', 'cancelled']);
+
+/* Trust model: this server is sessionless and authenticates every caller with a
+ * single shared bearer token, so all authorized callers are one principal — there
+ * is no per-user task ownership. Cross-tenant ownership would require sessions and
+ * is out of scope here. Task IDs are unguessable UUIDv4, so with enumeration
+ * disabled a task ID acts as an effective capability; we therefore (a) gate
+ * list-all behind explicit opt-in and (b) refuse to mutate terminal tasks. */
+
 /* ── MCP Tasks extension (2026-07-28) — JSON-RPC over /mcp ────────────────
  * The 2026-07-28 RC moves Tasks to an extension driven by tasks/get,
  * tasks/update, and tasks/cancel; tasks/list is removed (it can't be scoped
@@ -64,6 +73,12 @@ export function handleTaskRpc(
       return task ? rpcResult(id, taskToWire(task)) : rpcError(id, -32001, `Task ${taskId} not found`);
     }
     case 'tasks/update': {
+      // Refuse to overwrite a finished task: its result/error/status is final.
+      const existing = getTask(taskId);
+      if (!existing) return rpcError(id, -32001, `Task ${taskId} not found`);
+      if (TERMINAL_STATUSES.has(existing.status)) {
+        return rpcError(id, -32002, 'Task is in a terminal state');
+      }
       const status =
         typeof p.status === 'string' && VALID_STATUSES.has(p.status)
           ? (p.status as TaskStatus)
@@ -76,6 +91,11 @@ export function handleTaskRpc(
       return task ? rpcResult(id, taskToWire(task)) : rpcError(id, -32001, `Task ${taskId} not found`);
     }
     case 'tasks/cancel': {
+      const existing = getTask(taskId);
+      if (!existing) return rpcError(id, -32001, `Task ${taskId} not found`);
+      if (TERMINAL_STATUSES.has(existing.status)) {
+        return rpcError(id, -32002, 'Task is in a terminal state');
+      }
       const task = cancelTask(taskId);
       return task ? rpcResult(id, taskToWire(task)) : rpcError(id, -32001, `Task ${taskId} not found`);
     }
@@ -98,8 +118,17 @@ export function handleTaskRoutes(
   const method = req.method ?? 'GET';
   const path = url.pathname;
 
-  // GET /tasks — list tasks
+  // GET /tasks — list tasks. Enumerating every task leaks all in-flight work to
+  // any authorized caller and defeats the unguessable-ID capability model, so it
+  // is disabled unless an operator explicitly opts in.
   if (path === '/tasks' && method === 'GET') {
+    if (process.env.MCP_ENABLE_TASK_LIST !== 'true') {
+      sendJson(res, 403, {
+        error: 'Task listing is disabled. Set MCP_ENABLE_TASK_LIST=true to enable it.',
+      });
+      return true;
+    }
+
     const statusParam = url.searchParams.get('status') ?? undefined;
     const limitParam = url.searchParams.get('limit');
     const limit = limitParam ? parseInt(limitParam, 10) : 50;
@@ -171,6 +200,16 @@ export function handleTaskRoutes(
 
   // POST /tasks/:taskId/cancel — cancel a task
   if (subPath === '/cancel' && method === 'POST') {
+    const existing = getTask(taskId);
+    if (!existing) {
+      sendJson(res, 404, { error: `Task ${taskId} not found` });
+      return true;
+    }
+    // A finished task's outcome is final; don't let a late cancel overwrite it.
+    if (TERMINAL_STATUSES.has(existing.status)) {
+      sendJson(res, 409, { error: 'Task is in a terminal state' });
+      return true;
+    }
     const task = cancelTask(taskId);
     if (!task) {
       sendJson(res, 404, { error: `Task ${taskId} not found` });

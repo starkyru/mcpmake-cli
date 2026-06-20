@@ -94,15 +94,27 @@ export function detectAuthSchemes(
         { name: 'BASIC_PASSWORD', description: 'Basic auth password', required: true },
       );
     } else if (scheme.type === 'oauth2') {
+      // Union of scopes declared across all of this scheme's flows. Baked into
+      // the generated config as the default scope set (L-scopes) so spec scopes
+      // are no longer silently dropped; runtime `OAUTH2_SCOPES` still overrides.
+      const flows = scheme.flows;
+      const scopes = [
+        ...new Set([
+          ...Object.keys(flows?.authorizationCode?.scopes ?? {}),
+          ...Object.keys(flows?.clientCredentials?.scopes ?? {}),
+          ...Object.keys(flows?.password?.scopes ?? {}),
+          ...Object.keys(flows?.implicit?.scopes ?? {}),
+        ]),
+      ];
       authSchemes.push({
         type: 'oauth2',
         envVarName: 'OAUTH2_CLIENT_ID',
         description: `OAuth2 for ${name}`,
         schemeName: name,
+        scopes,
       });
 
       // Extract flow details
-      const flows = scheme.flows;
       if (flows?.authorizationCode) {
         const flow = flows.authorizationCode;
         oauthFlows.push({

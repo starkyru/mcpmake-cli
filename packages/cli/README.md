@@ -106,6 +106,43 @@ mcpmake pricing
 **Prices are subject to change — see
 [mcpmake.dev/#pricing](https://mcpmake.dev/#pricing) for the latest.**
 
+## AI features & credentials
+
+A few flags use Claude to improve the output. They are **opt-in** — without them,
+`mcpmake` runs fully offline and never needs a key:
+
+| Feature | Where | Flag |
+|---------|-------|------|
+| Generate a spec from plain English | `from describe` | (always) |
+| Better tool names & descriptions | `from openapi` / `har` / `url` | `--improve-names` |
+| Semantic names for forms/buttons/links | `from website` | `--improve-names` |
+| Goal-directed crawl (LLM navigation) | `from website` | `--goal "<text>"` |
+| Heal broken CSS selectors | `rescan` | `--heal` (on by default) |
+
+These call the **Anthropic API** with `@anthropic-ai/sdk`. The model is
+auto-resolved against the live Models API (prefers `claude-sonnet-4-6`, or
+`claude-haiku-4-5` for fast paths); override with `--model`.
+
+Provide the key in one of two ways:
+
+```bash
+# Recommended: environment variable
+export ANTHROPIC_API_KEY=sk-ant-...
+mcpmake from describe "a todo API with auth" -o ./server
+
+# Or pass it on the command line
+mcpmake from describe "a todo API with auth" -o ./server --api-key sk-ant-...
+```
+
+> **Security:** prefer `ANTHROPIC_API_KEY`. A key passed via `--api-key` is
+> visible to other users in the process list (`ps`) and is recorded in your
+> shell history. `--api-key` overrides the env var when both are set.
+
+If no key is available, optional AI steps are **skipped with a warning**;
+features that require a key (`from describe`, `--goal`) exit with an error.
+The credentials your **generated server** needs (for the API it wraps —
+`API_KEY`, `BEARER_TOKEN`, `OAUTH2_*`, …) are unrelated and live in its `.env`.
+
 ## All commands
 
 ```text

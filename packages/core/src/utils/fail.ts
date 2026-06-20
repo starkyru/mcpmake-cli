@@ -80,9 +80,29 @@ function redactHomePaths(input: string): string {
   return out;
 }
 
-/** Strip bearer tokens: `Bearer <token>` → `Bearer [redacted]`. */
-function redactBearerTokens(input: string): string {
-  return input.replace(/Bearer\s+\S+/g, 'Bearer [redacted]');
+/**
+ * Strip common credential formats from a header/URL-bearing string, replacing
+ * each secret value with `[redacted]` while keeping the surrounding structure
+ * (scheme, header name, param name) so the report stays useful for debugging.
+ *
+ * Covers, case-insensitively: `Authorization` bearer/basic schemes, `Cookie` /
+ * `Set-Cookie` header values, `x-api-key` / `api-key` / `apikey` header values,
+ * and `token` / `api_key` / `access_token` / `key` / `sig` query-string params.
+ * Every value pattern is `\S+` / `[^\s...]+` (no nested quantifiers), so there is
+ * no catastrophic-backtracking risk.
+ */
+function redactSecrets(input: string): string {
+  return (
+    input
+      // `Bearer <token>` / `Basic <base64>` (bare or after `Authorization:`).
+      .replace(/\b(Bearer|Basic)\s+\S+/gi, '$1 [redacted]')
+      // `Cookie:` / `Set-Cookie:` — drop the whole value up to end of line.
+      .replace(/\b(Set-Cookie|Cookie)\s*:\s*[^\r\n]*/gi, '$1: [redacted]')
+      // `x-api-key` / `api-key` / `apikey` header values (`:`-delimited).
+      .replace(/\b((?:x-)?api[-_]?key)\s*:\s*[^\s,;'"]+/gi, '$1: [redacted]')
+      // Query-string secrets: `token=`, `api_key=`, `access_token=`, `key=`, `sig=`.
+      .replace(/\b(access_token|api_key|apikey|token|sig|key)=[^\s&'"]+/gi, '$1=[redacted]')
+  );
 }
 
 /** Strip mcpmake-style tokens (`mf_<hex>`). */
@@ -102,7 +122,7 @@ function redactQueryStrings(input: string): string {
  * directly without invoking `fail()` (which calls `process.exit`).
  */
 export function redactText(input: string): string {
-  return redactQueryStrings(redactMfTokens(redactBearerTokens(redactHomePaths(input))));
+  return redactQueryStrings(redactMfTokens(redactSecrets(redactHomePaths(input))));
 }
 
 /** @deprecated internal alias — prefer the exported `redactText`. */

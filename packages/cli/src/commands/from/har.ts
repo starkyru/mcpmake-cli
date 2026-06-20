@@ -16,6 +16,7 @@ import {
   resolveTransport,
   printWorkerNextSteps,
 } from './target-support.js';
+import { apiKeyArg, applyApiKey } from '../api-key.js';
 import { logger } from '@mcpmake/core';
 import { fail } from '@mcpmake/core';
 import { confirmOperations } from '@mcpmake/core';
@@ -65,6 +66,7 @@ export default defineCommand({
       description: 'Use AI to generate better tool names (requires ANTHROPIC_API_KEY)',
       default: false,
     },
+    'api-key': apiKeyArg,
     'resource-names': {
       type: 'boolean',
       description:
@@ -116,6 +118,8 @@ export default defineCommand({
     target: targetArg,
   },
   async run({ args }) {
+    applyApiKey(args);
+
     logger.info(`Loading HAR file: ${args.file}`);
 
     const har = await loadHarFile(args.file);

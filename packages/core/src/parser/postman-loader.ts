@@ -3,8 +3,10 @@
  * Converts Postman items into HAR entries that feed into the existing HAR pipeline.
  */
 
-import { readFile } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import type { Entry } from 'har-format';
+
+const MAX_COLLECTION_SIZE_BYTES = 50 * 1024 * 1024; // 50 MB — bound untrusted input (DoS-lite)
 
 interface PostmanCollection {
   info: { name: string; schema: string };
@@ -38,6 +40,13 @@ export async function loadPostmanCollection(filePath: string): Promise<{
   entries: Entry[];
   collectionName: string;
 }> {
+  const fileInfo = await stat(filePath);
+  if (fileInfo.size > MAX_COLLECTION_SIZE_BYTES) {
+    throw new Error(
+      `Postman collection is too large (${Math.round(fileInfo.size / 1024 / 1024)} MB). Maximum is 50 MB.`,
+    );
+  }
+
   const raw = await readFile(filePath, 'utf-8');
   const collection: PostmanCollection = JSON.parse(raw);
 

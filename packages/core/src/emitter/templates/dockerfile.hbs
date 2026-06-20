@@ -2,8 +2,14 @@ FROM node:20-alpine AS builder
 
 WORKDIR /app
 
-COPY package.json package-lock.json ./
-RUN npm ci
+COPY package.json ./
+# The generator does not emit a package-lock.json, so use `npm install` (not
+# `npm ci`, which fails without a lockfile). --ignore-scripts: a malicious
+# transitive dependency's install lifecycle hook (preinstall/install/postinstall)
+# would otherwise run as root at build time — install-time RCE in the build
+# container. The server's own compile is an explicit `npm run build` step below,
+# so it does not depend on install hooks.
+RUN npm install --ignore-scripts
 
 COPY tsconfig.json ./
 COPY src/ src/
@@ -19,8 +25,10 @@ ENV PORT=3000
 
 WORKDIR /app
 
-COPY package.json package-lock.json ./
-RUN npm ci --omit=dev
+COPY package.json ./
+# Runtime deps only (no lockfile emitted → `npm install`); --ignore-scripts
+# blocks dependency install hooks from running as root in the final image.
+RUN npm install --omit=dev --ignore-scripts
 
 COPY --from=builder /app/dist dist/
 

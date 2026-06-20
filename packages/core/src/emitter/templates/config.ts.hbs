@@ -22,6 +22,9 @@ export interface AppConfig {
   oauth2AuthorizationUrl?: string;
   oauth2TokenUrl?: string;
   oauth2RedirectUri?: string;
+  /** OAuth scopes requested on token grants. Defaults to the spec-declared
+   * scopes; override at runtime with OAUTH2_SCOPES (space-separated). */
+  oauth2Scopes: string[];
 {{/if}}
 {{/each}}
   maxRetries: number;
@@ -76,6 +79,24 @@ function loadDefaultHeaders(): Record<string, string> {
   }
 }
 
+{{#each authSchemes}}
+{{#if (eq type "oauth2")}}
+/**
+ * Resolve the OAuth scopes requested on token grants. Defaults to the
+ * spec-declared scopes baked in at generation time; `OAUTH2_SCOPES`
+ * (space-separated) overrides them at runtime. Empty/whitespace tokens are
+ * dropped so a stray space never sends an empty scope.
+ */
+function resolveOAuthScopes(): string[] {
+  const raw = process.env.OAUTH2_SCOPES;
+  if (raw !== undefined) {
+    return raw.split(/\s+/).filter((s) => s.length > 0);
+  }
+  return {{#if scopes}}{{{json scopes}}}{{else}}[]{{/if}};
+}
+
+{{/if}}
+{{/each}}
 export function loadConfig(): AppConfig {
   return {
     baseUrl: resolveBaseUrl(),
@@ -100,6 +121,7 @@ export function loadConfig(): AppConfig {
     oauth2AuthorizationUrl: process.env.OAUTH2_AUTHORIZATION_URL,
     oauth2TokenUrl: process.env.OAUTH2_TOKEN_URL,
     oauth2RedirectUri: process.env.OAUTH2_REDIRECT_URI,
+    oauth2Scopes: resolveOAuthScopes(),
 {{/if}}
 {{/each}}
     maxRetries: parseInt(process.env.MAX_RETRIES ?? '3', 10),

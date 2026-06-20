@@ -40,6 +40,45 @@ describe('generated site HTTP server — Origin check', () => {
   });
 });
 
+describe('generated site HTTP server — bearer authentication (M3)', () => {
+  const out = renderSiteTemplate('server-main-http.ts', manifest);
+
+  it('rejects /mcp with 401 + WWW-Authenticate when the token is missing/wrong', () => {
+    // Auth runs on the /mcp route and answers a bad/absent token with 401.
+    expect(out).toContain('if (!isAuthorized(req)) {');
+    expect(out).toContain('res.writeHead(401, {');
+    expect(out).toContain("'WWW-Authenticate': 'Bearer',");
+    // Token is taken from the Authorization: Bearer header and compared in constant time.
+    expect(out).toContain('req.headers.authorization');
+    expect(out).toContain("header.startsWith('Bearer ')");
+    expect(out).toContain('crypto.timingSafeEqual(a, b)');
+  });
+
+  it('fails CLOSED when MCP_AUTH_TOKEN is unset and MCP_ALLOW_UNAUTHENTICATED is not "true"', () => {
+    expect(out).toContain('const expected = process.env.MCP_AUTH_TOKEN;');
+    // The only path that returns true with no token requires the explicit opt-in.
+    expect(out).toContain("process.env.MCP_ALLOW_UNAUTHENTICATED === 'true'");
+    // Default branch (no token, no opt-in) denies and warns loudly.
+    expect(out).toContain('denying all authenticated routes');
+    // The opt-in is logged loudly too.
+    expect(out).toContain('WITHOUT a bearer token');
+  });
+
+  it('keeps /health and /ready open (auth gates only /mcp)', () => {
+    const authIdx = out.indexOf('if (!isAuthorized(req)) {');
+    const mcpIdx = out.indexOf("if (url.pathname === '/mcp')");
+    const healthIdx = out.indexOf("if (url.pathname === '/health')");
+    const readyIdx = out.indexOf("if (url.pathname === '/ready')");
+    // The auth check lives inside the /mcp branch…
+    expect(authIdx).toBeGreaterThan(mcpIdx);
+    // …and the /health and /ready branches are emitted before it, so probes stay open.
+    expect(healthIdx).toBeGreaterThan(-1);
+    expect(healthIdx).toBeLessThan(authIdx);
+    expect(readyIdx).toBeGreaterThan(-1);
+    expect(readyIdx).toBeLessThan(authIdx);
+  });
+});
+
 describe('generated handlers — selector string-literal injection is escaped', () => {
   it('escapes a single-quote-bearing selector so it cannot break out of the JS literal', () => {
     const malicious = "#x'];await page.evaluate(()=>1);//";

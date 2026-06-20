@@ -38,6 +38,21 @@ const SESSION_COOKIE_PATTERNS = [
   /^connect\.sid$/i,
 ];
 
+// Auth-ish query-string keys whose values are secrets (apiKey-in-query).
+// Matched case-insensitively against the raw query-param name.
+const QUERY_AUTH_KEYS = new Set([
+  'api_key',
+  'apikey',
+  'access_token',
+  'token',
+  'auth',
+  'key',
+  'sig',
+  'signature',
+  'password',
+  'secret',
+]);
+
 export interface HarConversionResult {
   operations: OperationDescriptor[];
   baseUrl: string;
@@ -47,6 +62,7 @@ export interface HarConversionResult {
 export interface DetectedAuth {
   type: 'bearer' | 'basic' | 'apiKey';
   headerName: string;
+  in?: 'header' | 'query' | 'cookie';
   exampleValue?: string;
 }
 
@@ -84,24 +100,24 @@ export function clustersToOperations(clusters: EntryCluster[]): HarConversionRes
       });
     }
 
-    // Query params merged across all entries in cluster
-    const queryMap = new Map<string, { values: Set<string>; type: string }>();
+    // Query params merged across all entries in cluster. Auth-bearing query
+    // keys are excluded here — they are surfaced as auth schemes, not operation
+    // parameters — so their secret values are never retained or emitted.
+    const queryTypes = new Map<string, string>();
     for (const ne of cluster.entries) {
       for (const qp of ne.queryParams) {
-        const existing = queryMap.get(qp.name);
-        if (existing) {
-          existing.values.add(qp.exampleValue);
-        } else {
-          queryMap.set(qp.name, { values: new Set([qp.exampleValue]), type: qp.inferredType });
+        if (isQueryAuthKey(qp.name)) continue;
+        if (!queryTypes.has(qp.name)) {
+          queryTypes.set(qp.name, qp.inferredType);
         }
       }
     }
-    for (const [name, info] of queryMap) {
+    for (const [name, type] of queryTypes) {
       parameters.push({
         name,
         in: 'query',
         required: false,
-        schema: { type: info.type },
+        schema: { type },
       });
     }
 
@@ -193,6 +209,7 @@ function detectAuth(entry: Entry): DetectedAuth[] {
           result.push({
             type: 'apiKey',
             headerName: 'Cookie',
+            in: 'cookie',
             exampleValue: '[REDACTED]',
           });
           break;
@@ -201,7 +218,26 @@ function detectAuth(entry: Entry): DetectedAuth[] {
     }
   }
 
+  // Detect auth tokens passed in the query string. The literal value is never
+  // copied into the result — only the (de-duplicated) param name is reported.
+  const seenQueryAuth = new Set<string>();
+  for (const qs of entry.request.queryString) {
+    if (isQueryAuthKey(qs.name) && !seenQueryAuth.has(qs.name.toLowerCase())) {
+      seenQueryAuth.add(qs.name.toLowerCase());
+      result.push({
+        type: 'apiKey',
+        headerName: qs.name,
+        in: 'query',
+        exampleValue: '[REDACTED]',
+      });
+    }
+  }
+
   return result;
+}
+
+function isQueryAuthKey(name: string): boolean {
+  return QUERY_AUTH_KEYS.has(name.toLowerCase());
 }
 
 function generateOperationId(method: string, path: string): string {

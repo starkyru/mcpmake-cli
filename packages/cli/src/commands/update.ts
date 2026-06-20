@@ -12,6 +12,13 @@ import { logger } from '@mcpmake/core';
 import { fail } from '@mcpmake/core';
 import type { OpenAPIV3 } from 'openapi-types';
 
+/**
+ * JSON.parse reviver that drops prototype-polluting keys from the untrusted
+ * project `package.json` (read from an operator-supplied directory).
+ */
+const stripProtoKeys = (key: string, value: unknown): unknown =>
+  key === '__proto__' || key === 'constructor' || key === 'prototype' ? undefined : value;
+
 export default defineCommand({
   meta: {
     name: 'update',
@@ -79,7 +86,10 @@ export default defineCommand({
     }
 
     // Determine server name from existing package.json
-    const pkgJson = JSON.parse(await readFile(resolve(projectDir, 'package.json'), 'utf-8'));
+    const pkgJson = JSON.parse(
+      await readFile(resolve(projectDir, 'package.json'), 'utf-8'),
+      stripProtoKeys,
+    );
     const serverName = pkgJson.name;
 
     // Regenerate the full project (force overwrite)

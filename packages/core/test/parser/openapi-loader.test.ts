@@ -26,4 +26,26 @@ describe('openapi-loader', () => {
   it('rejects an invalid spec path', async () => {
     await expect(loadOpenApiSpec('/nonexistent/file.yaml')).rejects.toThrow();
   });
+
+  describe('SSRF guard (L-ssrf-spec)', () => {
+    // The guard rejects literal private/reserved IPs in-memory, before any
+    // network call, so these need no fetch mocking and make no real requests.
+    it('refuses a remote spec URL pointing at the cloud metadata endpoint', async () => {
+      await expect(loadOpenApiSpec('http://169.254.169.254/openapi.json')).rejects.toThrow(
+        /private\/reserved/i,
+      );
+    });
+
+    it('refuses a remote spec URL pointing at loopback', async () => {
+      await expect(loadOpenApiSpec('http://127.0.0.1/openapi.json')).rejects.toThrow(
+        /private\/reserved/i,
+      );
+    });
+
+    it('refuses a remote spec URL pointing at IPv6 loopback', async () => {
+      await expect(loadOpenApiSpec('http://[::1]/openapi.json')).rejects.toThrow(
+        /private\/reserved/i,
+      );
+    });
+  });
 });

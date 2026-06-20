@@ -1,4 +1,5 @@
 import http from 'node:http';
+import crypto from 'node:crypto';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
@@ -28,6 +29,47 @@ function createMcpServer(): McpServer {
   return server;
 }
 
+/* Bearer authentication — mirrors the API/node server. Constant-time compare of
+ * the `Authorization: Bearer <token>` header against MCP_AUTH_TOKEN.
+ *
+ * Fail CLOSED: when MCP_AUTH_TOKEN is unset, authenticated routes are denied
+ * unless the operator opts in with MCP_ALLOW_UNAUTHENTICATED === 'true' (a
+ * local/dev escape hatch). We warn once so the open posture is loud. The token
+ * is never read from the query string — URLs leak through logs and referrers. */
+let unauthWarned = false;
+function isAuthorized(req: http.IncomingMessage): boolean {
+  const expected = process.env.MCP_AUTH_TOKEN;
+  if (!expected) {
+    if (process.env.MCP_ALLOW_UNAUTHENTICATED === 'true') {
+      if (!unauthWarned) {
+        unauthWarned = true;
+        console.error(
+          'SECURITY: MCP_AUTH_TOKEN is unset and MCP_ALLOW_UNAUTHENTICATED=true — ' +
+            'serving authenticated routes WITHOUT a bearer token. ' +
+            'Set MCP_AUTH_TOKEN before exposing this endpoint.',
+        );
+      }
+      return true;
+    }
+    if (!unauthWarned) {
+      unauthWarned = true;
+      console.error(
+        'SECURITY: MCP_AUTH_TOKEN is unset — denying all authenticated routes. ' +
+          'Set MCP_AUTH_TOKEN, or set MCP_ALLOW_UNAUTHENTICATED=true for local/dev only.',
+      );
+    }
+    return false;
+  }
+  const header = req.headers.authorization;
+  if (typeof header !== 'string' || !header.startsWith('Bearer ')) return false;
+  const presented = header.slice(7).trim();
+  if (!presented) return false;
+  const a = Buffer.from(presented);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
+}
+
 let isReady = false;
 
 if (process.env.TRANSPORT === 'http') {
@@ -50,6 +92,17 @@ if (process.env.TRANSPORT === 'http') {
     }
 
     if (url.pathname === '/mcp') {
+      // Bearer auth (in addition to the origin check below). /health and /ready
+      // above stay open for liveness/readiness probes.
+      if (!isAuthorized(req)) {
+        res.writeHead(401, {
+          'Content-Type': 'application/json',
+          'WWW-Authenticate': 'Bearer',
+        });
+        res.end(JSON.stringify({ error: 'Unauthorized: missing or invalid bearer token' }));
+        return;
+      }
+
       if (allowedOrigin) {
         // Compare host-to-host exactly (DNS-rebinding protection). A substring
         // match would let "evil-{ALLOWED_ORIGIN}.attacker.com" through.

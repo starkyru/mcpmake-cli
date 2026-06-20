@@ -25,6 +25,7 @@ export { scaffoldSharedModules } from './emitter/project-scaffolder.js';
 // ---------------------------------------------------------------------------
 export { loadOpenApiSpec } from './parser/openapi-loader.js';
 export type { LoadResult } from './parser/openapi-loader.js';
+export { assertPublicUrl, isPrivateOrReservedIp, privateHostsAllowed } from './utils/ssrf-guard.js';
 export { applyOverlay } from './parser/overlay-loader.js';
 export { extractOperations } from './parser/operation-extractor.js';
 export type { ExtractionResult } from './parser/operation-extractor.js';

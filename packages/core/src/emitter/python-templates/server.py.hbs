@@ -146,6 +146,10 @@ async def {{functionName}}({{#each pyPathParams}}{{pyName}}: str, {{/each}}{{#ea
         # Cap the buffered response so a runaway upstream cannot exhaust memory.
         if len(resp.content) > _MAX_RESPONSE_BYTES:
             return [TextContent(type="text", text=f"Error: response exceeded {_MAX_RESPONSE_BYTES}-byte cap")]
+        # Never echo upstream 4xx/5xx bodies to the MCP caller — they can leak
+        # internal/upstream detail. Surface only the status code + generic reason.
+        if resp.status_code >= 400:
+            return [TextContent(type="text", text=f"Error: upstream returned {resp.status_code} {resp.reason_phrase}".rstrip())]
         data = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else resp.text
         return [TextContent(type="text", text=json.dumps(data, indent=2) if isinstance(data, (dict, list)) else str(data))]
     except Exception as e:

@@ -1,4 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk';
+import { extractJsonObject } from '../utils/json-extract.js';
 import { logger } from '../utils/logger.js';
 import { resolveModel } from '../utils/model-resolver.js';
 
@@ -67,36 +68,4 @@ export async function generateSpecFromDescription(options: GenerateSpecOptions):
   }
 
   return json;
-}
-
-/**
- * Return the substring spanning the first balanced top-level `{...}` object in
- * `text`, or null if none. String-aware (ignores braces inside quoted strings)
- * and linear-time — no regex, so no catastrophic-backtracking risk.
- */
-function extractJsonObject(text: string): string | null {
-  const start = text.indexOf('{');
-  if (start === -1) return null;
-
-  let depth = 0;
-  let inString = false;
-  let escaped = false;
-
-  for (let i = start; i < text.length; i++) {
-    const ch = text[i];
-    if (inString) {
-      if (escaped) escaped = false;
-      else if (ch === '\\') escaped = true;
-      else if (ch === '"') inString = false;
-    } else if (ch === '"') {
-      inString = true;
-    } else if (ch === '{') {
-      depth++;
-    } else if (ch === '}') {
-      depth--;
-      if (depth === 0) return text.slice(start, i + 1);
-    }
-  }
-
-  return null;
 }

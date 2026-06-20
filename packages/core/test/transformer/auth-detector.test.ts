@@ -93,6 +93,40 @@ describe('auth-detector', () => {
     expect(oauthFlows[0].scopes).toContain('read');
   });
 
+  it('bakes the union of flow scopes onto the oauth2 scheme (L-scopes)', () => {
+    const schemes: Record<string, OpenAPIV3.SecuritySchemeObject> = {
+      OAuth2: {
+        type: 'oauth2',
+        flows: {
+          authorizationCode: {
+            authorizationUrl: 'https://auth.example.com/authorize',
+            tokenUrl: 'https://auth.example.com/token',
+            scopes: { read: 'Read', write: 'Write' },
+          },
+          clientCredentials: {
+            tokenUrl: 'https://auth.example.com/token',
+            scopes: { write: 'Write', admin: 'Admin' },
+          },
+        },
+      },
+    };
+    const { authSchemes } = detectAuthSchemes(schemes);
+    expect(authSchemes[0].type).toBe('oauth2');
+    // Deduplicated union across flows — spec scopes are no longer dropped.
+    expect(authSchemes[0].scopes).toEqual(['read', 'write', 'admin']);
+  });
+
+  it('emits an empty scope set when the spec declares none', () => {
+    const schemes: Record<string, OpenAPIV3.SecuritySchemeObject> = {
+      OAuth2: {
+        type: 'oauth2',
+        flows: { clientCredentials: { tokenUrl: 'https://x/token', scopes: {} } },
+      },
+    };
+    const { authSchemes } = detectAuthSchemes(schemes);
+    expect(authSchemes[0].scopes).toEqual([]);
+  });
+
   it('detects client credentials flow', () => {
     const schemes: Record<string, OpenAPIV3.SecuritySchemeObject> = {
       OAuth2: {

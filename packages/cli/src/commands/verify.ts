@@ -35,6 +35,13 @@ export default defineCommand({
     const { operations } = extractOperations(api as OpenAPIV3.Document);
     const expectedTools = buildAllTools(operations);
 
+    // Dynamic-discovery projects emit a single tool-catalog.json instead of
+    // per-tool files, so verify against the catalog rather than tool files.
+    const catalogPath = resolve(args.project, 'src/tool-catalog.json');
+    if (await pathExists(catalogPath)) {
+      return await verifyCatalog(catalogPath, expectedTools);
+    }
+
     // Read the generated tool index to find registered tools
     const toolIndexPath = resolve(args.project, 'src/tools/index.ts');
     if (!(await pathExists(toolIndexPath))) {
@@ -76,3 +83,55 @@ export default defineCommand({
     }
   },
 });
+
+/**
+ * Verify a dynamic-discovery project: the generator emits a single
+ * `tool-catalog.json` (an array of tool entries) instead of per-tool files.
+ * Validate that the catalog exists, parses, and lists every expected tool.
+ */
+async function verifyCatalog(
+  catalogPath: string,
+  expectedTools: ReturnType<typeof buildAllTools>,
+): Promise<void> {
+  let catalog: unknown;
+  try {
+    catalog = JSON.parse(await readFile(catalogPath, 'utf-8'));
+  } catch (err) {
+    return await fail(`Failed to parse tool catalog: ${catalogPath}`, err);
+  }
+
+  if (!Array.isArray(catalog) || catalog.length === 0) {
+    return await fail(`Tool catalog is empty or not a list: ${catalogPath}`);
+  }
+
+  const catalogNames = new Set(
+    catalog
+      .map((entry) => (entry as { name?: unknown }).name)
+      .filter((name): name is string => typeof name === 'string'),
+  );
+
+  let missingCount = 0;
+  for (const tool of expectedTools) {
+    if (!catalogNames.has(tool.name)) {
+      logger.error(`Missing tool in catalog: ${tool.name}`);
+      missingCount++;
+    }
+  }
+
+  const expectedNames = new Set(expectedTools.map((t) => t.name));
+  let extraCount = 0;
+  for (const name of catalogNames) {
+    if (!expectedNames.has(name)) {
+      logger.warn(`Extra tool not in spec: ${name}`);
+      extraCount++;
+    }
+  }
+
+  if (missingCount === 0 && extraCount === 0) {
+    logger.success(
+      `Verified: all ${expectedTools.length} tools match the spec (dynamic discovery)`,
+    );
+  } else {
+    await fail(`Verification failed: ${missingCount} missing, ${extraCount} extra tools`);
+  }
+}

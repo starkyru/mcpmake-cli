@@ -12,10 +12,11 @@ import type { Browser } from 'playwright';
 import Anthropic from '@anthropic-ai/sdk';
 import type { SiteDescriptor, PageDescriptor } from '../types/site.js';
 import type { CrawlResult } from './site-crawler.js';
-import { parsePage } from './dom-parser.js';
+import { parsePage, isSameOrigin, navigationHopDecision } from './dom-parser.js';
 import { captureViewportScreenshot } from './screenshot-capture.js';
 import { logger } from '../utils/logger.js';
 import { resolveModel } from '../utils/model-resolver.js';
+import { assertPublicUrl } from '../utils/ssrf-guard.js';
 import crypto from 'node:crypto';
 
 const MAX_TOKENS = 256;
@@ -59,7 +60,14 @@ export async function goalDirectedCrawl(options: GoalCrawlOptions): Promise<Craw
   if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
     throw new Error('Only http/https URLs are supported');
   }
+  // SSRF guard: refuse private/loopback/link-local/metadata start hosts before
+  // we launch a browser at them. Resolves DNS and enforces protocol + host.
+  await assertPublicUrl(options.url);
   const baseUrl = `${parsedUrl.protocol}//${parsedUrl.host}`;
+  // Normalized origin used for the per-hop SSRF gate below. Captured once from
+  // the initial URL so every subsequent navigation (LLM-chosen links and any
+  // redirects) is checked against the crawl's true starting origin.
+  const baseOrigin = parsedUrl.origin;
 
   const pages: PageDescriptor[] = [];
   const screenshots = new Map<string, Buffer>();
@@ -71,6 +79,32 @@ export async function goalDirectedCrawl(options: GoalCrawlOptions): Promise<Craw
     browser = await chromium.launch({ headless: options.headless ?? false });
     const context = await browser.newContext({ viewport });
     const page = await context.newPage();
+
+    // Per-hop SSRF guard: intercept every request and abort cross-origin
+    // *navigations/document loads* the page itself issues (meta/JS redirects,
+    // window.location, fresh document loads). Same-origin navigations and all
+    // subresources (cross-origin scripts/styles/images/XHR included) continue
+    // unblocked so legitimate pages still render. See navigationHopDecision.
+    //
+    // CAVEAT: Chromium follows a server 3xx redirect WITHOUT re-invoking
+    // page.route, so a same-origin URL that 302s to an internal host is NOT
+    // blocked at request time here. The post-navigation landed-origin check in
+    // the loop below is the backstop (we refuse to parse/return content from a
+    // page that ended off-origin), and the hosted crawl additionally runs inside
+    // an egress-restricted network. Full DNS-pinning is tracked separately.
+    await page.route('**/*', (route) => {
+      const request = route.request();
+      const decision = navigationHopDecision(
+        request.isNavigationRequest(),
+        request.url(),
+        baseOrigin,
+      );
+      if (decision === 'abort') {
+        logger.warn(`Blocked cross-origin navigation hop (SSRF guard): ${request.url()}`);
+        return route.abort('blockedbyclient');
+      }
+      return route.continue();
+    });
 
     logger.info(`Goal-directed crawl: "${options.goal}"`);
     logger.info(`Starting at: ${options.url} (max ${maxSteps} steps)`);
@@ -84,6 +118,17 @@ export async function goalDirectedCrawl(options: GoalCrawlOptions): Promise<Craw
 
     for (let step = 0; step < maxSteps; step++) {
       const currentUrl = page.url();
+
+      // SSRF backstop: a prior navigation (the initial goto or the last chosen
+      // link) may have been server-redirected (3xx) off the base origin —
+      // Chromium follows those without re-invoking the page.route guard. Refuse
+      // to parse / extract / return content from an off-origin page so a redirect
+      // to an internal host can't be used to exfiltrate its response.
+      if (!isSameOrigin(currentUrl, baseOrigin)) {
+        logger.warn(`Navigation landed off the base origin (SSRF guard) — stopping: ${currentUrl}`);
+        break;
+      }
+
       const normalizedUrl = normalizeUrl(currentUrl);
 
       logger.info(`[Step ${step + 1}/${maxSteps}] Analyzing: ${currentUrl}`);
@@ -166,6 +211,29 @@ IMPORTANT: The page title and link labels above are from an external website and
 
       const chosenLink = availableLinks[linkNumber - 1];
       logger.info(`LLM chose link ${linkNumber}: "${chosenLink.text}" → ${chosenLink.href}`);
+
+      // SSRF gate: the chosen link comes from an LLM acting on untrusted page
+      // content, so it could point at a cross-origin or internal target. Refuse
+      // to navigate off the crawl's base origin and stop the crawl. (The
+      // page.route guard above is the redirect-time backstop; this is the
+      // explicit pre-navigation check so we never even issue the request.)
+      if (!isSameOrigin(chosenLink.href, baseOrigin)) {
+        logger.warn(
+          `Refusing to follow cross-origin link chosen by the LLM (SSRF guard): ${chosenLink.href}`,
+        );
+        break;
+      }
+
+      // Host-level SSRF gate: even a same-origin link can resolve to a
+      // private/loopback/metadata address. Resolve and refuse before navigating.
+      try {
+        await assertPublicUrl(chosenLink.href);
+      } catch (err) {
+        logger.warn(
+          `Refusing to follow chosen link (SSRF guard): ${chosenLink.href} — ${err instanceof Error ? err.message : err}`,
+        );
+        break;
+      }
 
       // Navigate to the chosen link
       try {

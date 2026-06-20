@@ -88,6 +88,43 @@ describe('resolveModel', () => {
     expect(await resolveModel(client, 'balanced')).toBe('claude-sonnet-4-6');
   });
 
+  it('does not cache the offline fallback — a later call resolves once the API recovers', async () => {
+    const resolveModel = await freshResolveModel();
+    const spy = { calls: 0 };
+    let down = true;
+    // After recovery the preferred alias is retired, so a successful resolution
+    // returns a DIFFERENT id than the offline fallback — proving the fallback
+    // was never cached.
+    const client = {
+      models: {
+        list() {
+          spy.calls++;
+          if (down) throw new Error('network down');
+          return (async function* () {
+            yield {
+              id: 'claude-sonnet-9-0-20300101',
+              display_name: 'Claude Sonnet 9',
+              created_at: '2030-01-01T00:00:00Z',
+            };
+          })();
+        },
+      },
+    } as unknown as import('@anthropic-ai/sdk').default;
+
+    // Transient failure → preferred fallback alias, but NOT cached.
+    expect(await resolveModel(client, 'balanced')).toBe('claude-sonnet-4-6');
+    expect(spy.calls).toBe(1);
+
+    // API recovers; the next call must retry and resolve to the real model.
+    down = false;
+    expect(await resolveModel(client, 'balanced')).toBe('claude-sonnet-9-0-20300101');
+    expect(spy.calls).toBe(2);
+
+    // Now that a real resolution succeeded, it is cached (no further API call).
+    expect(await resolveModel(client, 'balanced')).toBe('claude-sonnet-9-0-20300101');
+    expect(spy.calls).toBe(2);
+  });
+
   it('caches the resolved model per tier (one Models API call per process)', async () => {
     const resolveModel = await freshResolveModel();
     const spy = { calls: 0 };

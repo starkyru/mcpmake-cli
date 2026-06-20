@@ -235,7 +235,8 @@ export function buildAllTools(operations: OperationDescriptor[]): ToolDefinition
   const filtered = operations.filter((op) => op.mcpExtensions?.emit !== 'skip');
   const tools = filtered.map(buildToolDefinition);
 
-  // Handle name collisions by appending method
+  // First pass: disambiguate name collisions by appending the HTTP method. This
+  // keeps the common case (distinct operationIds → distinct names) stable.
   const nameCount = new Map<string, number>();
   for (const t of tools) {
     nameCount.set(t.name, (nameCount.get(t.name) ?? 0) + 1);
@@ -247,6 +248,35 @@ export function buildAllTools(operations: OperationDescriptor[]): ToolDefinition
       tool.fileName = `${tool.fileName}-${tool.method}`;
       tool.functionName = `${tool.functionName}${tool.method.charAt(0).toUpperCase() + tool.method.slice(1)}`;
     }
+  }
+
+  // Second pass: two operations sharing the same operationId AND method still
+  // collide after the first pass; appending the method does not disambiguate
+  // them, so the later tool would silently overwrite the earlier one's name and
+  // output file (M14). Append an incrementing `_2`, `_3`, … suffix to each later
+  // collision so every tool name — and therefore its file name — is globally
+  // unique. Names that did not collide are left untouched.
+  const usedNames = new Set<string>();
+  const usedFileNames = new Set<string>();
+  for (const tool of tools) {
+    if (!usedNames.has(tool.name) && !usedFileNames.has(tool.fileName)) {
+      usedNames.add(tool.name);
+      usedFileNames.add(tool.fileName);
+      continue;
+    }
+    let n = 2;
+    let name = `${tool.name}_${n}`;
+    let fileName = `${tool.fileName}-${n}`;
+    while (usedNames.has(name) || usedFileNames.has(fileName)) {
+      n++;
+      name = `${tool.name}_${n}`;
+      fileName = `${tool.fileName}-${n}`;
+    }
+    tool.name = name;
+    tool.fileName = fileName;
+    tool.functionName = `${tool.functionName}${n}`;
+    usedNames.add(name);
+    usedFileNames.add(fileName);
   }
 
   // Enforce MCP spec name length limit (128 chars)

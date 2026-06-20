@@ -1,0 +1,76 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import type { SelectorSet } from '../../src/types/site.js';
+
+// Per-test control over the raw model text returned by the SDK.
+const createMock = vi.fn();
+
+vi.mock('@anthropic-ai/sdk', () => ({
+  default: vi.fn().mockImplementation(() => ({
+    messages: { create: createMock },
+  })),
+}));
+
+// Bypass the live Models API — we only care about response parsing here.
+vi.mock('../../src/utils/model-resolver.js', () => ({
+  resolveModel: vi.fn().mockResolvedValue('claude-haiku-test'),
+}));
+
+function modelReturns(text: string) {
+  createMock.mockResolvedValueOnce({ content: [{ type: 'text', text }] });
+}
+
+const broken: SelectorSet = {
+  primary: '#old-login',
+  fallbacks: [],
+  strategy: 'id',
+  confidence: 0.4,
+  humanLabel: 'Login button',
+};
+
+const validSelectorJson = JSON.stringify({
+  primary: 'button.login',
+  fallbacks: ['#login'],
+  strategy: 'css-path',
+  confidence: 0.9,
+  humanLabel: 'Login button',
+});
+
+describe('selector-healer (L-jsonparse: tolerates fenced/prose output)', () => {
+  beforeEach(() => {
+    createMock.mockReset();
+    process.env.ANTHROPIC_API_KEY = 'test-key';
+  });
+
+  it('parses a bare JSON object', async () => {
+    modelReturns(validSelectorJson);
+    const { healBrokenSelector } = await import('../../src/site-transformer/selector-healer.js');
+    const result = await healBrokenSelector('tree', broken, 'the login button');
+    expect(result?.primary).toBe('button.login');
+  });
+
+  it('parses a ```json-fenced object', async () => {
+    modelReturns('```json\n' + validSelectorJson + '\n```');
+    const { healBrokenSelector } = await import('../../src/site-transformer/selector-healer.js');
+    const result = await healBrokenSelector('tree', broken, 'the login button');
+    expect(result?.primary).toBe('button.login');
+  });
+
+  it('parses an object wrapped in prose', async () => {
+    modelReturns('Here is the new selector:\n' + validSelectorJson + '\nDone.');
+    const { healBrokenSelector } = await import('../../src/site-transformer/selector-healer.js');
+    const result = await healBrokenSelector('tree', broken, 'the login button');
+    expect(result?.primary).toBe('button.login');
+  });
+
+  it('returns null on a literal null response', async () => {
+    modelReturns('null');
+    const { healBrokenSelector } = await import('../../src/site-transformer/selector-healer.js');
+    expect(await healBrokenSelector('tree', broken, 'x')).toBeNull();
+  });
+
+  it('returns null on unparseable (no JSON object) output', async () => {
+    modelReturns('I could not find a matching element on the page.');
+    const { healBrokenSelector } = await import('../../src/site-transformer/selector-healer.js');
+    expect(await healBrokenSelector('tree', broken, 'x')).toBeNull();
+  });
+});

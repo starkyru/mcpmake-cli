@@ -15,6 +15,7 @@ import { buildAllTools } from '@mcpmake/core';
 import { emitSiteProject } from '@mcpmake/core';
 import { logger } from '@mcpmake/core';
 import { fail } from '@mcpmake/core';
+import { apiKeyArg, applyApiKey } from '../api-key.js';
 import type { SiteProjectManifest, BrowserConfig, SiteToolDefinition } from '@mcpmake/core';
 
 function toPackageName(name: string): string {
@@ -22,6 +23,21 @@ function toPackageName(name: string): string {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-|-$/g, '');
+}
+
+/**
+ * Parse a numeric CLI flag as a non-negative integer. Unlike a bare
+ * `parseInt`, this rejects non-numeric / negative input with a clear error
+ * instead of silently coercing it to NaN→0 (which would zero out scope, e.g.
+ * `--max-pages abc` crawling nothing). An unset flag falls back to `fallback`.
+ */
+export function parseIntFlag(value: string | undefined, flag: string, fallback: number): number {
+  if (value === undefined || value === '') return fallback;
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < 0) {
+    throw new Error(`Invalid --${flag}: "${value}" (expected a non-negative integer)`);
+  }
+  return n;
 }
 
 export default defineConfigurableCommand('website', {
@@ -104,13 +120,17 @@ export default defineConfigurableCommand('website', {
       description:
         'Goal-directed crawl: use an LLM to navigate toward a goal instead of BFS crawling (requires ANTHROPIC_API_KEY)',
     },
+    'api-key': apiKeyArg,
   },
   async run({ args }) {
+    applyApiKey(args);
+
     const url = args.url;
-    const depth = parseInt(args.depth ?? '2', 10);
-    const maxPages = parseInt(args['max-pages'] ?? '20', 10);
-    const timeoutMs = parseInt(args.timeout ?? '300', 10) * 1000;
-    const maxSessions = parseInt(args['max-sessions'] ?? '10', 10);
+    const depth = parseIntFlag(args.depth, 'depth', 2);
+    const maxPages = parseIntFlag(args['max-pages'], 'max-pages', 20);
+    const timeoutSec = parseIntFlag(args.timeout, 'timeout', 300);
+    const timeoutMs = timeoutSec * 1000;
+    const maxSessions = parseIntFlag(args['max-sessions'], 'max-sessions', 10);
     const hybridMode = args.hybrid ?? false;
     const goal = args.goal as string | undefined;
 
@@ -266,8 +286,8 @@ export default defineConfigurableCommand('website', {
     const transport = args.transport === 'http' ? 'http' : 'stdio';
 
     const browserConfig: BrowserConfig = {
-      headless: true,
-      idleTimeoutMs: 5 * 60 * 1000,
+      headless: args.headless ?? true,
+      idleTimeoutMs: timeoutMs,
       viewport: { width: 1280, height: 720 },
       maxSessions,
     };

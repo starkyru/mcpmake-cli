@@ -93,6 +93,7 @@ export function inferRequestBodySchema(
     const properties: Record<string, JsonSchema> = {};
     const required: string[] = [];
     for (const [key, value] of params) {
+      if (isDangerousKey(key)) continue;
       properties[key] = { type: 'string' };
       required.push(key);
       // Try to detect numbers/booleans

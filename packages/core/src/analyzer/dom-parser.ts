@@ -127,6 +127,7 @@ async function extractFormFields(
           tagName: el.tagName.toLowerCase(),
           name: input.name || '',
           type: input.type || 'text',
+          autocomplete: el.getAttribute('autocomplete') || '',
           placeholder: input.placeholder || '',
           required: input.required || false,
           value: input.value || '',
@@ -165,7 +166,13 @@ async function extractFormFields(
         // label/value pairs the handler needs to drive selectOption by value.
         options: attrs.optionPairs ? attrs.optionPairs.map((o) => o.label) : undefined,
         optionPairs: attrs.optionPairs,
-        defaultValue: attrs.value || undefined,
+        // Never persist a live/prefilled value for sensitive (password/
+        // credential) fields — only the field shape is needed to drive the
+        // tool. Live secrets read from the page DOM must not reach the
+        // generated site-descriptor.json.
+        defaultValue: isSensitiveField(attrs.name, attrs.type, attrs.autocomplete)
+          ? undefined
+          : attrs.value || undefined,
       });
     } catch (err) {
       logger.debug(`Skipping form field: ${err}`);
@@ -288,6 +295,40 @@ async function extractLinks(page: Page): Promise<LinkDescriptor[]> {
 
 // ─── Helpers ────────────────────────────────────────────────────────
 
+/**
+ * Substring credential hints — long/unambiguous enough that a raw substring
+ * match won't produce false positives (e.g. "password", "secret", "token").
+ */
+const SENSITIVE_SUBSTRINGS =
+  /password|passcode|passphrase|secret|token|one[-_]?time|cc[-_]?num|card[-_]?num|security[-_]?code|api[-_]?key/i;
+
+/**
+ * Short/ambiguous credential hints that must match a whole token, not a
+ * substring, to avoid false positives ("pin" in "shipping", "otp" in "...").
+ */
+const SENSITIVE_TOKENS = new Set(['pass', 'otp', 'cvv', 'cvc', 'ssn', 'pin']);
+
+/**
+ * True when a form field must NOT have its live/entered value persisted into
+ * the site descriptor. `type="password"` is always sensitive; otherwise the
+ * `name` or `autocomplete` attribute is matched against credential hints.
+ * Exported for regression testing of the secret-capture guard (audit M9).
+ */
+export function isSensitiveField(name: string, type: string, autocomplete: string): boolean {
+  if (type.toLowerCase() === 'password') return true;
+  return [name, autocomplete].some((raw) => {
+    if (!raw) return false;
+    if (SENSITIVE_SUBSTRINGS.test(raw)) return true;
+    // Split camelCase / snake_case / kebab-case / digits into discrete tokens.
+    const tokens = raw
+      .replace(/([a-z])([A-Z])/g, '$1 $2')
+      .toLowerCase()
+      .split(/[^a-z]+/)
+      .filter(Boolean);
+    return tokens.some((t) => SENSITIVE_TOKENS.has(t));
+  });
+}
+
 function mapFieldType(tagName: string, type: string): FormFieldType {
   if (tagName === 'textarea') return 'textarea';
   if (tagName === 'select') return 'select';
@@ -321,10 +362,48 @@ function mapFieldType(tagName: string, type: string): FormFieldType {
  */
 export function isSameOrigin(href: string, origin: string): boolean {
   try {
-    return new URL(href).origin === origin;
+    const u = new URL(href);
+    // Only http(s) can be "same origin" for crawl purposes. Reject other schemes
+    // outright: e.g. `new URL('blob:https://site/x').origin` equals
+    // `https://site`, which would otherwise spoof a same-origin match and slip a
+    // non-navigable / SSRF target (blob:, data:, file:, javascript:, …) past the
+    // gate.
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return false;
+    return u.origin === origin;
   } catch {
     return false;
   }
+}
+
+/**
+ * Per-hop SSRF decision for a Playwright `page.route` interceptor.
+ *
+ * A crawler that simply follows links/redirects can be steered off-origin to an
+ * internal target (cloud metadata endpoints, intranet hosts, etc.). We gate
+ * *navigation/document* hops to the crawl's base origin: the top-level page may
+ * only navigate within the same origin. Subresources (scripts, styles, images,
+ * XHR/fetch) are NOT blocked here — blocking them would break legitimate pages,
+ * and a cross-origin subresource can't pivot the crawler's navigation context.
+ *
+ * NOTE (follow-up): this is an origin-equality gate only. It does not pin DNS,
+ * so it does not by itself stop a public hostname that resolves to a private/
+ * loopback IP (DNS-rebinding / metadata-IP). Full DNS-pinning + private-range
+ * blocking is tracked separately and layered in front of the browser.
+ *
+ * @param isNavigation whether the request is a top-level navigation/document load
+ * @param url          the request URL
+ * @param baseOrigin   the crawl's base origin (from `new URL(start).origin`)
+ * @returns 'continue' to allow the request, 'abort' to block it
+ */
+export function navigationHopDecision(
+  isNavigation: boolean,
+  url: string,
+  baseOrigin: string,
+): 'continue' | 'abort' {
+  // Only gate navigations/document loads. Same-origin subresources, and
+  // cross-origin subresources alike, are allowed through.
+  if (!isNavigation) return 'continue';
+  return isSameOrigin(url, baseOrigin) ? 'continue' : 'abort';
 }
 
 function normalizeHref(href: string): string {

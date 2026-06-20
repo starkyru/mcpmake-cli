@@ -27,6 +27,11 @@ function log(level: 'info' | 'error', msg: string, extra?: Record<string, unknow
   process.stderr.write(JSON.stringify(entry) + '\n');
 }
 
+/* Local/dev escape hatch: when MCP_AUTH_TOKEN is unset, authenticated routes
+ * stay closed (401) UNLESS the operator explicitly sets this to `true`. Matches
+ * the worker server's MCP_ALLOW_UNAUTHENTICATED so both targets behave alike. */
+const ALLOW_UNAUTHENTICATED = process.env.MCP_ALLOW_UNAUTHENTICATED === 'true';
+
 /* ── MCP 2026-07-28 ─────────────────────────────────────────────────────
  * This server is being migrated toward the 2026-07-28 spec revision (RC).
  * Implemented here (additive, works against the current SDK):
@@ -42,11 +47,14 @@ const PROTOCOL_REVISION = '2026-07-28'; // VERIFY against the final spec
 
 /* ── Bearer authentication ──────────────────────────────────────────────
  * Constant-time check that the request presents the expected bearer token via
- * the `Authorization: Bearer <token>` header. Returns true when no token is
- * configured (auth disabled). The token is never accepted from the query
- * string — URLs leak through logs, history, and referrers. */
+ * the `Authorization: Bearer <token>` header. The token is never accepted from
+ * the query string — URLs leak through logs, history, and referrers.
+ *
+ * Fails CLOSED: when MCP_AUTH_TOKEN is unset, every authenticated route is
+ * denied unless the operator explicitly opts in with MCP_ALLOW_UNAUTHENTICATED=
+ * true (a local/dev escape hatch — see ALLOW_UNAUTHENTICATED below). */
 function isAuthorized(req: http.IncomingMessage, expected: string | undefined): boolean {
-  if (!expected) return true; // auth disabled when MCP_AUTH_TOKEN is unset
+  if (!expected) return ALLOW_UNAUTHENTICATED; // fail closed unless explicitly opted in
 
   const header = req.headers.authorization;
   if (typeof header !== 'string' || !header.startsWith('Bearer ')) return false;
@@ -166,6 +174,22 @@ if (transportMode === 'http') {
   }
   const allowedOrigin = process.env.ALLOWED_ORIGIN;
   const authToken = process.env.MCP_AUTH_TOKEN;
+  /* Fail closed: with no MCP_AUTH_TOKEN the server denies every authenticated
+   * route (401) unless the operator opted in via MCP_ALLOW_UNAUTHENTICATED=true.
+   * Warn loudly, once, when running wide open so it is never a silent default. */
+  if (!authToken) {
+    if (ALLOW_UNAUTHENTICATED) {
+      console.error(
+        'WARNING: MCP_AUTH_TOKEN is not set and MCP_ALLOW_UNAUTHENTICATED=true — ' +
+          'the server is running UNAUTHENTICATED. Do not use this in production.',
+      );
+    } else {
+      console.error(
+        'MCP_AUTH_TOKEN is not set — authenticated routes will return 401. ' +
+          'Set MCP_AUTH_TOKEN, or MCP_ALLOW_UNAUTHENTICATED=true for local/dev only.',
+      );
+    }
+  }
   /* Stateless by default (2026-07-28). MCP_STATEFUL=true keeps Mcp-Session-Id
    * sessions during the migration / for clients that need resumable streams. */
   const stateful = process.env.MCP_STATEFUL === 'true';
@@ -302,9 +326,10 @@ if (transportMode === 'http') {
 
     /* ── Authentication ─────────────────────────────────────────────
      * Every endpoint except /health, /ready{{#if hasOAuth}}, and the public
-     * OAuth metadata{{/if}} requires a valid bearer token when MCP_AUTH_TOKEN
-     * is set. This is the in-container line of defense; the hosting backend
-     * also validates before proxying. */
+     * OAuth metadata{{/if}} requires a valid bearer token. With MCP_AUTH_TOKEN
+     * unset the server fails closed (401) unless MCP_ALLOW_UNAUTHENTICATED=true.
+     * This is the in-container line of defense; the hosting backend also
+     * validates before proxying. */
     const isPublicPath =
       url.pathname === '/health' ||
       url.pathname === '/ready'{{#if hasOAuth}} ||
@@ -353,7 +378,7 @@ if (transportMode === 'http') {
             clientSecret: config.oauth2ClientSecret,
             authorizationUrl,
             tokenUrl,
-            scopes: [],
+            scopes: config.oauth2Scopes,
             redirectUri: config.oauth2RedirectUri ?? '',
           },
           issuer,

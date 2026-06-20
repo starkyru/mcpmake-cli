@@ -1,9 +1,13 @@
 /**
  * Sanitize a string for safe embedding in a JavaScript/TypeScript single-quoted string literal.
- * Escapes backslashes, single quotes, and newlines.
+ * Escapes backslashes, single quotes, and CR/LF.
  */
 export function escapeStringLiteral(str: string): string {
-  return str.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n').replace(/\r/g, '');
+  return str
+    .replace(/\\/g, '\\\\')
+    .replace(/'/g, "\\'")
+    .replace(/\n/g, '\\n')
+    .replace(/\r/g, '\\r');
 }
 
 /**

@@ -4,7 +4,7 @@ export { extractOperations } from './operation-extractor.js';
 export type { ExtractionResult } from './operation-extractor.js';
 export { jsonSchemaToZodCode, buildOperationInputSchema } from './schema-converter.js';
 export { loadHarFile } from './har-loader.js';
-export { filterHarEntries } from './har-filter.js';
+export { filterHarEntries, redactEntrySecrets } from './har-filter.js';
 export type { FilterOptions } from './har-filter.js';
 export { normalizeEntry } from './har-normalizer.js';
 export type { NormalizedEntry, PathParam, QueryParam } from './har-normalizer.js';

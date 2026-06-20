@@ -68,7 +68,9 @@ export function getAuthHeaders(
   }
 {{/if}}
 {{#if (eq type "oauth2")}}
-  // OAuth2 — use token management with refresh
+  // OAuth2 — non-interactive grants only (client credentials / refresh /
+  // pre-obtained OAUTH2_TOKEN). The interactive authorization-code flow is
+  // unsupported: a headless server has no /callback route — see oauth.ts.
   if (schemeApplies(requirement, {{{json schemeName}}})) {
     try {
       const token = await getAccessToken({
@@ -76,12 +78,14 @@ export function getAuthHeaders(
         clientSecret: config.oauth2ClientSecret,
         authorizationUrl: config.oauth2AuthorizationUrl ?? '',
         tokenUrl: config.oauth2TokenUrl ?? '',
-        scopes: [],
-        redirectUri: config.oauth2RedirectUri ?? 'http://localhost:3000/callback',
+        scopes: config.oauth2Scopes,
+        redirectUri: config.oauth2RedirectUri ?? '',
       });
       headers['Authorization'] = `Bearer ${token}`;
-    } catch {
-      // Fallback to pre-obtained token
+    } catch (err) {
+      // Token fetch failed — fall back to a pre-obtained token if present.
+      // Surface the cause (never the token/secret) so it is not swallowed.
+      console.error('OAuth token fetch failed, falling back to OAUTH2_TOKEN:', String(err));
       if (config.oauth2Token) {
         headers['Authorization'] = `Bearer ${config.oauth2Token}`;
       }

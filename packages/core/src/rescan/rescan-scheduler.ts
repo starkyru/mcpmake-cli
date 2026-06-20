@@ -130,12 +130,19 @@ export function computeNextRun(cronExpr: string, after: Date): Date | null {
 
   if (!minutes || !hours || !doms || !months || !dows) return null;
 
-  // Brute-force search over the next 400 days to find the first matching time
+  // Standard cron day matching: when BOTH day-of-month and day-of-week are
+  // restricted (neither is '*'), a day matches if EITHER matches (OR). If only
+  // one is restricted, only that one applies.
+  const domRestricted = domSpec !== '*';
+  const dowRestricted = dowSpec !== '*';
+
+  // Brute-force search over the next ~400 days to find the first matching time,
+  // so monthly/yearly cron schedules (which may not recur within a week) fire.
   const candidate = new Date(after.getTime());
   candidate.setSeconds(0, 0);
   candidate.setMinutes(candidate.getMinutes() + 1); // Start from the next minute
 
-  const limit = new Date(after.getTime() + 7 * 24 * 60 * 60 * 1000);
+  const limit = new Date(after.getTime() + 400 * 24 * 60 * 60 * 1000);
 
   while (candidate < limit) {
     const m = candidate.getMinutes();
@@ -144,13 +151,18 @@ export function computeNextRun(cronExpr: string, after: Date): Date | null {
     const mon = candidate.getMonth() + 1; // JS months are 0-based
     const dow = candidate.getDay();
 
-    if (
-      minutes.includes(m) &&
-      hours.includes(h) &&
-      doms.includes(dom) &&
-      months.includes(mon) &&
-      dows.includes(dow)
-    ) {
+    let dayMatches: boolean;
+    if (domRestricted && dowRestricted) {
+      dayMatches = doms.includes(dom) || dows.includes(dow);
+    } else if (domRestricted) {
+      dayMatches = doms.includes(dom);
+    } else if (dowRestricted) {
+      dayMatches = dows.includes(dow);
+    } else {
+      dayMatches = true;
+    }
+
+    if (minutes.includes(m) && hours.includes(h) && months.includes(mon) && dayMatches) {
       return candidate;
     }
 

@@ -7,9 +7,10 @@ import { chromium } from 'playwright';
 import type { Browser, Page, Request, Response } from 'playwright';
 import type { Entry, Header } from 'har-format';
 import type { SiteDescriptor, PageDescriptor } from '../types/site.js';
-import { parsePage, isSameOrigin } from './dom-parser.js';
+import { parsePage, isSameOrigin, navigationHopDecision } from './dom-parser.js';
 import { captureViewportScreenshot } from './screenshot-capture.js';
 import { logger } from '../utils/logger.js';
+import { assertPublicUrl } from '../utils/ssrf-guard.js';
 import crypto from 'node:crypto';
 
 export interface CrawlOptions {
@@ -43,6 +44,12 @@ const DEFAULT_DEPTH = 2;
 const DEFAULT_MAX_PAGES = 20;
 const DEFAULT_TIMEOUT = 5 * 60 * 1000;
 const DEFAULT_VIEWPORT = { width: 1280, height: 720 };
+// Defense-in-depth bound on the in-flight request map during HAR capture.
+const MAX_PENDING = 10_000;
+// Cap the BFS frontier so an adversarial/large site can't balloon the queue.
+// We never need more than maxPages worth of unvisited work plus a small margin,
+// since extra queued URLs beyond the page cap would never be visited anyway.
+const MAX_FRONTIER_MULTIPLIER = 10;
 
 /**
  * Crawl a website and return a SiteDescriptor with all discovered pages.
@@ -58,6 +65,9 @@ export async function crawlSite(options: CrawlOptions): Promise<CrawlResult> {
   if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
     throw new Error('Only http/https URLs are supported');
   }
+  // SSRF guard: refuse private/loopback/link-local/metadata start hosts before
+  // we launch a browser at them. Resolves DNS and enforces protocol + host.
+  await assertPublicUrl(options.url);
   const baseUrl = `${parsedUrl.protocol}//${parsedUrl.host}`;
   // Normalized origin used for same-origin admission. A string-prefix check on
   // baseUrl would admit prefix-spoofing hosts (e.g. example.com.attacker.test).
@@ -70,9 +80,22 @@ export async function crawlSite(options: CrawlOptions): Promise<CrawlResult> {
   const harEntries: Entry[] = [];
   const pendingRequests = new Map<Request, { startTime: number }>();
   const visited = new Set<string>();
-  const queue: Array<{ url: string; currentDepth: number }> = [
-    { url: options.url, currentDepth: 0 },
-  ];
+  // URLs already pushed onto the frontier (by normalized form). Dedup on enqueue
+  // — not just on visit — so the same link discovered on many pages is queued
+  // once and the frontier can't balloon. Seed with the start URL.
+  const enqueued = new Set<string>();
+  const maxFrontier = maxPages * MAX_FRONTIER_MULTIPLIER;
+  const queue: Array<{ url: string; currentDepth: number }> = [];
+
+  const enqueue = (url: string, currentDepth: number): void => {
+    if (queue.length >= maxFrontier) return;
+    const key = normalizeUrl(url);
+    if (visited.has(key) || enqueued.has(key)) return;
+    enqueued.add(key);
+    queue.push({ url, currentDepth });
+  };
+
+  enqueue(options.url, 0);
 
   let browser: Browser | undefined;
 
@@ -81,12 +104,44 @@ export async function crawlSite(options: CrawlOptions): Promise<CrawlResult> {
     const context = await browser.newContext({ viewport });
     const page = await context.newPage();
 
+    // Per-hop SSRF guard: abort cross-origin *navigations/document loads* the
+    // page itself issues (meta/JS redirect, window.location, fresh document) so
+    // it can't steer the top-level page off the base origin to an internal
+    // target. The queue-time isSameOrigin check (below) only vets links we choose
+    // to enqueue. Subresources (including cross-origin ones) are allowed through
+    // so pages still render. See navigationHopDecision.
+    //
+    // CAVEAT: Chromium follows a server 3xx redirect WITHOUT re-invoking
+    // page.route, so a same-origin URL that 302s to an internal host is NOT
+    // blocked at request time here — the post-goto landed-origin check below is
+    // the backstop (we skip parsing a page that ended off-origin). The hosted
+    // crawl additionally runs inside an egress-restricted network.
+    await page.route('**/*', (route) => {
+      const request = route.request();
+      const decision = navigationHopDecision(
+        request.isNavigationRequest(),
+        request.url(),
+        baseOrigin,
+      );
+      if (decision === 'abort') {
+        logger.warn(`Blocked cross-origin navigation hop (SSRF guard): ${request.url()}`);
+        return route.abort('blockedbyclient');
+      }
+      return route.continue();
+    });
+
     // Optionally capture network requests as HAR entries during crawl
     if (captureHar) {
-      page.on('request', (request) => {
+      const onRequest = (request: Request) => {
+        // Defense-in-depth bound: drop the oldest in-flight entry if a flood of
+        // never-resolving requests ever fills the map.
+        if (pendingRequests.size >= MAX_PENDING) {
+          const oldest = pendingRequests.keys().next().value;
+          if (oldest) pendingRequests.delete(oldest);
+        }
         pendingRequests.set(request, { startTime: Date.now() });
-      });
-      page.on('response', async (response) => {
+      };
+      const onResponse = async (response: Response) => {
         const request = response.request();
         const pending = pendingRequests.get(request);
         if (!pending) return;
@@ -100,6 +155,27 @@ export async function crawlSite(options: CrawlOptions): Promise<CrawlResult> {
           // can't grow unbounded across a long crawl.
           pendingRequests.delete(request);
         }
+      };
+      // The nav-hop guard aborts cross-origin hops and many crawl requests
+      // never fire 'response' (aborted/blocked/failed/redirect). Free their
+      // pending entries on both terminal events so the map can't leak.
+      const onSettled = (request: Request) => {
+        pendingRequests.delete(request);
+      };
+
+      page.on('request', onRequest);
+      page.on('response', onResponse);
+      page.on('requestfailed', onSettled);
+      page.on('requestfinished', onSettled);
+
+      // Drop listeners when the browser disconnects so nothing is retained past
+      // the crawl (they close over pendingRequests/harEntries).
+      browser.on('disconnected', () => {
+        page.off('request', onRequest);
+        page.off('response', onResponse);
+        page.off('requestfailed', onSettled);
+        page.off('requestfinished', onSettled);
+        pendingRequests.clear();
       });
     }
 
@@ -125,6 +201,11 @@ export async function crawlSite(options: CrawlOptions): Promise<CrawlResult> {
       }
 
       try {
+        // SSRF guard: re-check the host right before navigating. A discovered
+        // link can be same-origin yet still resolve to a private/internal
+        // address; refuse it without aborting the whole crawl.
+        await assertPublicUrl(item.url);
+
         logger.info(`[${pages.length + 1}/${maxPages}] Visiting: ${item.url}`);
         await page.goto(item.url, {
           waitUntil: 'domcontentloaded',
@@ -149,15 +230,13 @@ export async function crawlSite(options: CrawlOptions): Promise<CrawlResult> {
 
         pages.push(pageDescriptor);
 
-        // Queue navigation links for further crawling
+        // Queue navigation links for further crawling. enqueue() dedups
+        // against both visited and already-queued URLs and respects the
+        // frontier cap, so the same link across pages is queued at most once.
         if (item.currentDepth < depth) {
           for (const link of pageDescriptor.links) {
-            if (
-              link.isNavigation &&
-              isSameOrigin(link.href, baseOrigin) &&
-              !visited.has(normalizeUrl(link.href))
-            ) {
-              queue.push({ url: link.href, currentDepth: item.currentDepth + 1 });
+            if (link.isNavigation && isSameOrigin(link.href, baseOrigin)) {
+              enqueue(link.href, item.currentDepth + 1);
             }
           }
         }

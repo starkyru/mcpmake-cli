@@ -1,7 +1,9 @@
 import { chromium } from 'playwright';
 import type { Browser, Request, Response } from 'playwright';
 import type { Entry, Header } from 'har-format';
+import { redactEntrySecrets } from '../parser/har-filter.js';
 import { logger } from '../utils/logger.js';
+import { assertPublicUrl } from '../utils/ssrf-guard.js';
 
 export interface RecorderOptions {
   url: string;
@@ -26,6 +28,9 @@ export interface RecordingResult {
 }
 
 const MAX_ENTRIES = 10_000;
+// Defense-in-depth bound on the in-flight request map so a flood of requests
+// that never resolve can't grow it without limit between cleanups.
+const MAX_PENDING = 10_000;
 const MAX_RESPONSE_BODY_BYTES = 5 * 1024 * 1024; // 5 MB
 const SKIP_BODY_MIME_TYPES = ['image/', 'video/', 'audio/', 'font/', 'application/octet-stream'];
 // Playwright resource types that are large-by-nature; skip body capture for
@@ -51,6 +56,9 @@ export async function recordBrowserSession(options: RecorderOptions): Promise<Re
   if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
     throw new Error('Only http/https URLs are supported');
   }
+  // SSRF guard: refuse private/loopback/link-local/metadata start hosts before
+  // we launch a browser at them. Resolves DNS and enforces protocol + host.
+  await assertPublicUrl(options.url);
   const baseUrl = `${parsedUrl.protocol}//${parsedUrl.host}`;
 
   const headless = options.headless ?? false;
@@ -63,13 +71,19 @@ export async function recordBrowserSession(options: RecorderOptions): Promise<Re
     const page = await context.newPage();
 
     // Capture requests
-    page.on('request', (request) => {
+    const onRequest = (request: Request) => {
       lastActivityTime = Date.now();
+      // Drop the oldest pending entry if we ever hit the bound so a storm of
+      // never-resolving requests can't grow the map without limit.
+      if (pendingRequests.size >= MAX_PENDING) {
+        const oldest = pendingRequests.keys().next().value;
+        if (oldest) pendingRequests.delete(oldest);
+      }
       pendingRequests.set(request, { startTime: Date.now() });
-    });
+    };
 
     // Capture responses
-    page.on('response', async (response) => {
+    const onResponse = async (response: Response) => {
       lastActivityTime = Date.now();
       const request = response.request();
       const pending = pendingRequests.get(request);
@@ -90,6 +104,28 @@ export async function recordBrowserSession(options: RecorderOptions): Promise<Re
       } finally {
         pendingRequests.delete(request);
       }
+    };
+
+    // A request can end WITHOUT ever firing 'response' (aborted, blocked,
+    // failed DNS/TLS, or finished as a redirect). Free its pending entry on
+    // both terminal events so the map can't leak across a long session.
+    const onSettled = (request: Request) => {
+      pendingRequests.delete(request);
+    };
+
+    page.on('request', onRequest);
+    page.on('response', onResponse);
+    page.on('requestfailed', onSettled);
+    page.on('requestfinished', onSettled);
+
+    // Remove our listeners when the browser goes away so nothing is retained
+    // past the session (the listeners close over entries/pendingRequests).
+    browser.on('disconnected', () => {
+      page.off('request', onRequest);
+      page.off('response', onResponse);
+      page.off('requestfailed', onSettled);
+      page.off('requestfinished', onSettled);
+      pendingRequests.clear();
     });
 
     if (headless) {
@@ -100,6 +136,16 @@ export async function recordBrowserSession(options: RecorderOptions): Promise<Re
 
       const navTargets = resolveNavTargets(options.navigate ?? [], baseUrl);
       for (const navUrl of navTargets) {
+        // SSRF guard: a same-origin navigate target can still resolve to a
+        // private/internal address. Resolve and refuse before navigating.
+        try {
+          await assertPublicUrl(navUrl);
+        } catch (err) {
+          logger.warn(
+            `Skipping navigate target (SSRF guard): ${navUrl} — ${err instanceof Error ? err.message : err}`,
+          );
+          continue;
+        }
         logger.info(`  visiting: ${navUrl}`);
         try {
           await page.goto(navUrl, { waitUntil: 'networkidle', timeout: 30_000 });
@@ -232,7 +278,9 @@ async function buildHarEntry(
     }
   }
 
-  return {
+  // Scrub credentials at the recorder boundary too, so the entry never holds
+  // a live secret even if it is persisted without going through filterHarEntries.
+  return redactEntrySecrets({
     startedDateTime: new Date(startTime).toISOString(),
     time: elapsed,
     request: {
@@ -274,5 +322,5 @@ async function buildHarEntry(
       wait: Math.max(1, elapsed - 2),
       receive: 1,
     },
-  };
+  });
 }

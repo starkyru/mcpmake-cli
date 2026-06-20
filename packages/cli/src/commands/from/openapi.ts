@@ -14,6 +14,7 @@ import { buildResources, buildPrompts } from '@mcpmake/core';
 import { applyClientCompat, type ClientMode } from '@mcpmake/core';
 import { emitProject, emitPythonProject } from '@mcpmake/core';
 import { printWorkerNextSteps } from './target-support.js';
+import { apiKeyArg, applyApiKey } from '../api-key.js';
 import { generateMcpb } from '@mcpmake/core';
 import { getProvider, getProviderNames } from '@mcpmake/core';
 import { logger } from '@mcpmake/core';
@@ -120,6 +121,7 @@ export default defineConfigurableCommand('openapi', {
       description: 'Use AI to generate better tool names (requires ANTHROPIC_API_KEY)',
       default: false,
     },
+    'api-key': apiKeyArg,
     'resource-names': {
       type: 'boolean',
       description:
@@ -148,6 +150,8 @@ export default defineConfigurableCommand('openapi', {
     },
   },
   async run({ args }) {
+    applyApiKey(args);
+
     // Resolve provider shortcut
     const provider = getProvider(args.spec);
     const specPath = provider?.specUrl ?? args.spec;

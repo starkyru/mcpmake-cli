@@ -21,6 +21,14 @@ export interface EmitOptions {
   outputDir: string;
   force: boolean;
   dryRun: boolean;
+  /**
+   * Prune orphaned generated tool files (`src/tools/*.ts`) that are no longer in
+   * the emitted set — used by in-place regeneration (`rescan --write`) so removed
+   * forms/pages/operations don't leave stale, still-compiled files behind (M12).
+   * Off by default: a fresh emit has nothing to prune and must never delete
+   * pre-existing user files.
+   */
+  prune?: boolean;
 }
 
 const SAFE_VERSION_RE = /^[0-9a-zA-Z._+-]{1,50}$/;

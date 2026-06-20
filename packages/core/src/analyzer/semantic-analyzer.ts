@@ -7,6 +7,7 @@
 
 import Anthropic from '@anthropic-ai/sdk';
 import type { PageDescriptor } from '../types/site.js';
+import { extractJsonObject } from '../utils/json-extract.js';
 import { logger } from '../utils/logger.js';
 import { resolveModel } from '../utils/model-resolver.js';
 
@@ -153,9 +154,12 @@ ${JSON.stringify(summaries, null, 2)}`;
     const content = message.content[0];
     if (content.type !== 'text') return pages;
 
-    let json = content.text.trim();
-    if (json.startsWith('```')) {
-      json = json.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
+    // Extract the first balanced JSON object — robust to markdown fences and
+    // leading/trailing prose around the object.
+    const json = extractJsonObject(content.text);
+    if (json === null) {
+      logger.warn('Semantic analysis returned no JSON object — using defaults');
+      return pages;
     }
 
     const result: SemanticResult = JSON.parse(json);

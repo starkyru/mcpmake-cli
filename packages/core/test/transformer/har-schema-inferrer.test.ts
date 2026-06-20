@@ -69,6 +69,23 @@ describe('har-schema-inferrer', () => {
       expect((schema!.properties as any).age).toEqual({ type: 'integer' });
     });
 
+    it('does not pollute the prototype from a crafted form body (L-formproto)', () => {
+      const schema = inferRequestBodySchema(
+        '__proto__=x&constructor=y&prototype=z&safe=1',
+        'application/x-www-form-urlencoded',
+      );
+      // Dangerous keys are skipped; Object.prototype stays clean.
+      expect(({} as any).x).toBeUndefined();
+      expect(Object.prototype).not.toHaveProperty('x');
+      expect(schema).toBeDefined();
+      const props = schema!.properties as Record<string, unknown>;
+      expect(Object.prototype.hasOwnProperty.call(props, '__proto__')).toBe(false);
+      expect(Object.prototype.hasOwnProperty.call(props, 'constructor')).toBe(false);
+      expect(Object.prototype.hasOwnProperty.call(props, 'prototype')).toBe(false);
+      expect(props.safe).toEqual({ type: 'integer' });
+      expect(schema!.required).toEqual(['safe']);
+    });
+
     it('returns undefined for non-JSON', () => {
       const schema = inferRequestBodySchema('plain text', 'text/plain');
       expect(schema).toBeUndefined();

@@ -15,6 +15,11 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - run: npm run format:check
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
+      # Dependency vulnerability scan. Scoped to production deps and gated at
+      # high/critical to avoid breaking CI on dev-only or transitive moderate
+      # advisories that have no non-breaking fix (e.g. @anthropic-ai/sdk).
+      - run: npm audit --omit=dev --audit-level=high

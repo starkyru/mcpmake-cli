@@ -35,6 +35,16 @@ export default defineConfigurableCommand('deploy', {
       alias: 't',
       description: 'Admin token (or set MCPMAKE_ADMIN_TOKEN) for gated backends',
     },
+    insecure: {
+      type: 'boolean',
+      description: 'Allow sending the admin token to a non-HTTPS, non-localhost target',
+      default: false,
+    },
+    'show-token': {
+      type: 'boolean',
+      description: 'Print the issued bearer token in full (default: redacted)',
+      default: false,
+    },
   },
   async run({ args }) {
     const specPath = resolve(args.spec);
@@ -91,10 +101,22 @@ export default defineConfigurableCommand('deploy', {
 
     const body = Buffer.concat(parts);
 
+    const adminToken = args.token ?? process.env.MCPMAKE_ADMIN_TOKEN;
+
+    // Guard the credential channel: refuse to send the admin token over an
+    // unencrypted, non-loopback link unless the user explicitly opts in.
+    if (adminToken) {
+      const insecureChannel = await assertTokenChannel(serverUrl, args.insecure ?? false);
+      if (insecureChannel) {
+        console.warn(
+          `WARNING: Sending the admin token to ${serverUrl} over an unencrypted channel. ` +
+            'The credential is exposed in transit; use HTTPS in production.',
+        );
+      }
+    }
+
     // POST to the hosting backend
     logger.info('Uploading spec...');
-
-    const adminToken = args.token ?? process.env.MCPMAKE_ADMIN_TOKEN;
 
     try {
       const result = await postMultipart(serverUrl, '/api/servers', boundary, body, adminToken);
@@ -103,12 +125,19 @@ export default defineConfigurableCommand('deploy', {
       logger.info('');
       logger.info(`  Slug:     ${result.slug}`);
       logger.info(`  Endpoint: ${result.endpoint}`);
-      logger.info(`  Token:    ${result.bearerToken}`);
+      logger.info(
+        `  Token:    ${formatIssuedToken(result.bearerToken, args['show-token'] ?? false)}`,
+      );
       logger.info(`  Tools:    ${result.toolCount}`);
       logger.info('');
       logger.info('Claude Desktop config (add to claude_desktop_config.json):');
       logger.info('');
-      logger.info(JSON.stringify(result.claudeDesktopConfig, null, 2));
+      const showToken = args['show-token'] ?? false;
+      logger.info(formatClaudeConfig(result.claudeDesktopConfig, result.bearerToken, showToken));
+      if (!showToken) {
+        logger.info('');
+        logger.info('Token redacted. Re-run with --show-token to reveal it.');
+      }
       logger.info('');
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -124,6 +153,59 @@ interface DeployResult {
   status: string;
   toolCount: number;
   claudeDesktopConfig: Record<string, unknown>;
+}
+
+/** True for localhost / loopback hosts, where unencrypted dev traffic is acceptable. */
+function isLoopbackHost(hostname: string): boolean {
+  const h = hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  return h === 'localhost' || h === '127.0.0.1' || h === '::1' || h.endsWith('.localhost');
+}
+
+/**
+ * Guard the credential channel. Returns true when the token will cross an
+ * unencrypted-but-permitted link (loopback, or non-HTTPS with explicit opt-in)
+ * so the caller can warn; false for a secure HTTPS channel. Refuses (exits)
+ * when a token would be sent over plaintext to a remote host without opt-in.
+ * Never includes the token in any message.
+ */
+async function assertTokenChannel(serverUrl: string, insecure: boolean): Promise<boolean> {
+  let url: URL;
+  try {
+    url = new URL(serverUrl);
+  } catch {
+    return fail(`Invalid server URL: ${serverUrl}`);
+  }
+
+  if (url.protocol === 'https:') return false;
+  if (isLoopbackHost(url.hostname)) return true;
+  if (insecure || process.env.MCPMAKE_INSECURE === '1') return true;
+
+  return fail(
+    `Refusing to send the admin token to ${serverUrl} over an unencrypted (non-HTTPS) channel. ` +
+      'Use an https:// URL, or pass --insecure (or set MCPMAKE_INSECURE=1) to override for trusted networks.',
+  );
+}
+
+/** Redact a secret to its last 4 chars unless the user explicitly opted to reveal it. */
+function formatIssuedToken(token: string, show: boolean): string {
+  if (show) return token;
+  if (!token) return '(none)';
+  const tail = token.length > 4 ? token.slice(-4) : '';
+  return `(redacted — ends with …${tail}; re-run with --show-token to reveal)`;
+}
+
+/**
+ * Stringify the Claude Desktop config, scrubbing the issued bearer token from
+ * the output unless the user opted in, so it is never echoed to stdout.
+ */
+function formatClaudeConfig(
+  config: Record<string, unknown>,
+  bearerToken: string,
+  show: boolean,
+): string {
+  const json = JSON.stringify(config, null, 2);
+  if (show || !bearerToken) return json;
+  return json.split(bearerToken).join('<REDACTED_TOKEN>');
 }
 
 /**

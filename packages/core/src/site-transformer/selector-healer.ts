@@ -1,5 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
 import type { SelectorSet } from '../types/site.js';
+import { extractJsonObject } from '../utils/json-extract.js';
 import { logger } from '../utils/logger.js';
 import { resolveModel } from '../utils/model-resolver.js';
 
@@ -66,14 +67,15 @@ ${safeTree}`;
     const content = message.content[0];
     if (content.type !== 'text') return null;
 
-    let json = content.text.trim();
-    if (json === 'null') return null;
+    if (content.text.trim() === 'null') return null;
 
-    // Strip markdown code fences if present
-    if (json.startsWith('```')) {
-      json = json.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
+    // Extract the first balanced JSON object — robust to markdown fences and
+    // leading/trailing prose around the object.
+    const json = extractJsonObject(content.text);
+    if (json === null) {
+      logger.warn('LLM returned no JSON object — skipping healing');
+      return null;
     }
-
     const parsed: SelectorSet = JSON.parse(json);
 
     // Validate structure

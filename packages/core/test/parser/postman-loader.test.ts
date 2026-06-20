@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { writeFile, mkdtemp, rm } from 'node:fs/promises';
+import { writeFile, mkdtemp, rm, truncate } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { loadPostmanCollection } from '../../src/parser/postman-loader.js';
@@ -13,6 +13,14 @@ describe('postman-loader', () => {
 
   afterEach(async () => {
     await rm(tempDir, { recursive: true, force: true });
+  });
+
+  it('rejects an oversized collection before parsing (DoS-lite cap)', async () => {
+    const bigPath = resolve(tempDir, 'big.json');
+    await writeFile(bigPath, '{}');
+    // Sparse file: reports >50 MB to stat without consuming disk.
+    await truncate(bigPath, 51 * 1024 * 1024);
+    await expect(loadPostmanCollection(bigPath)).rejects.toThrow(/too large/);
   });
 
   it('loads a Postman collection and converts to HAR entries', async () => {

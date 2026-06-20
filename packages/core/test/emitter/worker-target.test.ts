@@ -146,6 +146,43 @@ describe('emitWorkerProject — Cloudflare Workers target', () => {
     );
   });
 
+  it('fails CLOSED when MCP_AUTH_TOKEN is unset and no explicit opt-in (L-authoff)', async () => {
+    const entry = await read('src/index.ts');
+    // Auth reads the secret from the env binding (Worker secret), not process.env.
+    expect(entry).toContain('const expected = env.MCP_AUTH_TOKEN;');
+    expect(entry).not.toMatch(/process\.env\.MCP_AUTH_TOKEN/);
+    // The old open-by-default form is gone…
+    expect(entry).not.toContain('if (!expected) return true;');
+    // …replaced by an explicit dev-only opt-in via the matching env name.
+    expect(entry).toContain("env.MCP_ALLOW_UNAUTHENTICATED === 'true'");
+    // Default branch (no token, no opt-in) denies and warns loudly.
+    expect(entry).toContain('denying all authenticated routes');
+    expect(entry).toContain('WITHOUT a bearer token');
+    // /health and /ready stay open: their branches precede the auth gate.
+    const authIdx = entry.indexOf('isAuthorized(request, env)');
+    const healthIdx = entry.indexOf("url.pathname === '/health'");
+    const readyIdx = entry.indexOf("url.pathname === '/ready'");
+    expect(healthIdx).toBeGreaterThan(-1);
+    expect(healthIdx).toBeLessThan(authIdx);
+    expect(readyIdx).toBeLessThan(authIdx);
+  });
+
+  it('never blanket-* CORS on credentialed responses; reflects only allowlisted origins (L-cors)', async () => {
+    const entry = await read('src/index.ts');
+    // The wildcard fallback is gone everywhere.
+    expect(entry).not.toContain("origin || '*'");
+    expect(entry).not.toMatch(/['"]access-control-allow-origin['"]\s*:\s*['"]\*['"]/);
+    // Reflection is gated by a comma-separated allowlist env var.
+    expect(entry).toContain('MCP_ALLOWED_ORIGINS');
+    // When an origin is allowed it is echoed verbatim with Vary: Origin.
+    expect(entry).toContain("headers['access-control-allow-origin'] = origin as string;");
+    expect(entry).toContain("headers['vary'] = 'Origin';");
+    // The 401 response carries the (possibly empty) per-request CORS headers, not '*'.
+    const unauthIdx = entry.indexOf('Unauthorized: missing or invalid bearer token');
+    const unauthBlock = entry.slice(unauthIdx, unauthIdx + 200);
+    expect(unauthBlock).toContain('...cors');
+  });
+
   it('omits resources and prompts on the Workers target', async () => {
     const d = await mkdtemp(join(tmpdir(), 'mcpmake-worker-rp-'));
     try {

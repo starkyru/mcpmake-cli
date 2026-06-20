@@ -247,4 +247,22 @@ describe('applyConfigToArgs', () => {
     const result = applyConfigToArgs({}, [], 'openapi', OPENAPI_ARGS, { cwd: dir, env: {} });
     expect(result).toEqual({ path: null, applied: [] });
   });
+
+  it('does not pollute Object.prototype or emit prototype keys as args', () => {
+    writeConfig(
+      '.mcpmake.yaml',
+      ['__proto__:', '  polluted: yes', 'constructor:', '  bad: 1', 'output: ./gen'].join('\n'),
+    );
+    const args: Record<string, unknown> = {};
+    const result = applyConfigToArgs(args, [], 'openapi', OPENAPI_ARGS, { cwd: dir, env: {} });
+
+    // Prototype is untouched, no polluted property leaks onto plain objects.
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+    expect(Object.prototype.hasOwnProperty.call(args, '__proto__')).toBe(false);
+    expect(args.constructor).toBe(Object); // unchanged inherited constructor
+
+    // Dangerous keys are never applied; legitimate keys still are.
+    expect(result.applied).toEqual(['output']);
+    expect(args.output).toBe('./gen');
+  });
 });

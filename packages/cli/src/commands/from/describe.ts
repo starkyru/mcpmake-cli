@@ -1,6 +1,6 @@
 import { defineConfigurableCommand } from '@mcpmake/core';
 import { writeFile, mkdtemp, rm } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { resolve, relative, isAbsolute } from 'node:path';
 import { tmpdir } from 'node:os';
 import { generateSpecFromDescription } from '@mcpmake/core';
 import { loadOpenApiSpec } from '@mcpmake/core';
@@ -15,6 +15,7 @@ import {
   resolveTransport,
   printWorkerNextSteps,
 } from './target-support.js';
+import { apiKeyArg, applyApiKey } from '../api-key.js';
 import { logger } from '@mcpmake/core';
 import { fail } from '@mcpmake/core';
 import type { OpenAPIV3 } from 'openapi-types';
@@ -24,6 +25,27 @@ function toPackageName(title: string): string {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-|-$/g, '');
+}
+
+/**
+ * Resolve and sanity-check a --save-spec target. Rejects empty values, NUL
+ * bytes, and paths that escape the current working directory (traversal),
+ * returning the absolute path to write to.
+ */
+function resolveSaveSpecPath(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed || trimmed.includes('\0')) {
+    throw new Error(`Invalid --save-spec path: ${JSON.stringify(raw)}`);
+  }
+  const cwd = process.cwd();
+  const abs = resolve(cwd, trimmed);
+  const rel = relative(cwd, abs);
+  if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) {
+    throw new Error(
+      `Refusing to write --save-spec outside the working directory: ${JSON.stringify(raw)}`,
+    );
+  }
+  return abs;
 }
 
 export default defineConfigurableCommand('describe', {
@@ -58,6 +80,7 @@ export default defineConfigurableCommand('describe', {
       alias: 'm',
       description: 'Claude model to use (default: auto-detected, prefers claude-sonnet-4-6)',
     },
+    'api-key': apiKeyArg,
     'save-spec': {
       type: 'string',
       description: 'Save the generated OpenAPI spec to this path',
@@ -92,18 +115,18 @@ export default defineConfigurableCommand('describe', {
     },
   },
   async run({ args }) {
+    applyApiKey(args);
+
+    // Reject obviously unsafe --save-spec targets before doing any work, so a
+    // path-traversal value can never reach writeFile below.
+    const saveSpecPath = args['save-spec'] ? resolveSaveSpecPath(args['save-spec']) : undefined;
+
     // Generate OpenAPI spec from description
     const specJson = await generateSpecFromDescription({
       description: args.description,
       baseUrl: args['base-url'],
       model: args.model,
     });
-
-    // Save spec if requested
-    if (args['save-spec']) {
-      await writeFile(args['save-spec'], specJson, 'utf-8');
-      logger.info(`Saved generated spec to: ${args['save-spec']}`);
-    }
 
     // Write spec to temp file and parse through the OpenAPI pipeline
     const tempDir = await mkdtemp(resolve(tmpdir(), 'mcpmake-describe-'));
@@ -113,6 +136,13 @@ export default defineConfigurableCommand('describe', {
       await writeFile(tempSpecPath, specJson, 'utf-8');
 
       const { api } = await loadOpenApiSpec(tempSpecPath);
+
+      // Persist the spec only after it parses — never write invalid LLM output.
+      if (saveSpecPath) {
+        await writeFile(saveSpecPath, specJson, 'utf-8');
+        logger.info(`Saved generated spec to: ${saveSpecPath}`);
+      }
+
       const { operations, baseUrl, securitySchemes, info } = extractOperations(
         api as OpenAPIV3.Document,
       );

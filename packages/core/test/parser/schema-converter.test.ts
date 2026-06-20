@@ -30,6 +30,42 @@ describe('schema-converter', () => {
       const code = jsonSchemaToZodCode({ type: 'invalid-type' as any });
       expect(code).toContain('z.any()');
     });
+
+    it('fully expands a shared (diamond) subschema under sibling properties (M2)', () => {
+      // After $ref dereferencing, the same component object is reused by two
+      // sibling properties — a DAG/diamond, not a cycle. Both must keep their
+      // full fields; neither may be truncated as "circular".
+      const shared = {
+        type: 'object',
+        properties: {
+          uniqueFieldA: { type: 'string' },
+          uniqueFieldB: { type: 'number' },
+        },
+      } as any;
+      const code = jsonSchemaToZodCode({
+        type: 'object',
+        properties: {
+          first: shared,
+          second: shared,
+        },
+      });
+      // Both siblings retain every field — the second is not flagged circular.
+      expect(code).not.toContain('circular reference');
+      expect(code.match(/uniqueFieldA/g)?.length).toBe(2);
+      expect(code.match(/uniqueFieldB/g)?.length).toBe(2);
+    });
+
+    it('terminates on a truly self-referential schema without stack overflow (M2)', () => {
+      // A real back-edge to an ancestor must still be cut so recursion bounds.
+      const node: any = {
+        type: 'object',
+        properties: { name: { type: 'string' } },
+      };
+      node.properties.self = node; // self-reference (back-edge to ancestor)
+      expect(() => jsonSchemaToZodCode(node)).not.toThrow();
+      const code = jsonSchemaToZodCode(node);
+      expect(code).toContain('circular reference');
+    });
   });
 
   describe('buildOperationInputSchema', () => {

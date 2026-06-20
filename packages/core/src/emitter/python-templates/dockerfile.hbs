@@ -4,7 +4,10 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY server.py .
-COPY .env.example .env
+# Do NOT bake .env.example in as the runtime .env — it ships placeholder/sample
+# secrets into the image (L-pydocker). Provide real config at run time via
+# `docker run -e KEY=VALUE` / `--env-file`, or mount a real .env. `load_dotenv()`
+# in server.py is a no-op when no .env is present and falls back to os.environ.
 
 ENV TRANSPORT=http
 ENV PORT=3000

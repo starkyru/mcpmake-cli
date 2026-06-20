@@ -1,11 +1,43 @@
 import SwaggerParser from '@apidevtools/swagger-parser';
 import type { OpenAPI } from 'openapi-types';
 import { logger } from '../utils/logger.js';
+import { assertPublicUrl } from '../utils/ssrf-guard.js';
 
 export interface LoadResult {
   api: OpenAPI.Document;
   specPath: string;
 }
+
+function isHttpUrl(input: string): boolean {
+  return /^https?:\/\//i.test(input.trim());
+}
+
+/**
+ * Parser options that route every remote `$ref` fetch through the SSRF guard.
+ *
+ * The custom `read` runs before any download, so each remote ref URL is rejected
+ * if it resolves to a private/reserved host. Redirects are not followed
+ * (`redirect: 'error'`): a 3xx to an unvetted host (e.g. the metadata endpoint)
+ * surfaces as an error instead of an unguarded fetch.
+ */
+const guardedHttpResolver = {
+  order: 200,
+  canRead(file: { url: string }): boolean {
+    return /^https?:\/\//i.test(file.url);
+  },
+  async read(file: { url: string }): Promise<Buffer> {
+    await assertPublicUrl(file.url);
+    const res = await fetch(file.url, { redirect: 'error' });
+    if (!res.ok) {
+      throw new Error(`Error downloading ${file.url}: HTTP ${res.status}`);
+    }
+    return Buffer.from(await res.arrayBuffer());
+  },
+};
+
+const guardedParserOptions: SwaggerParser.Options = {
+  resolve: { http: guardedHttpResolver },
+};
 
 /**
  * Detects if a parsed document is Swagger 2.0 and converts it to OpenAPI 3.0.
@@ -352,8 +384,14 @@ function convertSchemaRef(schema: Record<string, unknown> | undefined): Record<s
 }
 
 export async function loadOpenApiSpec(input: string): Promise<LoadResult> {
+  // SSRF guard: vet a remote top-level spec URL before any fetch. Remote `$ref`s
+  // are vetted per-URL by the guarded http resolver in guardedParserOptions.
+  if (isHttpUrl(input)) {
+    await assertPublicUrl(input);
+  }
+
   // First, parse without dereferencing to check for Swagger 2.0
-  const raw = (await SwaggerParser.parse(input)) as Record<string, unknown>;
+  const raw = (await SwaggerParser.parse(input, guardedParserOptions)) as Record<string, unknown>;
 
   let specToParse: string | Record<string, unknown> = input;
 
@@ -363,6 +401,7 @@ export async function loadOpenApiSpec(input: string): Promise<LoadResult> {
 
   const api = (await SwaggerParser.dereference(
     specToParse as OpenAPI.Document,
+    guardedParserOptions,
   )) as OpenAPI.Document;
   return { api, specPath: input };
 }

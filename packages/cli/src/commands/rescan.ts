@@ -14,7 +14,22 @@ import { emitSiteProject } from '@mcpmake/core';
 import { logger } from '@mcpmake/core';
 import { fail } from '@mcpmake/core';
 import { pathExists } from '@mcpmake/core';
+import { apiKeyArg, applyApiKey } from './api-key.js';
 import type { SiteDescriptor, SiteRegenMetadata, SiteProjectManifest } from '@mcpmake/core';
+
+/**
+ * Parse a numeric CLI flag as a non-negative integer. Rejects non-numeric /
+ * negative input with a clear error instead of silently coercing it to NaN→0
+ * (which would zero out crawl scope). An unset/empty flag falls back.
+ */
+export function parseIntFlag(value: string | undefined, flag: string, fallback: number): number {
+  if (value === undefined || value === '') return fallback;
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < 0) {
+    throw new Error(`Invalid --${flag}: "${value}" (expected a non-negative integer)`);
+  }
+  return n;
+}
 
 export default defineCommand({
   meta: {
@@ -45,6 +60,7 @@ export default defineCommand({
       description: 'LLM-heal low-confidence selectors (requires ANTHROPIC_API_KEY)',
       default: true,
     },
+    'api-key': apiKeyArg,
     write: {
       type: 'boolean',
       description: 'Regenerate the project in place from the new snapshot',
@@ -62,6 +78,8 @@ export default defineCommand({
     },
   },
   async run({ args }) {
+    applyApiKey(args);
+
     const projectDir = resolve(args.project);
     const descriptorPath = resolve(projectDir, 'src/site-descriptor.json');
 
@@ -79,12 +97,14 @@ export default defineCommand({
     }
 
     const baseUrl = args.url ?? oldSite.baseUrl;
-    const depth = args.depth ? parseInt(args.depth, 10) : oldSite.crawlDepth || 2;
+    const depth = parseIntFlag(args.depth, 'depth', oldSite.crawlDepth || 2);
     // Default with headroom so newly-added pages are still discovered (a flat
     // cap at the old page count would make rescan blind to site growth).
-    const maxPages = args['max-pages']
-      ? parseInt(args['max-pages'], 10)
-      : Math.max(oldSite.pages.length * 2, oldSite.pages.length + 5, 1);
+    const maxPages = parseIntFlag(
+      args['max-pages'],
+      'max-pages',
+      Math.max(oldSite.pages.length * 2, oldSite.pages.length + 5, 1),
+    );
     const headless = args.headless ?? true;
 
     logger.info(`Rescanning ${baseUrl} (depth ${depth}, max ${maxPages} pages)`);
@@ -254,7 +274,15 @@ async function regenerate(projectDir: string, descriptor: SiteDescriptor): Promi
     tools,
   };
 
-  await emitSiteProject(manifest, { outputDir: projectDir, force: true, dryRun: false });
+  // Regenerate in place atomically and prune tool files dropped from the new
+  // snapshot, so a mid-emit failure can't corrupt the project (M11) and removed
+  // pages/forms don't leave stale, still-compiled tool files behind (M12).
+  await emitSiteProject(manifest, {
+    outputDir: projectDir,
+    force: true,
+    dryRun: false,
+    prune: true,
+  });
 }
 
 function hostToName(baseUrl: string): string {

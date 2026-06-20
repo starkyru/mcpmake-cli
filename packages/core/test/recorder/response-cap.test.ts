@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 /**
  * D-M2: the recorder must enforce its 5 MB response cap at the header /
@@ -80,6 +80,13 @@ async function tick(): Promise<void> {
 describe('D-M2: recorder response cap + pending cleanup', () => {
   beforeEach(() => {
     fakePage = new FakePage();
+    // The recorder's start-URL SSRF guard does a DNS lookup (a macrotask) that
+    // would desync the listener-registration timing this test relies on. The
+    // escape hatch short-circuits it synchronously; the URL is public anyway.
+    process.env.MCPMAKE_ALLOW_PRIVATE_HOSTS = '1';
+  });
+  afterEach(() => {
+    delete process.env.MCPMAKE_ALLOW_PRIVATE_HOSTS;
   });
 
   it('does not buffer a body whose declared Content-Length exceeds the cap', async () => {

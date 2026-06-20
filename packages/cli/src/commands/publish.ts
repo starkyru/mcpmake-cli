@@ -3,6 +3,7 @@ import { readFile, writeFile, readdir } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { execFile as execFileCb } from 'node:child_process';
 import { promisify } from 'node:util';
+import { createInterface } from 'node:readline';
 import { stringify as yamlStringify } from 'yaml';
 import { logger } from '@mcpmake/core';
 import { fail } from '@mcpmake/core';
@@ -17,6 +18,15 @@ import {
 } from '../registry/official-registry.js';
 
 const execFile = promisify(execFileCb);
+
+/**
+ * JSON.parse reviver that drops prototype-polluting keys. Project files
+ * (`package.json`, `tool-catalog.json`) are read from a directory the operator
+ * points at, so they are untrusted input — strip `__proto__`/`constructor`/
+ * `prototype` rather than let a crafted file seed a polluted object.
+ */
+const stripProtoKeys = (key: string, value: unknown): unknown =>
+  key === '__proto__' || key === 'constructor' || key === 'prototype' ? undefined : value;
 
 interface ToolInfo {
   name: string;
@@ -64,6 +74,13 @@ export default defineCommand({
         'official: run `mcp-publisher publish` after generating server.json (requires login + npm publish first)',
       default: false,
     },
+    yes: {
+      type: 'boolean',
+      alias: 'y',
+      description:
+        'Skip the interactive confirmation before --push (required in non-interactive runs)',
+      default: false,
+    },
   },
   async run({ args }) {
     const projectDir = resolve(args.directory);
@@ -79,7 +96,7 @@ export default defineCommand({
     }
 
     // Read project metadata
-    const pkgJson = JSON.parse(await readFile(pkgPath, 'utf-8'));
+    const pkgJson = JSON.parse(await readFile(pkgPath, 'utf-8'), stripProtoKeys);
 
     // The official MCP Registry has a distinct flow (server.json + mcp-publisher).
     if (registry === 'official') {
@@ -87,6 +104,7 @@ export default defineCommand({
         name: args.name,
         remoteUrl: args['remote-url'],
         push: args.push ?? false,
+        yes: args.yes ?? false,
       });
       return;
     }
@@ -175,7 +193,7 @@ async function extractTools(projectDir: string): Promise<ToolInfo[]> {
   const catalogPath = resolve(projectDir, 'src/tool-catalog.json');
   if (await pathExists(catalogPath)) {
     try {
-      const catalog = JSON.parse(await readFile(catalogPath, 'utf-8'));
+      const catalog = JSON.parse(await readFile(catalogPath, 'utf-8'), stripProtoKeys);
       if (Array.isArray(catalog)) {
         return catalog.map((entry: { name: string; description?: string; title?: string }) => ({
           name: entry.name,
@@ -274,6 +292,7 @@ interface OfficialOpts {
   name?: string;
   remoteUrl?: string;
   push: boolean;
+  yes: boolean;
 }
 
 /**
@@ -342,6 +361,10 @@ async function publishOfficial(
   }
 
   if (opts.push) {
+    const confirmed = await confirmPush(name, opts.yes);
+    if (!confirmed) {
+      return await fail('Aborted: publishing to the public registry was not confirmed.');
+    }
     await runMcpPublisher(projectDir);
     return;
   }
@@ -384,6 +407,42 @@ async function gitRemoteUrl(projectDir: string): Promise<string | undefined> {
     return url ? url.replace(/^git\+/, '').replace(/\.git$/, '') : undefined;
   } catch {
     return undefined;
+  }
+}
+
+/**
+ * Confirm the irreversible public-registry write before pushing.
+ *
+ * Returns true only when the user explicitly consents. `--yes` skips the
+ * prompt. In a non-interactive run (no TTY or CI) we never silently proceed:
+ * the caller must pass `--yes`, otherwise this returns false.
+ */
+export async function confirmPush(name: string, yes: boolean): Promise<boolean> {
+  if (yes) return true;
+
+  const interactive = Boolean(process.stdin.isTTY) && Boolean(process.stdout.isTTY);
+  if (!interactive || process.env.CI) {
+    logger.error(
+      `Refusing to push ${name} to the public ${OFFICIAL_REGISTRY_URL} registry without confirmation.`,
+    );
+    logger.info('Re-run with --yes to publish in a non-interactive environment.');
+    return false;
+  }
+
+  logger.warn('');
+  logger.warn(
+    `This will PUBLICLY publish "${name}" to the official MCP Registry (${OFFICIAL_REGISTRY_URL}).`,
+  );
+  logger.warn('This is irreversible — the listing becomes visible to everyone.');
+
+  const rl = createInterface({ input: process.stdin, output: process.stderr });
+  try {
+    const answer: string = await new Promise((res) =>
+      rl.question('Type "yes" to publish, anything else to abort: ', res),
+    );
+    return answer.trim().toLowerCase() === 'yes';
+  } finally {
+    rl.close();
   }
 }
 

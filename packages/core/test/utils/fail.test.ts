@@ -31,6 +31,28 @@ describe('redactText', () => {
     );
   });
 
+  it('redacts HTTP Basic auth credentials (with and without Authorization:)', () => {
+    expect(redactText('Authorization: Basic dXNlcjpwYXNz')).toBe('Authorization: Basic [redacted]');
+    expect(redactText('sent basic YWxpY2U6c2VjcmV0 header')).toBe('sent basic [redacted] header');
+  });
+
+  it('redacts Cookie and Set-Cookie header values (case-insensitive)', () => {
+    expect(redactText('Cookie: session=abc123; theme=dark')).toBe('Cookie: [redacted]');
+    expect(redactText('set-cookie: token=deadbeef; HttpOnly')).toBe('set-cookie: [redacted]');
+  });
+
+  it('redacts x-api-key / api-key / apikey header values', () => {
+    expect(redactText('x-api-key: sk-supersecret')).toBe('x-api-key: [redacted]');
+    expect(redactText('api-key: topsecret')).toBe('api-key: [redacted]');
+    expect(redactText('apikey: hunter2value')).toBe('apikey: [redacted]');
+  });
+
+  it('redacts secret query-string params in non-URL key=value form', () => {
+    expect(redactText('body token=abc123 access_token=xyz789 sig=deadbeef')).toBe(
+      'body token=[redacted] access_token=[redacted] sig=[redacted]',
+    );
+  });
+
   it('redacts mcpmake-style mf_ tokens', () => {
     expect(redactText('token mf_deadbeef0123 expired')).toBe('token mf_[redacted] expired');
   });

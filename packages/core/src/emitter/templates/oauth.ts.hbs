@@ -1,9 +1,15 @@
 /**
  * OAuth 2.1 token management.
- * Supports Authorization Code + PKCE and Client Credentials flows.
+ *
+ * Supports the non-interactive grants a headless generated server can actually
+ * complete: Client Credentials (machine-to-machine), refresh-token rotation,
+ * and a pre-obtained token supplied via OAUTH2_TOKEN.
+ *
+ * The interactive Authorization-Code + PKCE flow is NOT supported: a generated
+ * server has no /callback route, no browser, and no way to drive a user consent
+ * redirect. Operators authenticate by providing OAUTH2_TOKEN, or
+ * OAUTH2_CLIENT_ID + OAUTH2_CLIENT_SECRET for the client-credentials grant.
  */
-
-import crypto from 'node:crypto';
 
 export interface OAuthConfig {
   clientId: string;
@@ -38,8 +44,10 @@ export async function getAccessToken(config: OAuthConfig): Promise<string> {
       const token = await refreshToken(config, cachedToken.refreshToken);
       cacheToken(token);
       return token.access_token;
-    } catch {
-      // Refresh failed — fall through to re-authenticate
+    } catch (err) {
+      // Refresh failed — fall through to re-authenticate. Surface the cause
+      // (never the token/secret) so the failure is observable, not silent.
+      console.error('OAuth token refresh failed, re-authenticating:', String(err));
     }
   }
 
@@ -108,62 +116,6 @@ async function refreshToken(config: OAuthConfig, refreshTokenValue: string): Pro
   return response.json() as Promise<TokenResponse>;
 }
 
-/**
- * Generate PKCE code verifier and challenge for Authorization Code flow.
- */
-export function generatePkce(): { codeVerifier: string; codeChallenge: string } {
-  const codeVerifier = crypto.randomBytes(32).toString('base64url');
-  const codeChallenge = crypto
-    .createHash('sha256')
-    .update(codeVerifier)
-    .digest('base64url');
-  return { codeVerifier, codeChallenge };
-}
-
-/**
- * Build the authorization URL for the Authorization Code + PKCE flow.
- */
-export function buildAuthorizationUrl(config: OAuthConfig, state: string, codeChallenge: string): string {
-  const params = new URLSearchParams({
-    response_type: 'code',
-    client_id: config.clientId,
-    redirect_uri: config.redirectUri,
-    state,
-    code_challenge: codeChallenge,
-    code_challenge_method: 'S256',
-    ...(config.scopes.length > 0 ? { scope: config.scopes.join(' ') } : {}),
-  });
-  return `${config.authorizationUrl}?${params.toString()}`;
-}
-
-/**
- * Exchange an authorization code for tokens (PKCE flow).
- */
-export async function exchangeCode(config: OAuthConfig, code: string, codeVerifier: string): Promise<TokenResponse> {
-  const params = new URLSearchParams({
-    grant_type: 'authorization_code',
-    client_id: config.clientId,
-    code,
-    redirect_uri: config.redirectUri,
-    code_verifier: codeVerifier,
-  });
-
-  const response = await fetch(config.tokenUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: params.toString(),
-  });
-
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`OAuth code exchange failed (${response.status}): ${body}`);
-  }
-
-  const token = await response.json() as TokenResponse;
-  cacheToken(token);
-  return token;
-}
-
 function cacheToken(token: TokenResponse): void {
   cachedToken = {
     accessToken: token.access_token,
@@ -174,15 +126,17 @@ function cacheToken(token: TokenResponse): void {
 
 /**
  * OAuth Authorization Server Metadata (RFC 8414).
+ *
+ * Advertises only the grants this server can actually complete: client
+ * credentials and refresh-token (plus a pre-obtained OAUTH2_TOKEN). The
+ * interactive authorization-code flow is intentionally omitted — there is no
+ * /callback route to complete it (see the file header).
  */
 export function getAuthServerMetadata(config: OAuthConfig, issuer: string): Record<string, unknown> {
   return {
     issuer,
-    authorization_endpoint: config.authorizationUrl,
     token_endpoint: config.tokenUrl,
-    response_types_supported: ['code'],
-    grant_types_supported: ['authorization_code', 'client_credentials', 'refresh_token'],
-    code_challenge_methods_supported: ['S256'],
+    grant_types_supported: ['client_credentials', 'refresh_token'],
     scopes_supported: config.scopes,
   };
 }

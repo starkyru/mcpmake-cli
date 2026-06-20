@@ -110,5 +110,37 @@ describe('tool-builder', () => {
       expect(tools[0].name).toBe('list_pets');
       expect(tools[1].name).toBe('create_pet');
     });
+
+    it('disambiguates operations sharing operationId AND method (M14)', () => {
+      // Same operationId + same method: appending the method does not separate
+      // them, so without a second-pass dedup the later tool silently overwrites
+      // the first's name and output file. Both must survive distinctly.
+      const ops = [
+        makeOp({ operationId: 'pets', method: 'get', path: '/pets' }),
+        makeOp({ operationId: 'pets', method: 'get', path: '/v2/pets' }),
+      ];
+      const tools = buildAllTools(ops);
+      expect(tools).toHaveLength(2);
+      const names = tools.map((t) => t.name);
+      const fileNames = tools.map((t) => t.fileName);
+      expect(new Set(names).size).toBe(2);
+      expect(new Set(fileNames).size).toBe(2);
+      // First keeps the stable name; the collision gets a numeric suffix.
+      expect(names[0]).toBe('pets_get');
+      expect(names[1]).toBe('pets_get_2');
+      expect(fileNames[1]).not.toBe(fileNames[0]);
+    });
+
+    it('disambiguates three-way operationId AND method collisions (M14)', () => {
+      const ops = [
+        makeOp({ operationId: 'pets', method: 'get', path: '/a' }),
+        makeOp({ operationId: 'pets', method: 'get', path: '/b' }),
+        makeOp({ operationId: 'pets', method: 'get', path: '/c' }),
+      ];
+      const tools = buildAllTools(ops);
+      expect(new Set(tools.map((t) => t.name)).size).toBe(3);
+      expect(new Set(tools.map((t) => t.fileName)).size).toBe(3);
+      expect(new Set(tools.map((t) => t.functionName)).size).toBe(3);
+    });
   });
 });
