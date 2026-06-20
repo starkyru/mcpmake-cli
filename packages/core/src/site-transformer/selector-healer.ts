@@ -1,8 +1,7 @@
-import Anthropic from '@anthropic-ai/sdk';
 import type { SelectorSet } from '../types/site.js';
 import { extractJsonObject } from '../utils/json-extract.js';
 import { logger } from '../utils/logger.js';
-import { resolveModel } from '../utils/model-resolver.js';
+import { getLlmProvider } from '../llm/index.js';
 
 /**
  * Attempt to heal a broken CSS/ARIA selector by asking an LLM
@@ -16,13 +15,11 @@ export async function healBrokenSelector(
   elementDescription: string,
   model?: string,
 ): Promise<SelectorSet | null> {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) {
-    logger.warn('ANTHROPIC_API_KEY not set — skipping selector healing');
+  const provider = getLlmProvider();
+  if (!provider) {
+    logger.warn('No LLM provider configured — skipping selector healing');
     return null;
   }
-
-  const client = new Anthropic({ apiKey });
 
   // Sanitize site-derived data to mitigate prompt injection
   const sanitize = (s: string, maxLen = 500) => s.replace(/[\x00-\x1f\x7f]/g, ' ').slice(0, maxLen);
@@ -59,20 +56,18 @@ ${safeTree}`;
 
   try {
     logger.info(`Healing broken selector: ${brokenSelector.primary}`);
-    const message = await client.messages.create({
-      model: await resolveModel(client, 'fast', model),
-      max_tokens: 512,
-      messages: [{ role: 'user', content: prompt }],
+    const responseText = await provider.completeText({
+      prompt,
+      tier: 'fast',
+      model,
+      maxTokens: 512,
     });
 
-    const content = message.content[0];
-    if (content.type !== 'text') return null;
-
-    if (content.text.trim() === 'null') return null;
+    if (responseText.trim() === 'null') return null;
 
     // Extract the first balanced JSON object — robust to markdown fences and
     // leading/trailing prose around the object.
-    const json = extractJsonObject(content.text);
+    const json = extractJsonObject(responseText);
     if (json === null) {
       logger.warn('LLM returned no JSON object — skipping healing');
       return null;

@@ -1,8 +1,6 @@
-import Anthropic from '@anthropic-ai/sdk';
-import { jsonSchemaOutputFormat } from '@anthropic-ai/sdk/helpers/json-schema';
 import type { OperationDescriptor } from '../types/index.js';
 import { logger } from '../utils/logger.js';
-import { resolveModel } from '../utils/model-resolver.js';
+import { getLlmProvider } from '../llm/index.js';
 
 /**
  * Structured-output schema for the naming response. Using a strict schema means
@@ -39,13 +37,11 @@ export async function improveToolNames(
   operations: OperationDescriptor[],
   model?: string,
 ): Promise<OperationDescriptor[]> {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) {
-    logger.warn('ANTHROPIC_API_KEY not set — skipping LLM tool naming');
+  const provider = getLlmProvider();
+  if (!provider) {
+    logger.warn('No LLM provider configured — skipping LLM tool naming');
     return operations;
   }
-
-  const client = new Anthropic({ apiKey });
 
   const operationSummaries = operations.map((op) => ({
     method: op.method,
@@ -64,16 +60,16 @@ ${JSON.stringify(operationSummaries, null, 2)}`;
 
   try {
     logger.info('Improving tool names with Claude...');
-    const message = await client.messages.parse({
-      model: await resolveModel(client, 'balanced', model),
-      max_tokens: 2048,
-      messages: [{ role: 'user', content: prompt }],
-      output_config: { format: jsonSchemaOutputFormat(NAMING_SCHEMA) },
+    const parsed = await provider.completeJson<{
+      improvements: { index: number; operationId: string; summary: string }[];
+    }>({
+      prompt,
+      schema: NAMING_SCHEMA as Record<string, unknown>,
+      tier: 'balanced',
+      model,
+      maxTokens: 2048,
     });
-
-    const parsed = message.parsed_output;
     if (!parsed) return operations;
-
     const improvements = parsed.improvements;
     const result = operations.map((op, i) => {
       const improvement = improvements.find((imp) => imp.index === i);
