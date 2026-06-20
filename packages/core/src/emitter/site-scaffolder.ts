@@ -99,6 +99,12 @@ export function scaffoldSiteSharedModules(manifest: SiteProjectManifest): CodeUn
       content: renderSiteTemplate('browser-manager.ts', manifest),
     },
     {
+      // Best-effort browser-session telemetry for exact metering on managed
+      // hosting. No-ops unless the host injects MCPMAKE_TELEMETRY_URL.
+      filePath: 'src/telemetry.ts',
+      content: renderSiteTemplate('telemetry.ts', manifest),
+    },
+    {
       filePath: 'src/site-descriptor.json',
       content: JSON.stringify(stripSensitiveDefaults(manifest.siteDescriptor), null, 2),
     },

@@ -10,16 +10,21 @@ const here = dirname(fileURLToPath(import.meta.url));
 // vitest's transform pipeline compiles it) and import it to exercise the real
 // resolveSelector runtime logic against a mock Playwright Page.
 const tmpFile = join(here, `__browser_manager_runtime_${process.pid}.ts`);
+// browser-manager imports './telemetry.js' — write the rendered sibling so the
+// temp module resolves it (no-ops at runtime since no telemetry env is set).
+const telemetrySibling = join(here, 'telemetry.ts');
 /* eslint-disable @typescript-eslint/no-explicit-any */
 let bm: any;
 
 beforeAll(async () => {
+  writeFileSync(telemetrySibling, renderSiteTemplate('telemetry.ts', {}));
   writeFileSync(tmpFile, renderSiteTemplate('browser-manager.ts', {}));
   bm = await import(/* @vite-ignore */ tmpFile);
 });
 
 afterAll(() => {
   rmSync(tmpFile, { force: true });
+  rmSync(telemetrySibling, { force: true });
 });
 
 /** Mock page where a selector "exists" if it's in `present` (fast path via $). */

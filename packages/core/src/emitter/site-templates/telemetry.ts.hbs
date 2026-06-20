@@ -1,0 +1,117 @@
+/**
+ * Browser-session telemetry for exact metering on managed hosting.
+ *
+ * NO-OP unless MCPMAKE_TELEMETRY_URL is set — a self-hosted or local server
+ * never phones home. When the cloud injects the ingest URL + token + slug, this
+ * batches session_start / heartbeat / session_end events and POSTs them so the
+ * host can bill the REAL resident browser lifetime instead of approximating it
+ * from request latency.
+ *
+ * Strictly best-effort and isolated: every network/serialization error is
+ * swallowed. Telemetry must NEVER affect the MCP server's behavior. Dropped
+ * events can only ever UNDER-bill (the host applies a heartbeat grace + an
+ * independent proxy-activity clamp), never break a tool call.
+ *
+ * An OPEN session emits a heartbeat on every flush: an open session means a
+ * resident Chromium context, which is the billable cost — independent of how
+ * often tools are called. The host treats "last heartbeat + grace" as the close
+ * time if a session_end is ever lost (e.g. the server is killed).
+ */
+
+type TelemetryEventType = 'session_start' | 'heartbeat' | 'session_end';
+
+interface TelemetryEvent {
+  type: TelemetryEventType;
+  sessionId: string;
+  ts: number;
+  reason?: string;
+}
+
+const TELEMETRY_URL = process.env.MCPMAKE_TELEMETRY_URL;
+const TELEMETRY_TOKEN = process.env.MCPMAKE_TELEMETRY_TOKEN ?? '';
+const SERVER_SLUG = process.env.MCPMAKE_SERVER_SLUG ?? '';
+const HEARTBEAT_MS = (() => {
+  const n = parseInt(process.env.MCPMAKE_TELEMETRY_HEARTBEAT_MS ?? '30000', 10);
+  return Number.isFinite(n) && n >= 1000 ? n : 30000;
+})();
+const POST_TIMEOUT_MS = 5000;
+const MAX_BUFFER = 1000;
+
+const ENABLED = Boolean(TELEMETRY_URL) && Boolean(TELEMETRY_TOKEN) && Boolean(SERVER_SLUG);
+
+const buffer: TelemetryEvent[] = [];
+const openSessions = new Set<string>();
+let flushTimer: ReturnType<typeof setInterval> | undefined;
+
+function pushEvent(ev: TelemetryEvent): void {
+  buffer.push(ev);
+  // Bound memory if the ingest is unreachable for a long time: keep the newest.
+  if (buffer.length > MAX_BUFFER) buffer.splice(0, buffer.length - MAX_BUFFER);
+}
+
+function ensureTimer(): void {
+  if (!ENABLED || flushTimer) return;
+  flushTimer = setInterval(() => {
+    void flush();
+  }, HEARTBEAT_MS);
+  // Never keep the process alive just for telemetry.
+  flushTimer.unref?.();
+}
+
+/** Record that a browser session became resident. */
+export function sessionStarted(sessionId: string): void {
+  if (!ENABLED) return;
+  openSessions.add(sessionId);
+  pushEvent({ type: 'session_start', sessionId, ts: Date.now() });
+  ensureTimer();
+}
+
+/** Record that a browser session was torn down (idle | explicit | shutdown). */
+export function sessionEnded(sessionId: string, reason: string): void {
+  if (!ENABLED) return;
+  openSessions.delete(sessionId);
+  pushEvent({ type: 'session_end', sessionId, ts: Date.now(), reason });
+  // Flush promptly so the host can finalize this session's billing.
+  void flush();
+}
+
+async function flush(): Promise<void> {
+  if (!ENABLED) return;
+  const now = Date.now();
+  // Heartbeat every still-open session — proof the browser is still resident.
+  for (const id of openSessions) {
+    pushEvent({ type: 'heartbeat', sessionId: id, ts: now });
+  }
+  if (buffer.length === 0) return;
+  const events = buffer.splice(0, buffer.length);
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), POST_TIMEOUT_MS);
+    try {
+      await fetch(TELEMETRY_URL as string, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${TELEMETRY_TOKEN}`,
+        },
+        body: JSON.stringify({ v: 1, slug: SERVER_SLUG, events }),
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+  } catch {
+    // Swallow: telemetry is best-effort and must never affect the server.
+  }
+}
+
+/** Best-effort final flush on shutdown: end every open session and send. */
+export async function flushOnShutdown(reason = 'shutdown'): Promise<void> {
+  if (!ENABLED) return;
+  const now = Date.now();
+  for (const id of [...openSessions]) {
+    openSessions.delete(id);
+    pushEvent({ type: 'session_end', sessionId: id, ts: now, reason });
+  }
+  await flush();
+}
