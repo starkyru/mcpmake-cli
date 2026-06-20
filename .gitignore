@@ -8,3 +8,5 @@ dist/
 AUDIT_REPORT.md
 DONE.md
 TODO.md
+.claude/agent-memory/code-security-reviewer/MEMORY.md
+.claude/agent-memory/code-security-reviewer/project_arch.md
