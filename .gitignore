@@ -5,3 +5,4 @@ dist/
 .build.lock/
 *.log
 .DS_Store
+AUDIT_REPORT.md
