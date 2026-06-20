@@ -1,6 +1,6 @@
 {
   "name": "mcpmake",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Generate MCP servers from OpenAPI, HAR, Postman, a URL, a website, or a plain-English description.",
   "type": "module",
   "license": "Apache-2.0",

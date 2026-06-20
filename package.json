@@ -1,6 +1,6 @@
 {
   "name": "mcpmake-cli",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "private": true,
   "type": "module",
   "description": "mcpmake — generate MCP servers you own from any API. CLI (mcpmake) + shared library (@mcpmake/core).",
