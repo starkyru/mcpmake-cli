@@ -98,7 +98,7 @@ export function deriveResourceName(method: string, path: string): string {
         verb = endsWithItem ? 'get' : 'list';
         break;
       case 'post':
-        verb = endsWithItem ? 'create' : 'create';
+        verb = 'create';
         break;
       case 'put':
       case 'patch':

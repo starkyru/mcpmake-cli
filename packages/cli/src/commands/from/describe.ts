@@ -56,7 +56,7 @@ export default defineConfigurableCommand('describe', {
     model: {
       type: 'string',
       alias: 'm',
-      description: 'Claude model to use (default: claude-sonnet-4-20250514)',
+      description: 'Claude model to use (default: claude-sonnet-4-6)',
     },
     'save-spec': {
       type: 'string',

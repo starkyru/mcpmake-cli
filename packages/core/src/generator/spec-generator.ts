@@ -29,7 +29,7 @@ export async function generateSpecFromDescription(options: GenerateSpecOptions):
   }
 
   const client = new Anthropic({ apiKey });
-  const model = options.model ?? 'claude-sonnet-4-20250514';
+  const model = options.model ?? 'claude-sonnet-4-6';
 
   let userPrompt = `Generate an OpenAPI 3.0 spec for: ${options.description}`;
   if (options.baseUrl) {
