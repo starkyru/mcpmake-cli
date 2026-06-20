@@ -2,6 +2,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { jsonSchemaOutputFormat } from '@anthropic-ai/sdk/helpers/json-schema';
 import type { OperationDescriptor } from '../types/index.js';
 import { logger } from '../utils/logger.js';
+import { resolveModel } from '../utils/model-resolver.js';
 
 /**
  * Structured-output schema for the naming response. Using a strict schema means
@@ -64,7 +65,7 @@ ${JSON.stringify(operationSummaries, null, 2)}`;
   try {
     logger.info('Improving tool names with Claude...');
     const message = await client.messages.parse({
-      model: model ?? 'claude-sonnet-4-6',
+      model: await resolveModel(client, 'balanced', model),
       max_tokens: 2048,
       messages: [{ role: 'user', content: prompt }],
       output_config: { format: jsonSchemaOutputFormat(NAMING_SCHEMA) },

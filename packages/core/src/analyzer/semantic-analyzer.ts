@@ -8,6 +8,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import type { PageDescriptor } from '../types/site.js';
 import { logger } from '../utils/logger.js';
+import { resolveModel } from '../utils/model-resolver.js';
 
 /** Compact representation of a page sent to the LLM. */
 interface PageSummary {
@@ -64,7 +65,6 @@ interface SemanticResult {
   }>;
 }
 
-const MODEL = 'claude-haiku-4-5-20251001';
 const MAX_TOKENS = 4096;
 
 /**
@@ -83,6 +83,7 @@ export async function analyzeSemantics(
   }
 
   const client = new Anthropic({ apiKey });
+  const model = await resolveModel(client, 'fast');
 
   // Build compact page summaries for the prompt
   const summaries: PageSummary[] = pages.map((page, pageIndex) => ({
@@ -144,7 +145,7 @@ ${JSON.stringify(summaries, null, 2)}`;
   try {
     logger.info('Analyzing page semantics with LLM...');
     const message = await client.messages.create({
-      model: MODEL,
+      model,
       max_tokens: MAX_TOKENS,
       messages: [{ role: 'user', content: prompt }],
     });

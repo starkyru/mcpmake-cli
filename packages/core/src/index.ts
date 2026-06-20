@@ -54,6 +54,8 @@ export { buildResources, buildPrompts } from './transformer/resource-builder.js'
 export { applyClientCompat } from './transformer/client-compat.js';
 export type { ClientMode } from './transformer/client-compat.js';
 export { improveToolNames } from './transformer/llm-namer.js';
+export { resolveModel } from './utils/model-resolver.js';
+export type { ModelTier } from './utils/model-resolver.js';
 export { clusterEntries } from './transformer/har-clusterer.js';
 export type { EntryCluster } from './transformer/har-clusterer.js';
 export { clustersToOperations } from './transformer/har-to-operations.js';

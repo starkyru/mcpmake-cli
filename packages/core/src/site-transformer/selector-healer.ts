@@ -1,6 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import type { SelectorSet } from '../types/site.js';
 import { logger } from '../utils/logger.js';
+import { resolveModel } from '../utils/model-resolver.js';
 
 /**
  * Attempt to heal a broken CSS/ARIA selector by asking an LLM
@@ -57,7 +58,7 @@ ${safeTree}`;
   try {
     logger.info(`Healing broken selector: ${brokenSelector.primary}`);
     const message = await client.messages.create({
-      model: 'claude-haiku-4-5-20251001',
+      model: await resolveModel(client, 'fast'),
       max_tokens: 512,
       messages: [{ role: 'user', content: prompt }],
     });

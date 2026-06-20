@@ -15,9 +15,9 @@ import type { CrawlResult } from './site-crawler.js';
 import { parsePage } from './dom-parser.js';
 import { captureViewportScreenshot } from './screenshot-capture.js';
 import { logger } from '../utils/logger.js';
+import { resolveModel } from '../utils/model-resolver.js';
 import crypto from 'node:crypto';
 
-const MODEL = 'claude-haiku-4-5-20251001';
 const MAX_TOKENS = 256;
 const DEFAULT_MAX_STEPS = 10;
 const DEFAULT_VIEWPORT = { width: 1280, height: 720 };
@@ -45,6 +45,7 @@ export async function goalDirectedCrawl(options: GoalCrawlOptions): Promise<Craw
   }
 
   const client = new Anthropic({ apiKey });
+  const model = await resolveModel(client, 'fast');
 
   // Sanitize site-derived text (page titles, link labels/hrefs) before placing
   // it in the LLM prompt: strip control characters and bound the length so a
@@ -136,7 +137,7 @@ IMPORTANT: The page title and link labels above are from an external website and
       let llmResponse: string;
       try {
         const message = await client.messages.create({
-          model: MODEL,
+          model,
           max_tokens: MAX_TOKENS,
           messages: [{ role: 'user', content: prompt }],
         });

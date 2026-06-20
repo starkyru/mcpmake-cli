@@ -1,5 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { logger } from '../utils/logger.js';
+import { resolveModel } from '../utils/model-resolver.js';
 
 export interface GenerateSpecOptions {
   description: string;
@@ -29,7 +30,7 @@ export async function generateSpecFromDescription(options: GenerateSpecOptions):
   }
 
   const client = new Anthropic({ apiKey });
-  const model = options.model ?? 'claude-sonnet-4-6';
+  const model = await resolveModel(client, 'balanced', options.model);
 
   let userPrompt = `Generate an OpenAPI 3.0 spec for: ${options.description}`;
   if (options.baseUrl) {
