@@ -14,7 +14,7 @@ import { emitSiteProject } from '@mcpmake/core';
 import { logger } from '@mcpmake/core';
 import { fail } from '@mcpmake/core';
 import { pathExists } from '@mcpmake/core';
-import { apiKeyArg, applyApiKey, modelArg, providerArg } from './api-key.js';
+import { activeKeyVar, apiKeyArg, applyApiKey, modelArg, providerArg } from './api-key.js';
 import type { SiteDescriptor, SiteRegenMetadata, SiteProjectManifest } from '@mcpmake/core';
 
 /**
@@ -57,7 +57,8 @@ export default defineCommand({
     },
     heal: {
       type: 'boolean',
-      description: 'LLM-heal low-confidence selectors (requires ANTHROPIC_API_KEY)',
+      description:
+        'LLM-heal low-confidence selectors (requires an LLM API key: ANTHROPIC_API_KEY, or OPENAI_API_KEY with --provider openai)',
       default: true,
     },
     'api-key': apiKeyArg,
@@ -131,14 +132,18 @@ export default defineCommand({
     // regenerated server gets more stable selectors than a bare re-crawl found.
     const lows = collectLowConfidenceSelectors(newSite);
     let healedCount = 0;
-    const apiKey = process.env.ANTHROPIC_API_KEY;
+    // Gate on the key var for the active provider (set by applyApiKey above), not
+    // a hardcoded ANTHROPIC_API_KEY — under --provider openai the key lives in
+    // OPENAI_API_KEY, so the old check skipped healing and warned about the wrong var.
+    const keyVar = activeKeyVar();
+    const apiKey = process.env[keyVar];
     if (args.heal && lows.length > 0 && apiKey) {
       logger.info(`Healing ${lows.length} low-confidence selector(s)…`);
       healedCount = await healLowConfidenceSelectors(lows, headless, args.model);
       logger.info(`Healed ${healedCount}/${lows.length} selector(s)`);
     } else if (args.heal && lows.length > 0 && !apiKey) {
       logger.warn(
-        `${lows.length} low-confidence selector(s) found, but ANTHROPIC_API_KEY is not set — skipping healing`,
+        `${lows.length} low-confidence selector(s) found, but ${keyVar} is not set — skipping healing`,
       );
     }
 

@@ -4,9 +4,10 @@ type FakeModel = { id: string; display_name: string; created_at: string };
 
 function fakeClient(
   models: FakeModel[],
-  opts: { throwOnList?: boolean; spy?: { calls: number } } = {},
+  opts: { throwOnList?: boolean; spy?: { calls: number }; baseURL?: string } = {},
 ) {
   return {
+    baseURL: opts.baseURL,
     models: {
       list() {
         if (opts.spy) opts.spy.calls++;
@@ -141,5 +142,36 @@ describe('resolveModel', () => {
     await resolveModel(client, 'balanced');
     await resolveModel(client, 'balanced');
     expect(spy.calls).toBe(1);
+  });
+
+  it('keys the cache on (tier, baseURL) so different endpoints resolve independently', async () => {
+    const resolveModel = await freshResolveModel();
+    // Two clients, same tier, different base URLs, serving different models.
+    const clientA = fakeClient(
+      [
+        {
+          id: 'claude-sonnet-4-6',
+          display_name: 'Claude Sonnet 4.6',
+          created_at: '2025-09-01T00:00:00Z',
+        },
+      ],
+      { baseURL: 'https://api.anthropic.com' },
+    );
+    const clientB = fakeClient(
+      // preferred alias absent → newest matching sonnet on this endpoint
+      [
+        {
+          id: 'claude-sonnet-9-0-20300101',
+          display_name: 'Claude Sonnet 9',
+          created_at: '2030-01-01T00:00:00Z',
+        },
+      ],
+      { baseURL: 'https://gateway.example.com' },
+    );
+
+    // First endpoint resolves and caches under its own key.
+    expect(await resolveModel(clientA, 'balanced')).toBe('claude-sonnet-4-6');
+    // Second endpoint must NOT see the first's cached resolution.
+    expect(await resolveModel(clientB, 'balanced')).toBe('claude-sonnet-9-0-20300101');
   });
 });

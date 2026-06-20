@@ -7,6 +7,7 @@ describe('provider selection', () => {
   const originalOpenaiKey = process.env.OPENAI_API_KEY;
   const originalOpenaiBaseUrl = process.env.OPENAI_BASE_URL;
   const originalProvider = process.env.MCPMAKE_LLM_PROVIDER;
+  const originalAllowPrivate = process.env.MCPMAKE_ALLOW_PRIVATE_HOSTS;
 
   beforeEach(() => {
     delete process.env.ANTHROPIC_API_KEY;
@@ -14,6 +15,7 @@ describe('provider selection', () => {
     delete process.env.OPENAI_API_KEY;
     delete process.env.OPENAI_BASE_URL;
     delete process.env.MCPMAKE_LLM_PROVIDER;
+    delete process.env.MCPMAKE_ALLOW_PRIVATE_HOSTS;
   });
 
   afterEach(() => {
@@ -27,6 +29,8 @@ describe('provider selection', () => {
     else process.env.OPENAI_BASE_URL = originalOpenaiBaseUrl;
     if (originalProvider === undefined) delete process.env.MCPMAKE_LLM_PROVIDER;
     else process.env.MCPMAKE_LLM_PROVIDER = originalProvider;
+    if (originalAllowPrivate === undefined) delete process.env.MCPMAKE_ALLOW_PRIVATE_HOSTS;
+    else process.env.MCPMAKE_ALLOW_PRIVATE_HOSTS = originalAllowPrivate;
   });
 
   describe('resolveProviderKind', () => {
@@ -87,11 +91,64 @@ describe('provider selection', () => {
     });
 
     it('returns an openai-compatible provider with a base url and no key', () => {
+      // Documented Ollama flow points at localhost — operator opts in via the
+      // existing private-hosts escape hatch.
       process.env.MCPMAKE_LLM_PROVIDER = 'openai-compatible';
       process.env.OPENAI_BASE_URL = 'http://localhost:11434/v1';
+      process.env.MCPMAKE_ALLOW_PRIVATE_HOSTS = '1';
       const provider = getLlmProvider();
       expect(provider).not.toBeNull();
       expect(provider?.name).toBe('openai-compatible');
+    });
+  });
+
+  describe('base-URL SSRF guard', () => {
+    it('rejects a private OPENAI_BASE_URL without MCPMAKE_ALLOW_PRIVATE_HOSTS', () => {
+      process.env.MCPMAKE_LLM_PROVIDER = 'openai-compatible';
+      process.env.OPENAI_BASE_URL = 'http://127.0.0.1:11434/v1';
+      expect(() => getLlmProvider()).toThrow(/MCPMAKE_ALLOW_PRIVATE_HOSTS/);
+    });
+
+    it('accepts a private OPENAI_BASE_URL when MCPMAKE_ALLOW_PRIVATE_HOSTS is set', () => {
+      process.env.MCPMAKE_LLM_PROVIDER = 'openai-compatible';
+      process.env.OPENAI_BASE_URL = 'http://127.0.0.1:11434/v1';
+      process.env.MCPMAKE_ALLOW_PRIVATE_HOSTS = '1';
+      const provider = getLlmProvider();
+      expect(provider).not.toBeNull();
+      expect(provider?.name).toBe('openai-compatible');
+    });
+
+    it('rejects a private ANTHROPIC_BASE_URL without the escape hatch', () => {
+      process.env.ANTHROPIC_API_KEY = 'sk-ant-test';
+      process.env.ANTHROPIC_BASE_URL = 'http://169.254.169.254/';
+      expect(() => getLlmProvider()).toThrow(/private\/loopback/);
+    });
+
+    it('rejects a localhost hostname (not just a literal IP) without the escape hatch', () => {
+      process.env.MCPMAKE_LLM_PROVIDER = 'openai-compatible';
+      process.env.OPENAI_BASE_URL = 'http://localhost:11434/v1';
+      expect(() => getLlmProvider()).toThrow(/MCPMAKE_ALLOW_PRIVATE_HOSTS/);
+    });
+
+    it('rejects a non-http(s) base URL', () => {
+      process.env.ANTHROPIC_API_KEY = 'sk-ant-test';
+      process.env.ANTHROPIC_BASE_URL = 'file:///etc/passwd';
+      expect(() => getLlmProvider()).toThrow(/http\(s\)/);
+    });
+
+    it('accepts a public base URL', () => {
+      process.env.ANTHROPIC_API_KEY = 'sk-ant-test';
+      process.env.ANTHROPIC_BASE_URL = 'https://api.anthropic.com';
+      const provider = getLlmProvider();
+      expect(provider).not.toBeNull();
+      expect(provider?.name).toBe('anthropic');
+    });
+
+    it('is a no-op when no base URL is set (default anthropic flow)', () => {
+      process.env.ANTHROPIC_API_KEY = 'sk-ant-test';
+      const provider = getLlmProvider();
+      expect(provider).not.toBeNull();
+      expect(provider?.name).toBe('anthropic');
     });
   });
 

@@ -23,9 +23,18 @@ const TIER_PATTERN: Record<ModelTier, RegExp> = {
   fast: /haiku/i,
 };
 
-// Resolved once per tier per process: the served-model list rarely changes
-// mid-run, and we don't want a Models API round-trip before every call.
-const cache = new Map<ModelTier, string>();
+// Resolved once per (tier, baseURL) per process: the served-model list rarely
+// changes mid-run, and we don't want a Models API round-trip before every call.
+// The base URL is part of the key because two clients pointed at different
+// endpoints (e.g. distinct Anthropic-compatible gateways) serve different model
+// lists — keying on tier alone would leak the first endpoint's resolution to
+// the second.
+const cache = new Map<string, string>();
+
+/** Composite cache key so resolutions never cross endpoints. */
+function cacheKey(tier: ModelTier, baseURL: string): string {
+  return `${tier}::${baseURL}`;
+}
 
 /**
  * Resolve a usable model id for a tier against the live Models API, so a retired
@@ -46,7 +55,8 @@ export async function resolveModel(
 ): Promise<string> {
   if (override) return override;
 
-  const cached = cache.get(tier);
+  const key = cacheKey(tier, client.baseURL ?? '');
+  const cached = cache.get(key);
   if (cached) return cached;
 
   const preferred = PREFERRED[tier];
@@ -84,7 +94,7 @@ export async function resolveModel(
   }
 
   // Only successful resolutions are cached — the served-model list rarely
-  // changes mid-run, so one API round-trip per tier is enough.
-  cache.set(tier, choice);
+  // changes mid-run, so one API round-trip per (tier, baseURL) is enough.
+  cache.set(key, choice);
   return choice;
 }

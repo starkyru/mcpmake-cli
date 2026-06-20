@@ -1,7 +1,7 @@
 /**
  * LLM-powered semantic analysis of crawled pages.
  *
- * Sends page structure to Claude (Haiku for cost efficiency) and infers
+ * Sends page structure to an LLM and infers
  * human-readable semantic names and descriptions for forms, buttons, and links.
  */
 
@@ -74,7 +74,6 @@ const MAX_TOKENS = 4096;
  */
 export async function analyzeSemantics(
   pages: PageDescriptor[],
-  _screenshots?: Map<string, Buffer>,
   model?: string,
 ): Promise<PageDescriptor[]> {
   const provider = getLlmProvider();

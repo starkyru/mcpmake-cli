@@ -118,7 +118,7 @@ export default defineConfigurableCommand('website', {
     goal: {
       type: 'string',
       description:
-        'Goal-directed crawl: use an LLM to navigate toward a goal instead of BFS crawling (requires ANTHROPIC_API_KEY)',
+        'Goal-directed crawl: use an LLM to navigate toward a goal instead of BFS crawling (requires an LLM API key: ANTHROPIC_API_KEY, or OPENAI_API_KEY with --provider openai)',
     },
     'api-key': apiKeyArg,
     provider: providerArg,
@@ -191,9 +191,9 @@ export default defineConfigurableCommand('website', {
       await fail('No pages could be analyzed. Check the URL and try again.');
     }
 
-    // Semantic analysis (optional, requires ANTHROPIC_API_KEY)
+    // Semantic analysis (optional, requires an LLM API key)
     if (args['improve-names']) {
-      siteDescriptor.pages = await analyzeSemantics(siteDescriptor.pages, screenshots, args.model);
+      siteDescriptor.pages = await analyzeSemantics(siteDescriptor.pages, args.model);
     }
 
     // Auth flow detection

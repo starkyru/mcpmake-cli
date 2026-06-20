@@ -78,7 +78,7 @@ export default defineConfigurableCommand('describe', {
     model: {
       type: 'string',
       alias: 'm',
-      description: 'Claude model to use (default: auto-detected, prefers claude-sonnet-4-6)',
+      description: 'Model to use (default: auto-detected per provider)',
     },
     'api-key': apiKeyArg,
     'save-spec': {

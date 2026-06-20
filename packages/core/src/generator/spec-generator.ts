@@ -43,14 +43,16 @@ export async function generateSpecFromDescription(options: GenerateSpecOptions):
   // leading/trailing prose, and braces that appear inside string values.
   const json = extractJsonObject(responseText);
   if (json === null) {
-    throw new Error('Claude did not return a JSON object. Try again or refine your description.');
+    throw new Error(
+      'The model did not return a JSON object. Try again or refine your description.',
+    );
   }
 
   // Validate it's parseable JSON
   try {
     JSON.parse(json);
   } catch {
-    throw new Error('Claude returned invalid JSON. Try again or refine your description.');
+    throw new Error('The model returned invalid JSON. Try again or refine your description.');
   }
 
   return json;

@@ -3,7 +3,7 @@
  * which links to follow based on a user-specified goal (e.g. "book a flight").
  *
  * At each page, we extract the page title and available link texts,
- * ask Claude (Haiku) which link to click next, and navigate accordingly.
+ * ask an LLM which link to click next, and navigate accordingly.
  * Stops when the LLM says GOAL_REACHED or we hit maxSteps.
  */
 

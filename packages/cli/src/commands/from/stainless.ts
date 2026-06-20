@@ -119,7 +119,7 @@ export async function importFromStainless(
     logger.info(`${filtered.length} operations after filtering`);
   }
 
-  // LLM-assisted naming (opt-in; no-op without ANTHROPIC_API_KEY)
+  // LLM-assisted naming (opt-in; no-op without an LLM API key for the active provider)
   const named = opts.improveNames ? await improveToolNames(filtered, opts.model) : filtered;
 
   const tools = buildAllTools(named);
@@ -325,7 +325,8 @@ export default defineConfigurableCommand('stainless', {
     },
     'improve-names': {
       type: 'boolean',
-      description: 'Use AI to generate better tool names (requires ANTHROPIC_API_KEY)',
+      description:
+        'Use AI to generate better tool names (requires an LLM API key: ANTHROPIC_API_KEY, or OPENAI_API_KEY with --provider openai)',
       default: false,
     },
     'api-key': apiKeyArg,

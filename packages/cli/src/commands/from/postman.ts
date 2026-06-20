@@ -75,7 +75,8 @@ export default defineConfigurableCommand('postman', {
     },
     'improve-names': {
       type: 'boolean',
-      description: 'Use AI to generate better tool names (requires ANTHROPIC_API_KEY)',
+      description:
+        'Use AI to generate better tool names (requires an LLM API key: ANTHROPIC_API_KEY, or OPENAI_API_KEY with --provider openai)',
       default: false,
     },
     'api-key': apiKeyArg,
@@ -117,7 +118,7 @@ export default defineConfigurableCommand('postman', {
     // Deterministic REST resource-tree naming (offline; no API key).
     let allOperations = args['resource-names'] ? resourceTreeNames(rawOperations) : rawOperations;
 
-    // LLM-assisted naming (opt-in; no-op without ANTHROPIC_API_KEY)
+    // LLM-assisted naming (opt-in; no-op without an LLM API key for the active provider)
     if (args['improve-names']) {
       allOperations = await improveToolNames(allOperations, args.model);
     }

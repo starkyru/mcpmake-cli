@@ -14,6 +14,11 @@ describe('loadDotEnv', () => {
     'MCPMAKE_TEST_COMMENT',
     'MCPMAKE_TEST_EXPORT',
     'MCPMAKE_TEST_MISSING',
+    'MCPMAKE_TEST_CRLF_QUOTED',
+    'MCPMAKE_TEST_CRLF_UNQUOTED',
+    'MCPMAKE_TEST_EMPTY_EXISTING',
+    'MCPMAKE_TEST_EQ_VALUE',
+    'MCPMAKE_TEST_UNBALANCED',
   ] as const;
 
   afterEach(() => {
@@ -64,5 +69,33 @@ describe('loadDotEnv', () => {
     const dir = mkdtempSync(join(tmpdir(), 'mcpmake-env-empty-'));
     expect(() => loadDotEnv(dir)).not.toThrow();
     expect(process.env.MCPMAKE_TEST_MISSING).toBeUndefined();
+  });
+
+  it('strips the trailing \\r from quoted and unquoted CRLF lines', () => {
+    const dir = tmpEnvDir(
+      'MCPMAKE_TEST_CRLF_QUOTED="value"\r\n' + 'MCPMAKE_TEST_CRLF_UNQUOTED=value\r\n',
+    );
+    loadDotEnv(dir);
+    expect(process.env.MCPMAKE_TEST_CRLF_QUOTED).toBe('value');
+    expect(process.env.MCPMAKE_TEST_CRLF_UNQUOTED).toBe('value');
+  });
+
+  it('does not override a var already present as an empty string (real env wins)', () => {
+    process.env.MCPMAKE_TEST_EMPTY_EXISTING = '';
+    const dir = tmpEnvDir('MCPMAKE_TEST_EMPTY_EXISTING=from-file\n');
+    loadDotEnv(dir);
+    expect(process.env.MCPMAKE_TEST_EMPTY_EXISTING).toBe('');
+  });
+
+  it('splits only on the first = so values may contain = characters', () => {
+    const dir = tmpEnvDir('MCPMAKE_TEST_EQ_VALUE=a=b=c\n');
+    loadDotEnv(dir);
+    expect(process.env.MCPMAKE_TEST_EQ_VALUE).toBe('a=b=c');
+  });
+
+  it('keeps the literal opening quote when quotes are unbalanced', () => {
+    const dir = tmpEnvDir('MCPMAKE_TEST_UNBALANCED="value\n');
+    loadDotEnv(dir);
+    expect(process.env.MCPMAKE_TEST_UNBALANCED).toBe('"value');
   });
 });

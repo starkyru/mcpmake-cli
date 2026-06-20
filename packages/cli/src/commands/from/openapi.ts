@@ -118,7 +118,8 @@ export default defineConfigurableCommand('openapi', {
     },
     'improve-names': {
       type: 'boolean',
-      description: 'Use AI to generate better tool names (requires ANTHROPIC_API_KEY)',
+      description:
+        'Use AI to generate better tool names (requires an LLM API key: ANTHROPIC_API_KEY, or OPENAI_API_KEY with --provider openai)',
       default: false,
     },
     'api-key': apiKeyArg,

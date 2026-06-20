@@ -22,8 +22,10 @@ export default defineCommand({
     if (res && res.status === 200) {
       logger.success('Logged out — the deploy token was revoked.');
     } else {
-      logger.success('Logged out locally. Could not reach the server to revoke the token; ' +
-        'revoke it on the Account page if this device is untrusted.');
+      logger.success(
+        'Logged out locally. Could not reach the server to revoke the token; ' +
+          'revoke it on the Account page if this device is untrusted.',
+      );
     }
   },
 });

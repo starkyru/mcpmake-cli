@@ -30,7 +30,7 @@ const NAMING_SCHEMA = {
 } as const;
 
 /**
- * Use Claude to generate better tool names and descriptions
+ * Use an LLM to generate better tool names and descriptions
  * from HAR-captured request/response patterns.
  */
 export async function improveToolNames(
@@ -59,7 +59,7 @@ Operations:
 ${JSON.stringify(operationSummaries, null, 2)}`;
 
   try {
-    logger.info('Improving tool names with Claude...');
+    logger.info(`Improving tool names with ${provider.name}...`);
     const parsed = await provider.completeJson<{
       improvements: { index: number; operationId: string; summary: string }[];
     }>({

@@ -68,7 +68,8 @@ export const FAMILY_A_PRICING: Record<string, PricePoint> = {
     priceUsd: 8_000,
     priceMaxUsd: 40_000,
     period: 'yearly',
-    summary: 'Support SLA, IP indemnity + commercial contract around the OSS. On-prem platform licensed separately.',
+    summary:
+      'Support SLA, IP indemnity + commercial contract around the OSS. On-prem platform licensed separately.',
   },
   migration: {
     id: 'migration',

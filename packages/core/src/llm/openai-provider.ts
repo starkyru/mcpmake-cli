@@ -45,6 +45,20 @@ const TIER_PATTERN: Record<ModelTier, RegExp> = {
   fast: /mini|nano|small|flash|haiku/i,
 };
 
+/**
+ * True only for an HTTP 400 from the OpenAI SDK — the signal that a server or
+ * model rejects a *request format* (e.g. an unsupported `response_format`),
+ * which the `completeJson` fallback chain may legitimately downgrade past.
+ *
+ * Every other error (401 auth, 429 rate limit, 5xx, network/connection) is a
+ * hard failure that retrying with a weaker request mode will not fix, so those
+ * must propagate untouched instead of being masked as "unparseable JSON". The
+ * SDK exposes the HTTP status as `err.status` on its error objects.
+ */
+function isFormatError(err: unknown): boolean {
+  return (err as { status?: number } | null | undefined)?.status === 400;
+}
+
 export class OpenAiProvider implements LlmProvider {
   readonly name: string;
   readonly supportsVision = true;
@@ -204,7 +218,13 @@ export class OpenAiProvider implements LlmProvider {
         ...tokenParam,
       });
       content = res.choices[0]?.message?.content ?? '';
-    } catch {
+    } catch (err) {
+      // Only an HTTP 400 means "this server/model rejects the structured-output
+      // *format*" — that is the one error we downgrade past. A hard error (401
+      // auth, 429 rate limit, 5xx, network) is not fixed by retrying with a
+      // weaker request mode, so rethrow it rather than masking it behind a later
+      // "unparseable JSON". (See how the SDK surfaces `status` on its errors.)
+      if (!isFormatError(err)) throw err;
       this.warnJsonDowngrade();
       try {
         // 2) `json_object` mode + schema-in-prompt: forces valid JSON without
@@ -218,7 +238,10 @@ export class OpenAiProvider implements LlmProvider {
           ...tokenParam,
         });
         content = res.choices[0]?.message?.content ?? '';
-      } catch {
+      } catch (err2) {
+        // Same rule one tier down: only a 400 (server rejects `response_format`)
+        // justifies the final plain-completion attempt; anything else rethrows.
+        if (!isFormatError(err2)) throw err2;
         // 3) Plain completion + schema-in-prompt: last resort for servers that
         //    reject `response_format` entirely. Rely on the JSON extractor.
         const messages = this.buildMessages(prompt, system);

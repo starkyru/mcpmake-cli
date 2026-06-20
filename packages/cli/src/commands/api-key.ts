@@ -18,11 +18,38 @@
  */
 import { logger } from '@mcpmake/core';
 
+/**
+ * Valid LLM provider kinds. Mirrors `PROVIDER_KINDS` in
+ * `@mcpmake/core` (packages/core/src/llm/types.ts), which is not re-exported
+ * from the core barrel. Kept in sync so an unknown `--provider` is rejected
+ * loudly here instead of silently routing the key to the wrong var.
+ */
+const PROVIDER_KINDS = ['anthropic', 'openai', 'openai-compatible'] as const;
+
+/**
+ * The env var that holds the API key for a given provider kind. Mirrors
+ * `keyVarFor` in `@mcpmake/core` (packages/core/src/llm/index.ts).
+ */
+export function keyVarFor(provider: string): string {
+  return provider === 'anthropic' ? 'ANTHROPIC_API_KEY' : 'OPENAI_API_KEY';
+}
+
+/**
+ * The API key env var for the provider currently configured in the environment
+ * (`MCPMAKE_LLM_PROVIDER`, default `anthropic`). Call after {@link applyApiKey}
+ * so command flags have already populated the environment. Use this to gate
+ * provider-agnostic AI steps (e.g. selector healing) on the right key var.
+ */
+export function activeKeyVar(): string {
+  const provider = (process.env.MCPMAKE_LLM_PROVIDER ?? 'anthropic').toLowerCase();
+  return keyVarFor(provider);
+}
+
 /** Citty arg definition — spread into an LLM-using command's `args` block. */
 export const apiKeyArg = {
   type: 'string' as const,
   description:
-    'Anthropic API key for AI features (overrides ANTHROPIC_API_KEY; note: visible in shell history/process list)',
+    'API key for AI features (overrides the provider key var — ANTHROPIC_API_KEY, or OPENAI_API_KEY under --provider openai; note: visible in shell history/process list)',
 };
 
 /** Citty arg for choosing the LLM backend — spread into an LLM-using command's `args`. */
@@ -41,9 +68,18 @@ export const providerArg = {
  */
 export function applyApiKey(args: Record<string, unknown>): void {
   // Provider selection first, so we know which key var --api-key targets.
+  // Validate against the known kinds so a typo (e.g. --provider antrpic) surfaces
+  // loudly instead of silently routing the key to the wrong var.
   const providerRaw = args['provider'];
   if (typeof providerRaw === 'string' && providerRaw.trim()) {
-    process.env.MCPMAKE_LLM_PROVIDER = providerRaw.trim().toLowerCase();
+    const provider = providerRaw.trim().toLowerCase();
+    if ((PROVIDER_KINDS as readonly string[]).includes(provider)) {
+      process.env.MCPMAKE_LLM_PROVIDER = provider;
+    } else {
+      logger.warn(
+        `Unknown --provider "${providerRaw.trim()}" (expected one of: ${PROVIDER_KINDS.join(', ')}) — ignoring`,
+      );
+    }
   }
 
   const raw = args['api-key'];
@@ -52,7 +88,7 @@ export function applyApiKey(args: Record<string, unknown>): void {
   if (!key) return;
 
   const provider = (process.env.MCPMAKE_LLM_PROVIDER ?? 'anthropic').toLowerCase();
-  const keyVar = provider === 'anthropic' ? 'ANTHROPIC_API_KEY' : 'OPENAI_API_KEY';
+  const keyVar = keyVarFor(provider);
   if (process.env[keyVar] && process.env[keyVar] !== key) {
     logger.warn(`--api-key overrides the ${keyVar} already set in the environment`);
   }
@@ -67,6 +103,5 @@ export function applyApiKey(args: Record<string, unknown>): void {
 export const modelArg = {
   type: 'string' as const,
   alias: 'm' as const,
-  description:
-    'LLM model to use (default: auto-resolved; prefers claude-sonnet-4-6 / claude-haiku-4-5)',
+  description: 'LLM model to use (default: auto-resolved per provider)',
 };

@@ -19,8 +19,13 @@ export function loadDotEnv(cwd: string = process.cwd()): void {
     return; // no .env (or unreadable) — fine
   }
 
-  for (const rawLine of raw.split('\n')) {
-    let line = rawLine.trim();
+  // Split on both LF and CRLF so Windows line endings never leave a stray
+  // trailing `\r` clinging to a value (e.g. `KEY="value"\r\n`). The extra
+  // `replace` strips any trailing `\r` not consumed by the split
+  // (belt-and-suspenders). Bare `\r` (classic Mac OS 9) terminators are not
+  // split on and remain unsupported.
+  for (const rawLine of raw.split(/\r?\n/)) {
+    let line = rawLine.replace(/\r$/, '').trim();
     if (!line || line.startsWith('#')) continue;
     if (line.startsWith('export ')) line = line.slice(7).trim();
 
