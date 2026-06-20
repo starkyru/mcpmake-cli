@@ -37,6 +37,7 @@ import ciCommand from './commands/ci.js';
 import rescanCommand from './commands/rescan.js';
 import pricingCommand from './commands/pricing.js';
 import { withUpsellFooter } from './upsell.js';
+import { loadDotEnv } from './env.js';
 
 const fromCommand = defineCommand({
   meta: {
@@ -88,5 +89,9 @@ process.on('unhandledRejection', (reason) => {
   logger.error(`Unhandled rejection: ${reason instanceof Error ? reason.message : String(reason)}`);
   process.exitCode = 1;
 });
+
+// Load `<cwd>/.env` before any command runs so `run()` bodies see the vars.
+// Exported shell variables always win over the file (see loadDotEnv).
+loadDotEnv();
 
 runMain(main);

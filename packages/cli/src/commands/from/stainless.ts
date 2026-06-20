@@ -5,6 +5,7 @@ import { extractOperations } from '@mcpmake/core';
 import { detectAuthSchemes } from '@mcpmake/core';
 import { buildAllTools } from '@mcpmake/core';
 import { filterOperations } from '@mcpmake/core';
+import { improveToolNames } from '@mcpmake/core';
 import { buildResources, buildPrompts } from '@mcpmake/core';
 import { emitProject, emitPythonProject } from '@mcpmake/core';
 import { parseStainlessConfig, resolveSpecPath } from '@mcpmake/core';
@@ -15,6 +16,7 @@ import {
   resolveTransport,
   printWorkerNextSteps,
 } from './target-support.js';
+import { apiKeyArg, applyApiKey, modelArg } from '../api-key.js';
 import { logger } from '@mcpmake/core';
 import { fail } from '@mcpmake/core';
 import type { OpenAPIV3 } from 'openapi-types';
@@ -41,6 +43,8 @@ export interface StainlessImportOptions {
   format?: string;
   include?: string;
   exclude?: string;
+  improveNames?: boolean;
+  model?: string;
   dynamicDiscovery?: boolean;
   staticTools?: string;
   force?: boolean;
@@ -115,7 +119,10 @@ export async function importFromStainless(
     logger.info(`${filtered.length} operations after filtering`);
   }
 
-  const tools = buildAllTools(filtered);
+  // LLM-assisted naming (opt-in; no-op without ANTHROPIC_API_KEY)
+  const named = opts.improveNames ? await improveToolNames(filtered, opts.model) : filtered;
+
+  const tools = buildAllTools(named);
 
   const { authSchemes, envVars } = detectAuthSchemes(securitySchemes, {
     onlyScheme: translation.authOverride?.schemeName,
@@ -146,8 +153,8 @@ export async function importFromStainless(
   const target = resolveTarget(opts.target);
   const transport = resolveTransport(target, opts.transport);
 
-  const resources = buildResources(filtered);
-  const prompts = buildPrompts(filtered);
+  const resources = buildResources(named);
+  const prompts = buildPrompts(named);
 
   const serverName = opts.name ?? toPackageName(info.title || config.organization || 'mcp-server');
 
@@ -316,6 +323,13 @@ export default defineConfigurableCommand('stainless', {
       alias: 'e',
       description: 'Exclude operations matching these patterns (comma-separated)',
     },
+    'improve-names': {
+      type: 'boolean',
+      description: 'Use AI to generate better tool names (requires ANTHROPIC_API_KEY)',
+      default: false,
+    },
+    'api-key': apiKeyArg,
+    model: modelArg,
     'dynamic-discovery': {
       type: 'boolean',
       description:
@@ -339,6 +353,8 @@ export default defineConfigurableCommand('stainless', {
     },
   },
   async run({ args }) {
+    applyApiKey(args);
+
     await importFromStainless({
       configPath: args['config-file'] as string,
       output: args.output as string,
@@ -350,6 +366,8 @@ export default defineConfigurableCommand('stainless', {
       format: args.format as string | undefined,
       include: args.include as string | undefined,
       exclude: args.exclude as string | undefined,
+      improveNames: args['improve-names'] as boolean | undefined,
+      model: args.model as string | undefined,
       dynamicDiscovery: args['dynamic-discovery'] as boolean | undefined,
       staticTools: args['static-tools'] as string | undefined,
       force: args.force as boolean | undefined,

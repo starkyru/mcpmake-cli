@@ -114,29 +114,38 @@ A few flags use Claude to improve the output. They are **opt-in** — without th
 | Feature | Where | Flag |
 |---------|-------|------|
 | Generate a spec from plain English | `from describe` | (always) |
-| Better tool names & descriptions | `from openapi` / `har` / `url` | `--improve-names` |
+| Better tool names & descriptions | `from openapi` / `har` / `url` / `postman` / `stainless` | `--improve-names` |
 | Semantic names for forms/buttons/links | `from website` | `--improve-names` |
 | Goal-directed crawl (LLM navigation) | `from website` | `--goal "<text>"` |
 | Heal broken CSS selectors | `rescan` | `--heal` (on by default) |
 
 These call the **Anthropic API** with `@anthropic-ai/sdk`. The model is
 auto-resolved against the live Models API (prefers `claude-sonnet-4-6`, or
-`claude-haiku-4-5` for fast paths); override with `--model`.
+`claude-haiku-4-5` for fast paths); override on any of these commands with
+`--model <id>` (alias `-m`).
 
-Provide the key in one of two ways:
+Provide the key in one of three ways:
 
 ```bash
 # Recommended: environment variable
 export ANTHROPIC_API_KEY=sk-ant-...
 mcpmake from describe "a todo API with auth" -o ./server
 
+# A .env file in the current directory is auto-loaded (real env vars win)
+echo 'ANTHROPIC_API_KEY=sk-ant-...' > .env
+mcpmake from openapi ./spec.yaml -o ./server --improve-names
+
 # Or pass it on the command line
 mcpmake from describe "a todo API with auth" -o ./server --api-key sk-ant-...
 ```
 
-> **Security:** prefer `ANTHROPIC_API_KEY`. A key passed via `--api-key` is
-> visible to other users in the process list (`ps`) and is recorded in your
-> shell history. `--api-key` overrides the env var when both are set.
+> **Security:** prefer `ANTHROPIC_API_KEY` (env or `.env`). A key passed via
+> `--api-key` is visible to other users in the process list (`ps`) and is
+> recorded in your shell history. `--api-key` overrides the env var when both
+> are set. Keep `.env` out of version control.
+
+To route through a gateway or proxy, set `ANTHROPIC_BASE_URL` — the SDK honors
+it automatically.
 
 If no key is available, optional AI steps are **skipped with a warning**;
 features that require a key (`from describe`, `--goal`) exit with an error.

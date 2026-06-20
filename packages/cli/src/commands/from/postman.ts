@@ -6,6 +6,7 @@ import { clustersToOperations } from '@mcpmake/core';
 import { deduplicateEntries } from '@mcpmake/core';
 import { buildAllTools } from '@mcpmake/core';
 import { resourceTreeNames } from '@mcpmake/core';
+import { improveToolNames } from '@mcpmake/core';
 import { filterOperations } from '@mcpmake/core';
 import { buildResources, buildPrompts } from '@mcpmake/core';
 import { emitProject } from '@mcpmake/core';
@@ -15,6 +16,7 @@ import {
   resolveTransport,
   printWorkerNextSteps,
 } from './target-support.js';
+import { apiKeyArg, applyApiKey, modelArg } from '../api-key.js';
 import { logger } from '@mcpmake/core';
 import { fail } from '@mcpmake/core';
 import type { AuthScheme, EnvVarDescriptor } from '@mcpmake/core';
@@ -71,6 +73,13 @@ export default defineConfigurableCommand('postman', {
         'Name tools from the REST resource tree (POST /accounts → create_account); deterministic, offline, no API key',
       default: false,
     },
+    'improve-names': {
+      type: 'boolean',
+      description: 'Use AI to generate better tool names (requires ANTHROPIC_API_KEY)',
+      default: false,
+    },
+    'api-key': apiKeyArg,
+    model: modelArg,
     force: {
       type: 'boolean',
       alias: 'f',
@@ -84,6 +93,8 @@ export default defineConfigurableCommand('postman', {
     },
   },
   async run({ args }) {
+    applyApiKey(args);
+
     logger.info(`Loading Postman collection: ${args.collection}`);
 
     const { entries, collectionName } = await loadPostmanCollection(args.collection);
@@ -103,7 +114,12 @@ export default defineConfigurableCommand('postman', {
     const { operations: rawOperations, baseUrl, detectedAuth } = clustersToOperations(clusters);
 
     // Deterministic REST resource-tree naming (offline; no API key).
-    const allOperations = args['resource-names'] ? resourceTreeNames(rawOperations) : rawOperations;
+    let allOperations = args['resource-names'] ? resourceTreeNames(rawOperations) : rawOperations;
+
+    // LLM-assisted naming (opt-in; no-op without ANTHROPIC_API_KEY)
+    if (args['improve-names']) {
+      allOperations = await improveToolNames(allOperations, args.model);
+    }
 
     let operations = filterOperations(allOperations, {
       include: args.include?.split(',').map((s) => s.trim()),

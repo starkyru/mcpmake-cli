@@ -14,7 +14,7 @@ import { emitSiteProject } from '@mcpmake/core';
 import { logger } from '@mcpmake/core';
 import { fail } from '@mcpmake/core';
 import { pathExists } from '@mcpmake/core';
-import { apiKeyArg, applyApiKey } from './api-key.js';
+import { apiKeyArg, applyApiKey, modelArg } from './api-key.js';
 import type { SiteDescriptor, SiteRegenMetadata, SiteProjectManifest } from '@mcpmake/core';
 
 /**
@@ -61,6 +61,7 @@ export default defineCommand({
       default: true,
     },
     'api-key': apiKeyArg,
+    model: modelArg,
     write: {
       type: 'boolean',
       description: 'Regenerate the project in place from the new snapshot',
@@ -132,7 +133,7 @@ export default defineCommand({
     const apiKey = process.env.ANTHROPIC_API_KEY;
     if (args.heal && lows.length > 0 && apiKey) {
       logger.info(`Healing ${lows.length} low-confidence selector(s)…`);
-      healedCount = await healLowConfidenceSelectors(lows, headless);
+      healedCount = await healLowConfidenceSelectors(lows, headless, args.model);
       logger.info(`Healed ${healedCount}/${lows.length} selector(s)`);
     } else if (args.heal && lows.length > 0 && !apiKey) {
       logger.warn(
@@ -180,6 +181,7 @@ export default defineCommand({
 async function healLowConfidenceSelectors(
   lows: LowConfidenceSelector[],
   headless: boolean,
+  model?: string,
 ): Promise<number> {
   const byUrl = new Map<string, LowConfidenceSelector[]>();
   for (const low of lows) {
@@ -214,7 +216,7 @@ async function healLowConfidenceSelectors(
       }
 
       for (const low of group) {
-        const candidate = await healBrokenSelector(tree, low.selector, low.description);
+        const candidate = await healBrokenSelector(tree, low.selector, low.description, model);
         if (!candidate) continue;
         // Only apply selectors that actually resolve on the live page.
         const working = await validateSelector(page, candidate);
