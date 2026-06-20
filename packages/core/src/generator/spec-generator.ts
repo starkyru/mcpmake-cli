@@ -1,7 +1,6 @@
-import Anthropic from '@anthropic-ai/sdk';
 import { extractJsonObject } from '../utils/json-extract.js';
 import { logger } from '../utils/logger.js';
-import { resolveModel } from '../utils/model-resolver.js';
+import { requireLlmProvider } from '../llm/index.js';
 
 export interface GenerateSpecOptions {
   description: string;
@@ -22,16 +21,7 @@ Rules:
 - Keep it practical — 3-10 operations is typical`;
 
 export async function generateSpecFromDescription(options: GenerateSpecOptions): Promise<string> {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) {
-    throw new Error(
-      'ANTHROPIC_API_KEY environment variable is required for describe mode.\n' +
-        'Set it with: export ANTHROPIC_API_KEY=your-key-here',
-    );
-  }
-
-  const client = new Anthropic({ apiKey });
-  const model = await resolveModel(client, 'balanced', options.model);
+  const provider = requireLlmProvider('describe mode');
 
   let userPrompt = `Generate an OpenAPI 3.0 spec for: ${options.description}`;
   if (options.baseUrl) {
@@ -40,22 +30,18 @@ export async function generateSpecFromDescription(options: GenerateSpecOptions):
 
   logger.info('Generating OpenAPI spec from description...');
 
-  const message = await client.messages.create({
-    model,
-    max_tokens: 4096,
+  const responseText = await provider.completeText({
     system: SYSTEM_PROMPT,
-    messages: [{ role: 'user', content: userPrompt }],
+    prompt: userPrompt,
+    tier: 'balanced',
+    model: options.model,
+    maxTokens: 4096,
   });
-
-  const content = message.content[0];
-  if (content.type !== 'text') {
-    throw new Error('Unexpected response format from Claude');
-  }
 
   // OpenAPI specs are recursive, so structured outputs can't enforce the shape.
   // Instead, extract the first balanced JSON object — robust to markdown fences,
   // leading/trailing prose, and braces that appear inside string values.
-  const json = extractJsonObject(content.text);
+  const json = extractJsonObject(responseText);
   if (json === null) {
     throw new Error('Claude did not return a JSON object. Try again or refine your description.');
   }

@@ -14,7 +14,7 @@ import { emitSiteProject } from '@mcpmake/core';
 import { logger } from '@mcpmake/core';
 import { fail } from '@mcpmake/core';
 import { pathExists } from '@mcpmake/core';
-import { apiKeyArg, applyApiKey, modelArg } from './api-key.js';
+import { apiKeyArg, applyApiKey, modelArg, providerArg } from './api-key.js';
 import type { SiteDescriptor, SiteRegenMetadata, SiteProjectManifest } from '@mcpmake/core';
 
 /**
@@ -61,6 +61,7 @@ export default defineCommand({
       default: true,
     },
     'api-key': apiKeyArg,
+    provider: providerArg,
     model: modelArg,
     write: {
       type: 'boolean',

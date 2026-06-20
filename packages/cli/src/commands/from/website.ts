@@ -15,7 +15,7 @@ import { buildAllTools } from '@mcpmake/core';
 import { emitSiteProject } from '@mcpmake/core';
 import { logger } from '@mcpmake/core';
 import { fail } from '@mcpmake/core';
-import { apiKeyArg, applyApiKey, modelArg } from '../api-key.js';
+import { apiKeyArg, applyApiKey, modelArg, providerArg } from '../api-key.js';
 import type { SiteProjectManifest, BrowserConfig, SiteToolDefinition } from '@mcpmake/core';
 
 function toPackageName(name: string): string {
@@ -121,6 +121,7 @@ export default defineConfigurableCommand('website', {
         'Goal-directed crawl: use an LLM to navigate toward a goal instead of BFS crawling (requires ANTHROPIC_API_KEY)',
     },
     'api-key': apiKeyArg,
+    provider: providerArg,
     model: modelArg,
   },
   async run({ args }) {

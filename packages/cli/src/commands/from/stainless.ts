@@ -16,7 +16,7 @@ import {
   resolveTransport,
   printWorkerNextSteps,
 } from './target-support.js';
-import { apiKeyArg, applyApiKey, modelArg } from '../api-key.js';
+import { apiKeyArg, applyApiKey, modelArg, providerArg } from '../api-key.js';
 import { logger } from '@mcpmake/core';
 import { fail } from '@mcpmake/core';
 import type { OpenAPIV3 } from 'openapi-types';
@@ -329,6 +329,7 @@ export default defineConfigurableCommand('stainless', {
       default: false,
     },
     'api-key': apiKeyArg,
+    provider: providerArg,
     model: modelArg,
     'dynamic-discovery': {
       type: 'boolean',

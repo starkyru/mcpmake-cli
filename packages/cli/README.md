@@ -119,10 +119,11 @@ A few flags use Claude to improve the output. They are **opt-in** — without th
 | Goal-directed crawl (LLM navigation) | `from website` | `--goal "<text>"` |
 | Heal broken CSS selectors | `rescan` | `--heal` (on by default) |
 
-These call the **Anthropic API** with `@anthropic-ai/sdk`. The model is
-auto-resolved against the live Models API (prefers `claude-sonnet-4-6`, or
+By default these call the **Anthropic API** with `@anthropic-ai/sdk`. The model
+is auto-resolved against the live Models API (prefers `claude-sonnet-4-6`, or
 `claude-haiku-4-5` for fast paths); override on any of these commands with
-`--model <id>` (alias `-m`).
+`--model <id>` (alias `-m`). You can also point them at **OpenAI** or any
+**OpenAI-compatible** endpoint — see *Choosing a provider* below.
 
 Provide the key in one of three ways:
 
@@ -146,6 +147,33 @@ mcpmake from describe "a todo API with auth" -o ./server --api-key sk-ant-...
 
 To route through a gateway or proxy, set `ANTHROPIC_BASE_URL` — the SDK honors
 it automatically.
+
+### Choosing a provider
+
+Pick the LLM backend with `--provider` (or the `MCPMAKE_LLM_PROVIDER` env var).
+Anthropic is the default, so existing setups need no change.
+
+| Provider | `--provider` | Key var | Endpoint var |
+|----------|--------------|---------|--------------|
+| Claude (default) | `anthropic` | `ANTHROPIC_API_KEY` | `ANTHROPIC_BASE_URL` (optional) |
+| OpenAI / ChatGPT | `openai` | `OPENAI_API_KEY` | — |
+| Open-source / self-hosted | `openai-compatible` | `OPENAI_API_KEY` (often unused) | `OPENAI_BASE_URL` (required) |
+
+```bash
+# OpenAI (ChatGPT models)
+export OPENAI_API_KEY=sk-...
+mcpmake from openapi ./spec.yaml -o ./server --improve-names --provider openai
+
+# Open-source via an OpenAI-compatible server (Ollama, vLLM, LM Studio, Groq, …)
+export OPENAI_BASE_URL=http://localhost:11434/v1   # e.g. Ollama
+mcpmake from describe "a todo API" -o ./server --provider openai-compatible -m llama3.1
+```
+
+`--model` works across all providers. For `openai`/`openai-compatible`, models
+are resolved against the server's `/v1/models`; self-hosted servers that don't
+list models need an explicit `--model`. Structured-output requests fall back
+gracefully (native JSON schema → JSON mode → prompt-extraction) so models without
+native structured output still work.
 
 If no key is available, optional AI steps are **skipped with a warning**;
 features that require a key (`from describe`, `--goal`) exit with an error.

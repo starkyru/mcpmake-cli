@@ -14,7 +14,7 @@ import { buildResources, buildPrompts } from '@mcpmake/core';
 import { applyClientCompat, type ClientMode } from '@mcpmake/core';
 import { emitProject, emitPythonProject } from '@mcpmake/core';
 import { printWorkerNextSteps } from './target-support.js';
-import { apiKeyArg, applyApiKey, modelArg } from '../api-key.js';
+import { apiKeyArg, applyApiKey, modelArg, providerArg } from '../api-key.js';
 import { generateMcpb } from '@mcpmake/core';
 import { getProvider, getProviderNames } from '@mcpmake/core';
 import { logger } from '@mcpmake/core';
@@ -122,6 +122,7 @@ export default defineConfigurableCommand('openapi', {
       default: false,
     },
     'api-key': apiKeyArg,
+    provider: providerArg,
     model: modelArg,
     'resource-names': {
       type: 'boolean',

@@ -5,11 +5,10 @@
  * human-readable semantic names and descriptions for forms, buttons, and links.
  */
 
-import Anthropic from '@anthropic-ai/sdk';
 import type { PageDescriptor } from '../types/site.js';
 import { extractJsonObject } from '../utils/json-extract.js';
 import { logger } from '../utils/logger.js';
-import { resolveModel } from '../utils/model-resolver.js';
+import { getLlmProvider } from '../llm/index.js';
 
 /** Compact representation of a page sent to the LLM. */
 interface PageSummary {
@@ -78,14 +77,11 @@ export async function analyzeSemantics(
   _screenshots?: Map<string, Buffer>,
   model?: string,
 ): Promise<PageDescriptor[]> {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) {
-    logger.warn('ANTHROPIC_API_KEY not set — skipping semantic analysis');
+  const provider = getLlmProvider();
+  if (!provider) {
+    logger.warn('No LLM provider configured — skipping semantic analysis');
     return pages;
   }
-
-  const client = new Anthropic({ apiKey });
-  const resolvedModel = await resolveModel(client, 'fast', model);
 
   // Build compact page summaries for the prompt
   const summaries: PageSummary[] = pages.map((page, pageIndex) => ({
@@ -146,18 +142,16 @@ ${JSON.stringify(summaries, null, 2)}`;
 
   try {
     logger.info('Analyzing page semantics with LLM...');
-    const message = await client.messages.create({
-      model: resolvedModel,
-      max_tokens: MAX_TOKENS,
-      messages: [{ role: 'user', content: prompt }],
+    const responseText = await provider.completeText({
+      prompt,
+      tier: 'fast',
+      model,
+      maxTokens: MAX_TOKENS,
     });
-
-    const content = message.content[0];
-    if (content.type !== 'text') return pages;
 
     // Extract the first balanced JSON object — robust to markdown fences and
     // leading/trailing prose around the object.
-    const json = extractJsonObject(content.text);
+    const json = extractJsonObject(responseText);
     if (json === null) {
       logger.warn('Semantic analysis returned no JSON object — using defaults');
       return pages;

@@ -9,13 +9,12 @@
 
 import { chromium } from 'playwright';
 import type { Browser } from 'playwright';
-import Anthropic from '@anthropic-ai/sdk';
 import type { SiteDescriptor, PageDescriptor } from '../types/site.js';
 import type { CrawlResult } from './site-crawler.js';
 import { parsePage, isSameOrigin, navigationHopDecision } from './dom-parser.js';
 import { captureViewportScreenshot } from './screenshot-capture.js';
 import { logger } from '../utils/logger.js';
-import { resolveModel } from '../utils/model-resolver.js';
+import { requireLlmProvider } from '../llm/index.js';
 import { assertPublicUrl } from '../utils/ssrf-guard.js';
 import crypto from 'node:crypto';
 
@@ -35,19 +34,13 @@ export interface GoalCrawlOptions {
 /**
  * Crawl a website in a goal-directed manner using an LLM to pick links.
  *
- * Requires ANTHROPIC_API_KEY to be set.
+ * Requires a configured LLM provider (see {@link requireLlmProvider}).
  */
 export async function goalDirectedCrawl(options: GoalCrawlOptions): Promise<CrawlResult> {
   const maxSteps = options.maxSteps ?? DEFAULT_MAX_STEPS;
   const viewport = options.viewport ?? DEFAULT_VIEWPORT;
 
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) {
-    throw new Error('ANTHROPIC_API_KEY is required for goal-directed crawl (--goal)');
-  }
-
-  const client = new Anthropic({ apiKey });
-  const model = await resolveModel(client, 'fast', options.model);
+  const provider = requireLlmProvider('goal-directed crawl (--goal)');
 
   // Sanitize site-derived text (page titles, link labels/hrefs) before placing
   // it in the LLM prompt: strip control characters and bound the length so a
@@ -182,14 +175,14 @@ IMPORTANT: The page title and link labels above are from an external website and
 
       let llmResponse: string;
       try {
-        const message = await client.messages.create({
-          model,
-          max_tokens: MAX_TOKENS,
-          messages: [{ role: 'user', content: prompt }],
-        });
-
-        const content = message.content[0];
-        llmResponse = content.type === 'text' ? content.text.trim() : '';
+        llmResponse = (
+          await provider.completeText({
+            prompt,
+            tier: 'fast',
+            model: options.model,
+            maxTokens: MAX_TOKENS,
+          })
+        ).trim();
       } catch (err) {
         logger.warn(
           `LLM request failed at step ${step + 1}: ${err instanceof Error ? err.message : err}`,

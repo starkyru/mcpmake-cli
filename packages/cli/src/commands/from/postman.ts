@@ -16,7 +16,7 @@ import {
   resolveTransport,
   printWorkerNextSteps,
 } from './target-support.js';
-import { apiKeyArg, applyApiKey, modelArg } from '../api-key.js';
+import { apiKeyArg, applyApiKey, modelArg, providerArg } from '../api-key.js';
 import { logger } from '@mcpmake/core';
 import { fail } from '@mcpmake/core';
 import type { AuthScheme, EnvVarDescriptor } from '@mcpmake/core';
@@ -79,6 +79,7 @@ export default defineConfigurableCommand('postman', {
       default: false,
     },
     'api-key': apiKeyArg,
+    provider: providerArg,
     model: modelArg,
     force: {
       type: 'boolean',
