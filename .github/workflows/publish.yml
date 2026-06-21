@@ -83,7 +83,8 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
           git commit -m "chore(release): v${{ steps.bump.outputs.version }} [skip ci]"
-          git tag "v${{ steps.bump.outputs.version }}"
+          # Annotated tag — `--follow-tags` only pushes annotated/signed tags.
+          git tag -a "v${{ steps.bump.outputs.version }}" -m "v${{ steps.bump.outputs.version }}"
           git push origin HEAD:main --follow-tags
 
       # core first — the cli depends on it. OIDC is auto-detected; no token.
