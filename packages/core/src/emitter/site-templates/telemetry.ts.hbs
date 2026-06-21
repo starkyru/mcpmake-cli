@@ -66,10 +66,16 @@ export function sessionStarted(sessionId: string): void {
   ensureTimer();
 }
 
-/** Record that a browser session was torn down (idle | explicit | shutdown). */
+/** Record that a browser session was torn down (idle | explicit | shutdown |
+ *  crash). Idempotent: emits at most one session_end per session. A second end
+ *  for the same id (e.g. an explicit close that resumes after flushOnShutdown
+ *  already ended it on SIGTERM, or a crash racing a teardown) is a no-op, and an
+ *  end for a session that never started (a reserved-but-unstarted slot) emits
+ *  nothing — so the host's occupancy ledger can never be double-decremented. */
 export function sessionEnded(sessionId: string, reason: string): void {
   if (!ENABLED) return;
-  openSessions.delete(sessionId);
+  // openSessions is the source of truth: only the call that removes the id emits.
+  if (!openSessions.delete(sessionId)) return;
   pushEvent({ type: 'session_end', sessionId, ts: Date.now(), reason });
   // Flush promptly so the host can finalize this session's billing.
   void flush();
@@ -108,6 +114,11 @@ async function flush(): Promise<void> {
 /** Best-effort final flush on shutdown: end every open session and send. */
 export async function flushOnShutdown(reason = 'shutdown'): Promise<void> {
   if (!ENABLED) return;
+  // Stop the heartbeat interval so no flush can fire after this final boundary.
+  if (flushTimer) {
+    clearInterval(flushTimer);
+    flushTimer = undefined;
+  }
   const now = Date.now();
   for (const id of [...openSessions]) {
     openSessions.delete(id);

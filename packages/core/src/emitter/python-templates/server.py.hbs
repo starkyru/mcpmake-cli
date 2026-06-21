@@ -147,7 +147,7 @@ async def {{functionName}}({{{pySignature}}}) -> list[TextContent]:
     # wire keys; exclude_none drops unset optionals so they are omitted, not nulled.
     _body = body.model_dump(exclude_none=True, by_alias=True) if body is not None else None
     {{else}}
-    # Free-form / array / complex body kept as the raw value (dict | None).
+    # Scalar / array / free-form body kept as the raw typed value.
     _body = body
     {{/if}}
     {{/if}}

@@ -28,6 +28,10 @@ const sessionCreations = new Map<string, Promise<{ page: Page; sessionId: string
 // Single-flight the browser launch so concurrent cold starts can't spawn
 // multiple Chromium processes.
 let browserLaunch: Promise<Browser> | undefined;
+// Incremented whenever closeBrowser() begins. A launch captures the current
+// generation and must close itself instead of becoming active if teardown
+// invalidated it while chromium.launch() was still pending.
+let browserGeneration = 0;
 
 const DEFAULT_SESSION = '__default__';
 
@@ -99,13 +103,35 @@ async function getBrowser(): Promise<Browser> {
 
   // Only disable sandbox when running as root in a container.
   const isRoot = process.getuid?.() === 0;
+  const generation = browserGeneration;
   browserLaunch = chromium
     .launch({
       headless: config.headless,
       args: isRoot ? ['--no-sandbox', '--disable-setuid-sandbox'] : [],
     })
-    .then((b) => {
+    .then(async (b) => {
+      // closeBrowser() may have run while Chromium was launching. Never publish
+      // that stale browser into manager state: close it and fail the waiting
+      // creation so no resident process escapes the pool/cap.
+      if (generation !== browserGeneration) {
+        await b.close().catch(() => {});
+        throw new Error('Browser launch aborted: browser manager shut down');
+      }
       browser = b;
+      // If the whole browser process dies, every session's context is dead.
+      // Reclaim them all: emit one session_end each (skipping reserved slots
+      // that never started) and clear the pool + idle timer so occupancy frees
+      // promptly. No-ops for our own browser.close() (the pool is already empty
+      // and `browser` already nulled by then).
+      b.on('disconnected', () => {
+        if (browser !== b) return;
+        browser = undefined;
+        clearIdleTimer();
+        for (const [id, session] of [...sessions]) {
+          sessions.delete(id);
+          if (session.context) telemetry.sessionEnded(id, 'crash');
+        }
+      });
       return b;
     })
     .finally(() => {
@@ -125,19 +151,23 @@ async function getBrowser(): Promise<Browser> {
 export async function getOrCreateSession(sessionId?: string): Promise<{ page: Page; sessionId: string }> {
   const id = sessionId ?? DEFAULT_SESSION;
 
-  // Reuse existing session
-  const existing = sessions.get(id);
-  if (existing) {
-    existing.lastAccessedAt = Date.now();
-    resetIdleTimer();
-    return { page: existing.page, sessionId: id };
-  }
-
-  // Coalesce concurrent creations for the same id (notably the default
-  // session) onto one promise so we don't create duplicate contexts or
-  // double-count capacity.
+  // Join an in-flight creation for this id FIRST. createSession reserves its slot
+  // synchronously (before its first await), so a concurrent second call that
+  // checked `sessions` first would observe that placeholder and return its
+  // not-yet-assigned (undefined) page. The in-flight promise resolves to the
+  // real page, so coalescing here gives every concurrent caller a usable page
+  // and a single shared context.
   const inFlight = sessionCreations.get(id);
   if (inFlight) return inFlight;
+
+  // Reuse a fully-created session (a placeholder reservation has no context yet
+  // and is always covered by the in-flight check above).
+  const existing = sessions.get(id);
+  if (existing && existing.context) {
+    existing.lastAccessedAt = Date.now();
+    ensureIdleTimer();
+    return { page: existing.page, sessionId: id };
+  }
 
   const creation = createSession(id).finally(() => {
     sessionCreations.delete(id);
@@ -153,8 +183,8 @@ async function createSession(id: string): Promise<{ page: Page; sessionId: strin
   const maxSessions = config.maxSessions ?? 10;
   if (sessions.size >= maxSessions) {
     throw new Error(
-      `Session pool at capacity (${maxSessions}). ` +
-      'Close an existing session before creating a new one.'
+      `Browser session limit reached (${maxSessions}). ` +
+      'Close an existing session and retry.'
     );
   }
   const reserved: BrowserSession = {
@@ -164,28 +194,61 @@ async function createSession(id: string): Promise<{ page: Page; sessionId: strin
   };
   sessions.set(id, reserved);
 
+  let context: BrowserContext | undefined;
   try {
     const activeBrowser = await getBrowser();
-    const context = await activeBrowser.newContext({
+    context = await activeBrowser.newContext({
       viewport: config.viewport,
       ...(config.userAgent ? { userAgent: config.userAgent } : {}),
     });
     const page = await context.newPage();
 
+    // If the manager was torn down (shutdown/disconnect) while we awaited the
+    // browser/context/page, our reservation was cleared. Do NOT resurrect it:
+    // bail so the catch below closes this fresh context. Otherwise we would
+    // orphan a live Chromium context outside the pool — escaping the cap, never
+    // reaped, and emitting a session_start AFTER its session_end. There is no
+    // await between here and `return`, so once this check passes the rest of
+    // creation is atomic with respect to teardown.
+    if (sessions.get(id) !== reserved) {
+      throw new Error('Session creation aborted: browser manager shut down');
+    }
+
     reserved.context = context;
     reserved.page = page;
     reserved.lastAccessedAt = Date.now();
 
-    resetIdleTimer();
+    ensureIdleTimer();
 
     // The browser context is now resident — start billing this session (no-op
     // unless the host injected telemetry env).
     telemetry.sessionStarted(id);
 
+    // Reclaim the slot exactly once if this session dies on its own — a Chromium
+    // context close, a renderer (page) crash, or an external close. Every
+    // intentional teardown path deletes the map entry BEFORE closing, so the
+    // `=== reserved` guard makes this a no-op for those and lets it fire only on
+    // an unexpected death, freeing host occupancy promptly instead of waiting
+    // out the idle grace. The guard also dedupes a page crash that then closes
+    // the context (only the first reclaim wins).
+    const reclaim = (reason: string): void => {
+      if (sessions.get(id) !== reserved) return;
+      sessions.delete(id);
+      context?.close().catch(() => {});
+      telemetry.sessionEnded(id, reason);
+      if (sessions.size === 0) void closeBrowser();
+    };
+    context.on('close', () => reclaim('crash'));
+    page.on('crash', () => reclaim('crash'));
+
     return { page, sessionId: id };
   } catch (err) {
-    // Release the reserved slot if context creation failed.
-    sessions.delete(id);
+    // Release the slot AND close any context we created, so a failed or aborted
+    // creation never leaks a live Chromium context or pins the cap slot. Only
+    // delete the entry if it is still ours (a concurrent shutdown may have
+    // already cleared it).
+    if (sessions.get(id) === reserved) sessions.delete(id);
+    await context?.close().catch(() => {});
     throw err;
   }
 }
@@ -198,9 +261,17 @@ export async function closeSession(sessionId?: string): Promise<void> {
   const session = sessions.get(id);
   if (!session) return;
 
-  await session.context?.close().catch(() => {});
+  // Claim the teardown AND emit session_end SYNCHRONOUSLY, before the first
+  // await. Deleting the map entry and removing the telemetry token together,
+  // up front, means: (a) a concurrent idle sweep or second close sees the slot
+  // gone and skips it; and (b) a same-id session re-created during the
+  // context-close await below gets its OWN fresh telemetry token instead of
+  // sharing this one (which would suppress its later session_end). Exactly one
+  // session_end per teardown.
   sessions.delete(id);
   telemetry.sessionEnded(id, 'explicit');
+
+  await session.context?.close().catch(() => {});
 
   // If no sessions remain, close the browser
   if (sessions.size === 0) {
@@ -213,17 +284,42 @@ export async function closeSession(sessionId?: string): Promise<void> {
  */
 export async function closeBrowser(): Promise<void> {
   clearIdleTimer();
+  // Invalidate a chromium.launch() already in progress. Its completion handler
+  // will close the resulting process rather than assigning it to `browser`.
+  browserGeneration++;
+  const launching = browserLaunch;
 
-  for (const [id, session] of sessions) {
+  // Null `browser` synchronously BEFORE awaiting its close. While close() is in
+  // flight the instance still reports isConnected() === true, so without this a
+  // concurrent getOrCreateSession would be handed the dying browser and build a
+  // context on it that dies immediately. Nulling up front forces a relaunch
+  // instead, and single-flights closeBrowser (a second concurrent call sees no
+  // browser and skips the redundant close()).
+  const dying = browser;
+  browser = undefined;
+
+  // Snapshot and clear the pool, then emit every session_end SYNCHRONOUSLY
+  // (before any await) so a same-id session re-created during the context-close
+  // awaits gets its own telemetry token rather than sharing a snapshotted one.
+  // Reserved-but-unstarted slots are skipped: no context to close, and no
+  // session_start to balance (the in-flight createSession aborts itself once it
+  // sees its reservation cleared).
+  const entries = [...sessions];
+  sessions.clear();
+  for (const [id, session] of entries) {
+    if (session.context) telemetry.sessionEnded(id, 'shutdown');
+  }
+  for (const [, session] of entries) {
     await session.context?.close().catch(() => {});
-    sessions.delete(id);
-    telemetry.sessionEnded(id, 'shutdown');
   }
 
-  if (browser) {
-    await browser.close().catch(() => {});
-    browser = undefined;
+  if (dying) {
+    await dying.close().catch(() => {});
   }
+  // Wait for an invalidated launch to finish its self-cleanup. This makes
+  // closeBrowser() a real lifecycle barrier: after it resolves, no Chromium
+  // process from work that began before teardown can still become resident.
+  await launching?.catch(() => {});
 }
 
 /**
@@ -235,7 +331,9 @@ export async function takeScreenshot(
 ): Promise<Buffer> {
   const id = sessionId ?? DEFAULT_SESSION;
   const session = sessions.get(id);
-  if (!session) {
+  // A reserved, mid-creation slot is in the map but has no page yet — treat it
+  // as not-yet-active so callers get the clear error, not a TypeError.
+  if (!session || !session.context) {
     throw new Error(`No active session: ${id}`);
   }
   session.lastAccessedAt = Date.now();
@@ -243,10 +341,13 @@ export async function takeScreenshot(
 }
 
 /**
- * List active session IDs.
+ * List active session IDs. Excludes reserved, mid-creation slots (no page yet)
+ * so a returned id is always usable with takeScreenshot/tool calls.
  */
 export function listSessions(): string[] {
-  return Array.from(sessions.keys());
+  return Array.from(sessions.entries())
+    .filter(([, session]) => session.context !== undefined)
+    .map(([id]) => id);
 }
 
 /**
@@ -258,16 +359,25 @@ export function isBrowserRunning(): boolean {
 
 // ─── Idle Timer ─────────────────────────────────────────────────────
 
-function resetIdleTimer(): void {
-  clearIdleTimer();
+// Start the idle reaper once and let it tick at a FIXED cadence. It must NOT be
+// reset on session access: resetting on every access would let a busy container
+// (one session touched within each interval) starve the reaper so it never
+// fires, leaving genuinely-idle sibling sessions resident forever. Eviction
+// keys off each session's own lastAccessedAt, so a steady tick is sufficient —
+// touching a session keeps only that session alive.
+function ensureIdleTimer(): void {
+  if (idleTimer) return;
   idleTimer = setInterval(() => {
     const now = Date.now();
     // Close idle sessions. Skip slots still being created (no context yet).
     for (const [id, session] of sessions) {
       if (!session.context) continue;
       if (now - session.lastAccessedAt > config.idleTimeoutMs) {
-        session.context.close().catch(() => {});
+        // Delete before closing so the context's own 'close' handler (and any
+        // concurrent teardown) sees the slot already claimed — session_end is
+        // emitted once, here, with reason 'idle'.
         sessions.delete(id);
+        session.context.close().catch(() => {});
         telemetry.sessionEnded(id, 'idle');
       }
     }

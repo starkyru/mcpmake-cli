@@ -66,6 +66,14 @@ export function normalizeEntry(entry: Entry): NormalizedEntry {
 
   const queryParams: QueryParam[] = [];
   for (const qs of entry.request.queryString ?? []) {
+    if (
+      qs === null ||
+      typeof qs !== 'object' ||
+      typeof qs.name !== 'string' ||
+      typeof qs.value !== 'string'
+    ) {
+      continue;
+    }
     queryParams.push({
       name: qs.name,
       exampleValue: qs.value,

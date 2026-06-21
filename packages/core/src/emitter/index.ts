@@ -512,8 +512,8 @@ function toPythonToolView(
   const pyCookieParams = dedupeByWire('cookie');
 
   // Request body annotation (A4-H2). A plain-object body becomes a Pydantic
-  // model (full nested-object fidelity); arrays / free-form / complex bodies
-  // fall back to `dict | None` (the prior behavior) — documented in the template.
+  // model; scalar/array/free-form bodies use the same schema-to-annotation path
+  // as ordinary parameters. Requiredness is preserved for every body shape.
   let bodyAnnotation: string | undefined;
   let bodyIsModel = false;
   let bodyModelName: string | undefined;
@@ -525,8 +525,12 @@ function toPythonToolView(
       bodyIsModel = true;
       bodyAnnotation = bodyRequired ? bodyModelName : `${bodyModelName} | None = None`;
     } else {
-      // Fallback: array / free-form / $ref-still-present / non-object body.
-      bodyAnnotation = 'dict | None = None';
+      const { annotation, fieldArgs } = jsonSchemaToPyAnnotation(bodySchema);
+      const bodyDescription = tool.bodyParam?.description;
+      if (bodyDescription && !fieldArgs.some((arg) => arg.startsWith('description='))) {
+        fieldArgs.push(`description=${JSON.stringify(bodyDescription)}`);
+      }
+      bodyAnnotation = renderParamAnnotation(annotation, fieldArgs, !bodyRequired);
     }
   }
 

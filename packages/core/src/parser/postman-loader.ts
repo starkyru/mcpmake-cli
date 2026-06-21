@@ -62,6 +62,7 @@ export async function loadPostmanCollection(filePath: string): Promise<{
   for (const v of collection.variable ?? []) {
     // R23-B: null/non-object elements in the variable array must be skipped.
     if (v === null || typeof v !== 'object') continue;
+    if (typeof v.key !== 'string' || typeof v.value !== 'string') continue;
     vars.set(v.key, v.value);
   }
 
@@ -109,7 +110,13 @@ function convertToHarEntry(item: PostmanItem, vars: Map<string, string>): Entry 
   const method = req.method ?? 'GET';
   // R23-B: filter null/non-object elements before mapping to avoid null.key crashes.
   const headers = (req.header ?? [])
-    .filter((h): h is NonNullable<typeof h> => h !== null && typeof h === 'object')
+    .filter(
+      (h): h is NonNullable<typeof h> =>
+        h !== null &&
+        typeof h === 'object' &&
+        typeof h.key === 'string' &&
+        typeof h.value === 'string',
+    )
     .map((h) => ({
       name: h.key,
       value: resolveVars(h.value, vars),

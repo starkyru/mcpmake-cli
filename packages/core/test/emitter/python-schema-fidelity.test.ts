@@ -321,7 +321,7 @@ describe('A4-H2 — full-fidelity Python input schema', () => {
     }
   });
 
-  it('falls back to `dict | None` for a non-object (array) request body', async () => {
+  it('preserves array request-body type and optionality', async () => {
     const op = richOp();
     op.operationId = 'bulkUpload';
     op.requestBody = {
@@ -333,10 +333,33 @@ describe('A4-H2 — full-fidelity Python input schema', () => {
     try {
       const defLine = py.split('\n').find((l) => l.includes('async def bulkUpload('));
       expect(defLine, 'tool def line present').toBeTruthy();
-      // Array body cannot be a plain object model → documented dict fallback.
-      expect(defLine!).toContain('body: dict | None = None');
+      expect(defLine!).toContain('body: list[str] | None = None');
       // No model_dump for the fallback path (raw dict passed straight through).
       expect(py).not.toContain('body.model_dump');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves requiredness and type for scalar request bodies', async () => {
+    const op = richOp();
+    op.operationId = 'setEnabled';
+    op.parameters = [];
+    op.requestBody = {
+      required: true,
+      description: 'Whether the feature is enabled',
+      contentType: 'application/json',
+      schema: { type: 'boolean' },
+    };
+    const { py, dir } = await emitPy(manifestWith(op));
+    try {
+      const defLine = py.split('\n').find((l) => l.includes('async def setEnabled('));
+      expect(defLine, 'tool def line present').toBeTruthy();
+      expect(defLine!).toContain(
+        'body: Annotated[bool, Field(description="Whether the feature is enabled")]',
+      );
+      expect(defLine!).not.toContain('body: dict');
+      expect(defLine!).not.toMatch(/body:[^,)]*= None/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

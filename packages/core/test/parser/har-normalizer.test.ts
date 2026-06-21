@@ -124,4 +124,18 @@ describe('har-normalizer', () => {
     expect(result.queryParams).toHaveLength(0);
     expect(result.normalizedPath).toBe('/users/{userId}');
   });
+
+  it('skips malformed queryString entries while preserving valid siblings', () => {
+    const entry = makeEntry('https://api.example.com/users?limit=10');
+    entry.request.queryString = [
+      null,
+      { name: 'missing-value' },
+      { name: 'limit', value: '10' },
+    ] as unknown as Entry['request']['queryString'];
+
+    const result = normalizeEntry(entry);
+    expect(result.queryParams).toEqual([
+      { name: 'limit', exampleValue: '10', inferredType: 'integer' },
+    ]);
+  });
 });

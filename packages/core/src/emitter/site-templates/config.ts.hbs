@@ -16,6 +16,15 @@ const posInt = (v: string | undefined, d: number): number => {
   return Number.isInteger(n) && n > 0 ? n : d;
 };
 
+// Hard ceiling on concurrently-resident browser sessions for THIS container.
+// The cloud host injects MCP_MAX_BROWSER_SESSIONS at container start to pin the
+// owner's per-plan concurrent-browser limit, making the container's hard cap the
+// plan cap. MAX_SESSIONS is the legacy/self-host alias. Either env var, when a
+// valid positive integer, overrides the baked-in default; an unset or invalid
+// value falls through to the next source. DEFAULT_MAX_SESSIONS is the safe
+// fallback. The browser manager refuses to launch a session past this cap.
+const DEFAULT_MAX_SESSIONS = {{#if browserConfig.maxSessions}}{{browserConfig.maxSessions}}{{else}}10{{/if}};
+
 export function loadConfig(): AppConfig {
   return {
     baseUrl: process.env.BASE_URL ?? '{{{baseUrl}}}',
@@ -27,7 +36,10 @@ export function loadConfig(): AppConfig {
         height: posInt(process.env.VIEWPORT_HEIGHT, {{browserConfig.viewport.height}}),
       },
       userAgent: process.env.USER_AGENT || undefined,
-      maxSessions: posInt(process.env.MAX_SESSIONS, {{browserConfig.maxSessions}}),
+      maxSessions: posInt(
+        process.env.MCP_MAX_BROWSER_SESSIONS,
+        posInt(process.env.MAX_SESSIONS, DEFAULT_MAX_SESSIONS),
+      ),
     },
   };
 }

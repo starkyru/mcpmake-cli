@@ -350,6 +350,36 @@ describe('postman-loader', () => {
     expect(entries[0].request.headers.find((h) => h.name === 'X-Foo')?.value).toBe('bar');
   });
 
+  it('skips malformed header key/value entries without aborting valid siblings', async () => {
+    const collection = {
+      info: { name: 'MalformedHeader', schema: '' },
+      item: [
+        {
+          name: 'HeaderRequest',
+          request: {
+            method: 'GET',
+            url: 'https://api.test.com/ok',
+            header: [
+              { key: 'X-Null', value: null },
+              { key: null, value: 'bad' },
+              { key: 'X-Good', value: 'safe' },
+            ] as unknown[],
+          },
+        },
+      ],
+    };
+
+    const filePath = resolve(tempDir, 'malformed-header.json');
+    await writeFile(filePath, JSON.stringify(collection));
+
+    const { entries } = await loadPostmanCollection(filePath);
+    expect(entries).toHaveLength(1);
+    expect(entries[0].request.headers).toEqual(
+      expect.arrayContaining([{ name: 'X-Good', value: 'safe' }]),
+    );
+    expect(entries[0].request.headers).toHaveLength(1);
+  });
+
   // -------------------------------------------------------------------------
   // Transitive variable resolution: a variable whose value contains another
   // {{var}} must be resolved through to the underlying value (bounded passes).
