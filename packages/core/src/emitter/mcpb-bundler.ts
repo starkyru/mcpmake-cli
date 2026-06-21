@@ -8,6 +8,50 @@ import { pathExists } from '../utils/fs.js';
 
 const execFile = promisify(execFileCb);
 
+/**
+ * Actionable error thrown when the system `zip` binary is unavailable.
+ * Centralized so both the preflight check and the spawn-failure fallback emit
+ * the same install guidance.
+ */
+const ZIP_MISSING_MESSAGE =
+  'The `zip` binary is required to build an .mcpb bundle but was not found on PATH. ' +
+  'Install zip (macOS: preinstalled; Debian/Ubuntu: `apt install zip`; Alpine: `apk add zip`) ' +
+  'or build the bundle on a machine that has it.';
+
+/**
+ * A function that resolves true if a working `zip` binary is available on PATH.
+ * Injectable so the preflight can be unit-tested without a real `zip`/child
+ * process. Defaults to {@link defaultZipChecker}.
+ */
+export type ZipChecker = () => Promise<boolean>;
+
+/**
+ * Real binary-presence check: invokes `zip -v`. Resolves true on success, false
+ * if the binary is missing (spawn ENOENT) or otherwise fails to run. This is the
+ * sole external boundary the preflight touches.
+ */
+const defaultZipChecker: ZipChecker = async () => {
+  try {
+    await execFile('zip', ['-v']);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Preflight: ensure a usable `zip` binary exists before attempting to archive.
+ * Throws a clear, actionable error (with install guidance) when it is absent so
+ * the failure is not a confusing raw spawn error on Windows / minimal Alpine.
+ *
+ * @param checker injectable presence check; defaults to running `zip -v`.
+ */
+export async function assertZipAvailable(checker: ZipChecker = defaultZipChecker): Promise<void> {
+  if (!(await checker())) {
+    throw new Error(ZIP_MISSING_MESSAGE);
+  }
+}
+
 export interface McpbManifest {
   schema_version: string;
   name: string;
@@ -107,10 +151,25 @@ export async function generateMcpb(opts: {
     // Determine output path
     const outputPath = opts.outputPath ?? resolve(projectDir, '..', `${basename(projectDir)}.mcpb`);
 
-    // Create the zip archive using the system zip command
-    await execFile('zip', ['-r', '-q', resolve(outputPath), '.'], {
-      cwd: stagingDir,
-    });
+    // Preflight: fail fast with actionable guidance if `zip` is missing
+    // (Windows / minimal Alpine) rather than a confusing raw spawn error.
+    await assertZipAvailable();
+
+    // Create the zip archive using the system zip command. Wrap so a late spawn
+    // ENOENT or non-zero exit still yields a readable message, not a raw stack.
+    try {
+      await execFile('zip', ['-r', '-q', resolve(outputPath), '.'], {
+        cwd: stagingDir,
+      });
+    } catch (err) {
+      const isMissingBinary =
+        typeof err === 'object' && err !== null && (err as { code?: string }).code === 'ENOENT';
+      if (isMissingBinary) {
+        throw new Error(ZIP_MISSING_MESSAGE);
+      }
+      const message = err instanceof Error ? err.message : String(err);
+      throw new Error(`Failed to create .mcpb archive with \`zip\`: ${message}`);
+    }
 
     return outputPath;
   } finally {

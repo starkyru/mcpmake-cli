@@ -350,6 +350,117 @@ describe('postman-loader', () => {
     expect(entries[0].request.headers.find((h) => h.name === 'X-Foo')?.value).toBe('bar');
   });
 
+  // -------------------------------------------------------------------------
+  // Transitive variable resolution: a variable whose value contains another
+  // {{var}} must be resolved through to the underlying value (bounded passes).
+  // -------------------------------------------------------------------------
+  it('resolves a variable whose value references another variable (transitive, 2 levels)', async () => {
+    const collection = {
+      info: { name: 'Transitive', schema: '' },
+      item: [
+        {
+          name: 'Test',
+          request: { method: 'GET', url: 'https://{{host}}/v1/items' },
+        },
+      ],
+      variable: [
+        // host -> {{env}}.example.com -> prod.example.com
+        { key: 'host', value: '{{env}}.example.com' },
+        { key: 'env', value: 'prod' },
+      ],
+    };
+
+    const filePath = resolve(tempDir, 'transitive.json');
+    await writeFile(filePath, JSON.stringify(collection));
+
+    const { entries } = await loadPostmanCollection(filePath);
+    expect(entries).toHaveLength(1);
+    // Fully resolved: no {{...}} left, host expanded to prod.example.com.
+    expect(entries[0].request.url).toBe('https://prod.example.com/v1/items');
+  });
+
+  it('resolves a 3-level transitive chain ({{a}}->{{b}}->{{c}}->literal)', async () => {
+    const collection = {
+      info: { name: 'Chain', schema: '' },
+      item: [
+        {
+          name: 'Test',
+          request: { method: 'GET', url: 'https://api.test.com/{{a}}' },
+        },
+      ],
+      variable: [
+        { key: 'a', value: '{{b}}' },
+        { key: 'b', value: '{{c}}' },
+        { key: 'c', value: 'leaf' },
+      ],
+    };
+
+    const filePath = resolve(tempDir, 'chain.json');
+    await writeFile(filePath, JSON.stringify(collection));
+
+    const { entries } = await loadPostmanCollection(filePath);
+    expect(entries).toHaveLength(1);
+    expect(entries[0].request.url).toBe('https://api.test.com/leaf');
+  });
+
+  it('terminates on a variable cycle ({{a}}<->{{b}}), leaving an unresolved token as-is', async () => {
+    // {{a}} -> {{b}} -> {{a}} -> ... never reaches a fixed point, so the pass cap
+    // must stop it. The header value is the cleanest place to observe the result
+    // because it is not re-parsed as a URL.
+    const collection = {
+      info: { name: 'Cycle', schema: '' },
+      item: [
+        {
+          name: 'Test',
+          request: {
+            method: 'GET',
+            url: 'https://api.test.com/ok',
+            header: [{ key: 'X-Cycle', value: '{{a}}' }],
+          },
+        },
+      ],
+      variable: [
+        { key: 'a', value: '{{b}}' },
+        { key: 'b', value: '{{a}}' },
+      ],
+    };
+
+    const filePath = resolve(tempDir, 'cycle.json');
+    await writeFile(filePath, JSON.stringify(collection));
+
+    // Must resolve (not hang). After the cap, an unresolved {{a}} or {{b}} token
+    // is left verbatim — the assertion just requires termination + a surviving token.
+    const { entries } = await loadPostmanCollection(filePath);
+    expect(entries).toHaveLength(1);
+    const headerValue = entries[0].request.headers.find((h) => h.name === 'X-Cycle')?.value;
+    expect(headerValue === '{{a}}' || headerValue === '{{b}}').toBe(true);
+  });
+
+  it('leaves a fully-unknown variable untouched (preserves existing behavior)', async () => {
+    const collection = {
+      info: { name: 'Unknown', schema: '' },
+      item: [
+        {
+          name: 'Test',
+          request: {
+            method: 'GET',
+            url: 'https://api.test.com/ok',
+            header: [{ key: 'X-Unknown', value: '{{missing}}' }],
+          },
+        },
+      ],
+      variable: [],
+    };
+
+    const filePath = resolve(tempDir, 'unknown.json');
+    await writeFile(filePath, JSON.stringify(collection));
+
+    const { entries } = await loadPostmanCollection(filePath);
+    expect(entries[0].request.headers.find((h) => h.name === 'X-Unknown')?.value).toBe(
+      '{{missing}}',
+    );
+  });
+
   it('R23-B: query: [null] in an object url does not throw; non-null query params are appended', async () => {
     const collection = {
       info: { name: 'NullQuery', schema: '' },

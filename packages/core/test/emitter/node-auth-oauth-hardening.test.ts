@@ -150,6 +150,92 @@ describe('L-scopes — OAuth scopes are threaded, not hardcoded empty', () => {
   });
 });
 
+describe('R4-G — OAuth issuer is not derived from a spoofable Host header', () => {
+  const src = httpServer();
+
+  it('renders parseable TypeScript after the fix', () => {
+    assertParses(src, 'server-main-http (R4-G)');
+  });
+
+  it('no longer unconditionally reflects the Host into the issuer', () => {
+    // The old one-liner reflected req.headers.host verbatim with no allowlist /
+    // public-URL branch in front of it.
+    expect(src).not.toContain(
+      "const issuer = allowedOrigin ?? `${proto}://${req.headers.host ?? 'localhost'}`;",
+    );
+  });
+
+  it('reads the new MCP_PUBLIC_URL and MCP_ALLOWED_HOSTS env vars', () => {
+    expect(src).toContain('process.env.MCP_PUBLIC_URL');
+    expect(src).toContain('process.env.MCP_ALLOWED_HOSTS');
+  });
+
+  it('validates MCP_PUBLIC_URL is an absolute http(s) URL and uses its origin', () => {
+    // Parsed via URL and restricted to http/https before being trusted.
+    expect(src).toContain("u.protocol !== 'http:' && u.protocol !== 'https:'");
+    expect(src).toContain('return u.origin;');
+  });
+
+  it('resolves the issuer with ALLOWED_ORIGIN → MCP_PUBLIC_URL precedence', () => {
+    // ALLOWED_ORIGIN still wins, then the configured public origin.
+    const allowedIdx = src.indexOf('if (allowedOrigin) {\n          issuer = allowedOrigin;');
+    const publicIdx = src.indexOf(
+      '} else if (mcpPublicOrigin) {\n          issuer = mcpPublicOrigin;',
+    );
+    expect(allowedIdx).toBeGreaterThan(-1);
+    expect(publicIdx).toBeGreaterThan(allowedIdx);
+  });
+
+  it('rejects a Host outside MCP_ALLOWED_HOSTS with a 400 (logged), not a reflected issuer', () => {
+    expect(src).toContain('} else if (allowedHosts.size > 0) {');
+    // The check rejects unless the full Host OR its hostname-without-port is allowed.
+    expect(src).toContain(
+      '!allowedHosts.has(host) && !(hostNoPort && allowedHosts.has(hostNoPort))',
+    );
+    expect(src).toContain(
+      "sendJson(res, 400, { error: 'Invalid Host header for OAuth metadata' });",
+    );
+    expect(src).toContain(
+      "log('error', 'Invalid Host header for OAuth metadata', { host: rawHost });",
+    );
+    // The 400 path must short-circuit before sending metadata.
+    const invalidHostIdx = src.indexOf('Invalid Host header for OAuth metadata');
+    const metadataIdx = src.indexOf('getAuthServerMetadata(');
+    expect(invalidHostIdx).toBeGreaterThan(-1);
+    expect(invalidHostIdx).toBeLessThan(metadataIdx);
+  });
+
+  it('normalizes the Host port so a bare-hostname allowlist matches `host:port` (R4-G follow-up)', () => {
+    // The Host is parsed once: `hostname` (no port/userinfo) drives the allowlist
+    // so an operator listing `example.com` accepts `Host: example.com:3000`.
+    expect(src).toContain('new URL(`http://${rawHost}`)');
+    expect(src).toContain('const hostNoPort = parsedHost?.hostname ?? host;');
+  });
+
+  it('builds the issuer from the parsed host:port, never the raw Host (no userinfo injection)', () => {
+    // `Host: evil@example.com` would pass a bare-hostname allowlist via hostname,
+    // but the issuer must be derived from the parsed host (userinfo stripped),
+    // not the raw header — otherwise the issuer becomes `http://evil@example.com`.
+    expect(src).toContain('issuer = `${proto}://${parsedHost?.hostPort ?? rawHost}`;');
+    expect(src).not.toContain('issuer = `${proto}://${rawHost}`;');
+  });
+
+  it('warns once when no allowlist/public-URL pins the issuer (dev fallback)', () => {
+    expect(src).toContain('let warnedHostDerivedIssuer = false;');
+    expect(src).toContain('if (!warnedHostDerivedIssuer) {');
+    expect(src).toContain('warnedHostDerivedIssuer = true;');
+    expect(src).toMatch(/OAuth issuer derived from the Host header/);
+  });
+
+  it('does not emit the OAuth issuer plumbing when hasOAuth is false', () => {
+    const noOauth = httpServer({ hasOAuth: false, authSchemes: [] });
+    assertParses(noOauth, 'server-main-http (no OAuth)');
+    expect(noOauth).not.toContain('mcpPublicOrigin');
+    expect(noOauth).not.toContain('MCP_ALLOWED_HOSTS');
+    expect(noOauth).not.toContain('warnedHostDerivedIssuer');
+  });
+});
+
 describe('L-catch — OAuth failures are observable, never silently swallowed', () => {
   it('oauth.ts refresh failure is logged (without exposing the token)', () => {
     const oauth = renderTemplate('oauth.ts', { authSchemes: [OAUTH_SCHEME] });

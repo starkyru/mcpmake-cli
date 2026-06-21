@@ -78,6 +78,39 @@ describe('har-normalizer', () => {
     expect(result.queryParams[1].inferredType).toBe('boolean');
   });
 
+  // ---------------------------------------------------------------------------
+  // isCollectionName tightening: the heuristic used to be near-vacuously true
+  // (any segment except api/v1/v2/v3), over-parameterizing short-id segments
+  // that follow a *singular* word. After tightening, only plural resource
+  // segments are treated as collections.
+  //
+  // The SHORT_ID_PATTERN branch only fires for an alphanumeric 8-22 char segment
+  // that is NOT a UUID / numeric / 24-hex id, so we use such a value below.
+  // ---------------------------------------------------------------------------
+  it('parameterizes a short-id segment after a PLURAL collection (orders -> {orderId})', () => {
+    const result = normalizeEntry(makeEntry('https://api.example.com/orders/AB12cd34ef'));
+    expect(result.normalizedPath).toBe('/orders/{orderId}');
+    expect(result.pathParams).toHaveLength(1);
+    expect(result.pathParams[0].name).toBe('orderId');
+  });
+
+  it('does NOT parameterize a short-id segment after a SINGULAR word (profile stays literal)', () => {
+    // Pre-tightening, `profile` counted as a collection and this became
+    // /profile/{profileId}. The tightened heuristic rejects the singular word,
+    // so the short id is left as a literal segment.
+    const result = normalizeEntry(makeEntry('https://api.example.com/profile/AB12cd34ef'));
+    expect(result.normalizedPath).toBe('/profile/AB12cd34ef');
+    expect(result.pathParams).toHaveLength(0);
+  });
+
+  it('does NOT treat a version prefix (v1) as a collection when naming a following numeric id', () => {
+    // `v1` is excluded; without a collection prev segment the numeric id falls
+    // back to the generic `id` name rather than `v1Id`/`vId`.
+    const result = normalizeEntry(makeEntry('https://api.example.com/v1/42'));
+    expect(result.normalizedPath).toBe('/v1/{id}');
+    expect(result.pathParams[0].name).toBe('id');
+  });
+
   it('normalizes entry with no queryString field without throwing (R19-A)', () => {
     // Safari Web Inspector and older Charles Proxy omit queryString entirely
     // when there is no query component on the request URL. The HAR spec marks

@@ -85,6 +85,39 @@ export interface ParamMapping {
   wireName: string;
   /** Where the parameter is applied on the upstream request. */
   in: 'path' | 'query' | 'header' | 'cookie';
+  /**
+   * Whether the parameter is required (A4-H2). Optional so existing consumers
+   * (TS/worker emitters) that only read `inputKey`/`wireName`/`in` are unaffected;
+   * the Python emitter uses it to decide between a defaulted (`= None`) and a
+   * required (no default) function arg so FastMCP infers the right `required` set.
+   */
+  required?: boolean;
+  /**
+   * The per-parameter JSON Schema (A4-H2). Carried so the Python emitter can
+   * derive a precise type annotation (`int`, `Literal[...]`, bounds via `Field`)
+   * and FastMCP can infer a full-fidelity input schema. Optional for the same
+   * back-compat reason as {@link required}.
+   */
+  schema?: JsonSchema;
+  /** The parameter's description, surfaced via `Field(description=...)` (A4-H2). */
+  description?: string;
+}
+
+/**
+ * Describes a tool's request body for full-fidelity Python annotation (A4-H2).
+ * Carries the JSON Schema so the Python emitter can generate a Pydantic
+ * `BaseModel` for a plain-object body (regaining typed properties/required/
+ * nesting under FastMCP's inferred schema), falling back to `dict` otherwise.
+ */
+export interface BodyParamDescriptor {
+  /** The input key under which the body is exposed (`body`/`requestBody`). */
+  inputKey: string;
+  /** The request body's JSON Schema. */
+  schema: JsonSchema;
+  /** Whether the body is required. */
+  required: boolean;
+  /** The body's description (surfaced via `Field(description=...)`). */
+  description?: string;
 }
 
 export interface ToolDefinition {
@@ -106,6 +139,13 @@ export interface ToolDefinition {
   paramMappings: ParamMapping[];
   /** The input key under which the request body is exposed (`body`/`requestBody`). */
   bodyInputKey?: string;
+  /**
+   * Full body descriptor (schema + required + description) for the Python
+   * emitter's Pydantic-model generation (A4-H2). Present only when the operation
+   * has a request body. The TS/worker emitters ignore it (they drive off
+   * `bodyInputKey`/`bodyEncoding`), so it is optional and back-compatible.
+   */
+  bodyParam?: BodyParamDescriptor;
   hasRequestBody: boolean;
   requestBodyContentType: string;
   /**

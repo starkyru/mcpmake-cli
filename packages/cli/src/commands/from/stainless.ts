@@ -17,18 +17,11 @@ import {
   printWorkerNextSteps,
 } from './target-support.js';
 import { apiKeyArg, applyApiKey, modelArg, providerArg } from '../api-key.js';
-import { parseIntFlag } from './website.js';
+import { parseIntFlag, toPackageName } from '../../utils/cli-helpers.js';
 import { logger } from '@mcpmake/core';
 import { fail } from '@mcpmake/core';
 import type { OpenAPIV3 } from 'openapi-types';
 import type { ProjectManifest } from '@mcpmake/core';
-
-function toPackageName(title: string): string {
-  return title
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-|-$/g, '');
-}
 
 export interface StainlessImportOptions {
   /** Path to the `stainless.yml` config file. */

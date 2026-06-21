@@ -15,7 +15,7 @@ import { applyClientCompat, type ClientMode } from '@mcpmake/core';
 import { emitProject, emitPythonProject } from '@mcpmake/core';
 import { printWorkerNextSteps } from './target-support.js';
 import { apiKeyArg, applyApiKey, modelArg, providerArg } from '../api-key.js';
-import { parseIntFlag } from './website.js';
+import { parseIntFlag, toPackageName } from '../../utils/cli-helpers.js';
 import { generateMcpb } from '@mcpmake/core';
 import { getProvider, getProviderNames } from '@mcpmake/core';
 import { logger } from '@mcpmake/core';
@@ -25,13 +25,6 @@ import { childEnv } from '../../env.js';
 import type { OpenAPIV3 } from 'openapi-types';
 
 const execFile = promisify(execFileCb);
-
-function toPackageName(title: string): string {
-  return title
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-|-$/g, '');
-}
 
 export default defineConfigurableCommand('openapi', {
   meta: {

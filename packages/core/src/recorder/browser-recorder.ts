@@ -1,9 +1,9 @@
-import { chromium } from 'playwright';
 import type { Browser, Request, Response } from 'playwright';
 import type { Entry, Header } from 'har-format';
 import { redactEntrySecrets } from '../parser/har-filter.js';
 import { logger } from '../utils/logger.js';
 import { assertPublicUrl } from '../utils/ssrf-guard.js';
+import { loadChromium } from '../utils/playwright-loader.js';
 
 export interface RecorderOptions {
   url: string;
@@ -66,6 +66,7 @@ export async function recordBrowserSession(options: RecorderOptions): Promise<Re
   let browser: Browser | undefined;
 
   try {
+    const chromium = await loadChromium();
     browser = await chromium.launch({ headless });
     const context = await browser.newContext();
     const page = await context.newPage();

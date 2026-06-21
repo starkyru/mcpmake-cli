@@ -210,6 +210,55 @@ describe('emitWorkerProject — Cloudflare Workers target', () => {
       await rm(d, { recursive: true, force: true });
     }
   });
+
+  it('A4-15: emits BASE_URL as an escaped TOML basic string that cannot inject a key or [section]', async () => {
+    // An attacker-influenced baseUrl carrying a quote, real newlines, and a TOML
+    // table header + key. The OLD template (BASE_URL = "{{baseUrl}}") combined
+    // with sanitizeUrlLiteral produced a basic string whose JS-style \n/\" escapes
+    // TOML re-interprets, corrupting the value. The fix emits {{{json baseUrl}}},
+    // a JSON string literal == a valid TOML basic string with all bytes escaped.
+    const evil = 'https://api.example.com"\n[secret]\ninjected = "pwned"\nx="';
+    const d = await mkdtemp(join(tmpdir(), 'mcpmake-worker-toml-inj-'));
+    try {
+      await emitWorkerProject(manifest({ baseUrl: evil }), {
+        outputDir: d,
+        force: true,
+        dryRun: false,
+      });
+      const toml = await readFile(join(d, 'wrangler.toml'), 'utf-8');
+      const lines = toml.split('\n');
+
+      // (a) Exactly one BASE_URL key, and it lives on a single physical line — a
+      //     real (unescaped) newline would have split the value across lines.
+      const baseUrlLines = lines.filter((l) => /^BASE_URL\s*=/.test(l));
+      expect(baseUrlLines).toHaveLength(1);
+      const baseUrlLine = baseUrlLines[0];
+
+      // (b) No injected key or [section] header leaked out of the string. The
+      //     attacker's `injected =` / `x=` / `[secret]` must NOT appear as their
+      //     own TOML lines; the only `[...]` table in the file is `[vars]`.
+      const tableHeaders = lines.filter((l) => /^\s*\[[^\]]+\]\s*$/.test(l));
+      expect(tableHeaders).toEqual(['[vars]']);
+      expect(lines.some((l) => /^\s*injected\s*=/.test(l))).toBe(false);
+      expect(lines.some((l) => /^\s*x\s*=/.test(l))).toBe(false);
+
+      // (c) The RHS is a double-quoted basic string. A JSON string literal is a
+      //     valid TOML basic string, so JSON.parse of the RHS is exactly the
+      //     TOML-decoded value. It must NOT contain a raw newline or an
+      //     unescaped quote that breaks out of the literal.
+      const rhs = baseUrlLine.slice(baseUrlLine.indexOf('=') + 1).trim();
+      expect(rhs.startsWith('"') && rhs.endsWith('"')).toBe(true);
+      const decoded = JSON.parse(rhs) as string;
+      expect(decoded).not.toContain('\n'); // no live newline survived decoding
+      // The host of the URL is preserved verbatim at the start of the value.
+      expect(decoded.startsWith('https://api.example.com')).toBe(true);
+      // The literal `[secret]` table header text never appears decoded on its own
+      // line: even if substrings remain inside the string value, they are inert.
+      expect(toml).not.toMatch(/^\[secret\]$/m);
+    } finally {
+      await rm(d, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('emitProject — target delegation', () => {

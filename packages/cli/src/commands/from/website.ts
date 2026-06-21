@@ -16,29 +16,13 @@ import { emitSiteProject } from '@mcpmake/core';
 import { logger } from '@mcpmake/core';
 import { fail } from '@mcpmake/core';
 import { apiKeyArg, applyApiKey, modelArg, providerArg } from '../api-key.js';
+import { parseIntFlag, toPackageName } from '../../utils/cli-helpers.js';
 import type { SiteProjectManifest, BrowserConfig, SiteToolDefinition } from '@mcpmake/core';
 
-function toPackageName(name: string): string {
-  return name
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-|-$/g, '');
-}
-
-/**
- * Parse a numeric CLI flag as a non-negative integer. Unlike a bare
- * `parseInt`, this rejects non-numeric / negative input with a clear error
- * instead of silently coercing it to NaN→0 (which would zero out scope, e.g.
- * `--max-pages abc` crawling nothing). An unset flag falls back to `fallback`.
- */
-export function parseIntFlag(value: string | undefined, flag: string, fallback: number): number {
-  if (value === undefined || value === '') return fallback;
-  const n = Number(value);
-  if (!Number.isInteger(n) || n < 0) {
-    throw new Error(`Invalid --${flag}: "${value}" (expected a non-negative integer)`);
-  }
-  return n;
-}
+// Re-exported so existing importers (`from/{stainless,url,openapi}.ts` and the
+// website/openapi test suites) that reference `parseIntFlag` from this module
+// keep working after the helper moved to `utils/cli-helpers.ts`.
+export { parseIntFlag };
 
 export default defineConfigurableCommand('website', {
   meta: {

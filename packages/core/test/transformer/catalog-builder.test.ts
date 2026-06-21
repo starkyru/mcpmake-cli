@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { buildCatalog } from '../../src/transformer/catalog-builder.js';
-import type { ToolDefinition } from '../../src/types/index.js';
+import { buildToolDefinition } from '../../src/transformer/tool-builder.js';
+import type { OperationDescriptor, ToolDefinition } from '../../src/types/index.js';
 
 function makeTool(name: string, method = 'get', bodyInputKey?: string): ToolDefinition {
   return {
@@ -130,5 +131,99 @@ describe('catalog-builder', () => {
     const entry = catalog[0];
     expect(entry.pathParams[0].inputKey).toBe(entry.pathParams[0].wireName);
     expect(entry.queryParams[0].inputKey).toBe(entry.queryParams[0].wireName);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// R5-E: the dynamic execute_tool catalog must carry each operation's
+// per-operation outbound-auth requirement so it can scope auth exactly like the
+// static per-tool handlers (otherwise execute_tool over-applies every scheme).
+//
+// These build tools through the REAL transformer (buildToolDefinition, which
+// runs deriveAuthRequirement on an OperationDescriptor's `security` /
+// `securityOptional`) and then through the REAL buildCatalog — no logic is
+// reimplemented in the test. Expected values are hand-written from the OpenAPI
+// security semantics.
+// ---------------------------------------------------------------------------
+function makeOp(overrides: Partial<OperationDescriptor>): OperationDescriptor {
+  return {
+    operationId: 'op',
+    method: 'get',
+    path: '/things',
+    tags: [],
+    parameters: [],
+    responses: [],
+    security: [],
+    deprecated: false,
+    ...overrides,
+  };
+}
+
+describe('catalog-builder R5-E: authRequirement', () => {
+  it('carries { mode: "schemes", schemeNames } for a scheme-scoped operation', () => {
+    // security with a named scheme → executeRequest applies ONLY that scheme.
+    const tool = buildToolDefinition(
+      makeOp({
+        operationId: 'getScoped',
+        security: [{ schemeName: 'apiKeyAuth', scopes: [] }],
+      }),
+    );
+    const [entry] = buildCatalog([tool]);
+    expect(entry.authRequirement).toEqual({ mode: 'schemes', schemeNames: ['apiKeyAuth'] });
+  });
+
+  it('collapses multiple security alternatives into the union of scheme names', () => {
+    const tool = buildToolDefinition(
+      makeOp({
+        operationId: 'getMulti',
+        security: [
+          { schemeName: 'apiKeyAuth', scopes: [] },
+          { schemeName: 'bearerAuth', scopes: [] },
+        ],
+      }),
+    );
+    const [entry] = buildCatalog([tool]);
+    expect(entry.authRequirement).toEqual({
+      mode: 'schemes',
+      schemeNames: ['apiKeyAuth', 'bearerAuth'],
+    });
+  });
+
+  it('carries { mode: "public" } for an operation that declares security: []', () => {
+    // securityOptional === true mirrors an explicit empty `security: []`, which
+    // means PUBLIC: executeRequest must apply NO auth.
+    const tool = buildToolDefinition(
+      makeOp({ operationId: 'getPublic', security: [], securityOptional: true }),
+    );
+    const [entry] = buildCatalog([tool]);
+    expect(entry.authRequirement).toEqual({ mode: 'public' });
+  });
+
+  it('omits authRequirement entirely for an operation with no declared security', () => {
+    // Nothing declared → undefined → field absent so the runtime falls back to
+    // applying every configured scheme (legacy global behavior). The key must
+    // NOT be present at all (not merely set to undefined).
+    const tool = buildToolDefinition(makeOp({ operationId: 'getUndeclared', security: [] }));
+    expect(tool.authRequirement).toBeUndefined();
+    const [entry] = buildCatalog([tool]);
+    expect(entry.authRequirement).toBeUndefined();
+    expect(Object.prototype.hasOwnProperty.call(entry, 'authRequirement')).toBe(false);
+  });
+
+  it('serializes authRequirement into the JSON that tool-catalog.json carries', () => {
+    // tool-catalog.json is JSON.stringify(buildCatalog(...)). Round-trip the
+    // scoped + public + undeclared trio through JSON to prove the field survives
+    // (and the undeclared one stays absent) exactly as the runtime will read it.
+    const tools = [
+      buildToolDefinition(
+        makeOp({ operationId: 'a', security: [{ schemeName: 's1', scopes: [] }] }),
+      ),
+      buildToolDefinition(makeOp({ operationId: 'b', security: [], securityOptional: true })),
+      buildToolDefinition(makeOp({ operationId: 'c', security: [] })),
+    ];
+    const roundTripped = JSON.parse(JSON.stringify(buildCatalog(tools)));
+    expect(roundTripped[0].authRequirement).toEqual({ mode: 'schemes', schemeNames: ['s1'] });
+    expect(roundTripped[1].authRequirement).toEqual({ mode: 'public' });
+    expect(Object.prototype.hasOwnProperty.call(roundTripped[2], 'authRequirement')).toBe(false);
   });
 });

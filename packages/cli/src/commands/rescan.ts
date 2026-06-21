@@ -1,8 +1,8 @@
 import { defineCommand } from 'citty';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { chromium } from 'playwright';
 import { crawlSite } from '@mcpmake/core';
+import { loadChromium } from '@mcpmake/core';
 import { validateSelector } from '@mcpmake/core';
 import { detectAuthFlow } from '@mcpmake/core';
 import { generateSiteTools } from '@mcpmake/core';
@@ -15,7 +15,12 @@ import { logger } from '@mcpmake/core';
 import { fail } from '@mcpmake/core';
 import { pathExists } from '@mcpmake/core';
 import { activeKeyVar, apiKeyArg, applyApiKey, modelArg, providerArg } from './api-key.js';
+import { parseIntFlag } from '../utils/cli-helpers.js';
 import type { SiteDescriptor, SiteRegenMetadata, SiteProjectManifest } from '@mcpmake/core';
+
+// Re-exported so `test/commands/rescan.test.ts`, which imports `parseIntFlag`
+// from this module, keeps working after the helper moved to the shared util.
+export { parseIntFlag };
 
 /**
  * Return true when an individual page element has the minimum shape required
@@ -55,20 +60,6 @@ export function isValidSiteDescriptorShape(
     typeof v['version'] === 'number' &&
     typeof v['baseUrl'] === 'string'
   );
-}
-
-/**
- * Parse a numeric CLI flag as a non-negative integer. Rejects non-numeric /
- * negative input with a clear error instead of silently coercing it to NaN→0
- * (which would zero out crawl scope). An unset/empty flag falls back.
- */
-export function parseIntFlag(value: string | undefined, flag: string, fallback: number): number {
-  if (value === undefined || value === '') return fallback;
-  const n = Number(value);
-  if (!Number.isInteger(n) || n < 0) {
-    throw new Error(`Invalid --${flag}: "${value}" (expected a non-negative integer)`);
-  }
-  return n;
 }
 
 export default defineCommand({
@@ -243,6 +234,7 @@ async function healLowConfidenceSelectors(
   }
 
   let healed = 0;
+  const chromium = await loadChromium();
   const browser = await chromium.launch({ headless });
   try {
     const context = await browser.newContext({ viewport: { width: 1280, height: 720 } });

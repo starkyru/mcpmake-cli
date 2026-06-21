@@ -10,6 +10,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { executeRequest } from './http.js';
 import { applyJqFilter } from './response-filter.js';
 import type { AppConfig } from './config.js';
+import type { AuthRequirement } from './auth.js';
 import catalogData from './tool-catalog.json' with { type: 'json' };
 
 interface CatalogParamMapping {
@@ -35,6 +36,10 @@ interface CatalogEntry {
   /** The MCP input key for the request body (`body`, `requestBody`, etc.).
    *  Only present when `hasRequestBody` is true. */
   bodyInputKey?: string;
+  /** Per-operation outbound-auth requirement (D-H2). Forwarded to executeRequest
+   *  so a public operation (`security: []`) sends no auth and a scheme-scoped
+   *  operation sends only its scheme(s). Absent → every configured scheme. */
+  authRequirement?: AuthRequirement;
 }
 
 const catalog: CatalogEntry[] = catalogData as CatalogEntry[];
@@ -169,14 +174,45 @@ export function registerDiscoveryTools(server: McpServer, config: AppConfig): vo
       }
 
       try {
-        // Build URL from path template — read args by inputKey, substitute wireName
-        // into the URL template. Handles parameter name collisions (R14-A).
-        let url = config.baseUrl + tool.path;
+        // Build the path suffix from the template — read args by inputKey,
+        // substitute wireName into the path. Handles parameter name collisions
+        // (R14-A). The leftover-placeholder check (R5-F) runs on the PATH ONLY,
+        // not on config.baseUrl: a base URL may legitimately contain an
+        // unresolved OpenAPI server variable (e.g. `https://api.{region}.x.com`)
+        // that is not a tool path parameter, and scanning it would falsely fail
+        // every call.
+        let pathSuffix = tool.path;
         for (const p of tool.pathParams) {
           if (args[p.inputKey] !== undefined) {
-            url = url.replace(`{${p.wireName}}`, encodeURIComponent(String(args[p.inputKey])));
+            pathSuffix = pathSuffix.replace(
+              `{${p.wireName}}`,
+              encodeURIComponent(String(args[p.inputKey])),
+            );
           }
         }
+
+        // R5-F: refuse to fire a request with unsubstituted path placeholders.
+        // A missing required path parameter leaves a literal `{name}` in the
+        // path, which would otherwise be sent verbatim upstream. Return an MCP
+        // error listing the unfilled parameter(s) instead.
+        const missing = pathSuffix.match(/\{[^}]+\}/g);
+        if (missing && missing.length > 0) {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: `Missing required path parameter(s): ${missing
+                  .map((s) => s.slice(1, -1))
+                  .join(', ')}. Use get_tool_schema to see required inputs.`,
+              },
+            ],
+            isError: true,
+          };
+        }
+
+        // Path is fully substituted — prepend the (possibly server-variable-
+        // bearing) base URL to form the request URL.
+        let url = config.baseUrl + pathSuffix;
 
         // Add query params — read args by inputKey, send upstream under wireName (R14-A).
         const queryParams = new URLSearchParams();
@@ -198,6 +234,9 @@ export function registerDiscoveryTools(server: McpServer, config: AppConfig): vo
           headers: {},
           config,
           idempotencyKey,
+          // R5-E: scope outbound auth per operation exactly like the static
+          // per-tool handlers. Absent → executeRequest applies every scheme.
+          authRequirement: tool.authRequirement,
         });
 
         const result =

@@ -3,8 +3,10 @@
 import os
 import json
 import httpx
+from typing import Annotated, Literal, Optional, Any
 from urllib.parse import quote
 from dotenv import load_dotenv
+from pydantic import BaseModel, Field, ConfigDict
 from mcp.server.fastmcp import FastMCP
 from mcp.types import TextContent
 
@@ -91,9 +93,17 @@ def _auth_query_params() -> dict[str, str]:
     return params
 
 
+{{#if pydanticModels}}
+# Request-body models (A4-H2). Each plain-object request body is modelled as a
+# Pydantic BaseModel so FastMCP infers a full-fidelity nested-object input schema
+# (typed properties, required set, descriptions). Fields whose wire name is not a
+# valid Python identifier use Field(alias=...) + populate_by_name; the handler
+# serializes with by_alias=True to restore the original key on the wire.
+{{{pydanticModels}}}
+{{/if}}
 {{#each tools}}
 @server.tool(name="{{pyStr name}}")
-async def {{functionName}}({{#each pyPathParams}}{{pyName}}: str, {{/each}}{{#each pyQueryParams}}{{pyName}}: str = "", {{/each}}{{#each pyHeaderParams}}{{pyName}}: str = "", {{/each}}{{#each pyCookieParams}}{{pyName}}: str = "", {{/each}}{{#if hasRequestBody}}body: dict | None = None{{/if}}) -> list[TextContent]:
+async def {{functionName}}({{{pySignature}}}) -> list[TextContent]:
     """{{pyDocstring description}}"""
     url = BASE_URL + "{{pyStr pathTemplate}}"
     {{#each pyPathParams}}
@@ -101,7 +111,8 @@ async def {{functionName}}({{#each pyPathParams}}{{pyName}}: str, {{/each}}{{#ea
     {{/each}}
     {{#if pyQueryParams.length}}
     params = { {{#each pyQueryParams}}"{{pyStr apiName}}": {{pyName}}, {{/each}} }
-    params = {k: v for k, v in params.items() if v}
+    # Drop only unset (None) optionals — a legitimate 0/false/"" must still be sent.
+    params = {k: v for k, v in params.items() if v is not None}
     {{#if @root.hasQueryApiKey}}
     params.update(_auth_query_params())
     {{/if}}
@@ -115,19 +126,29 @@ async def {{functionName}}({{#each pyPathParams}}{{pyName}}: str, {{/each}}{{#ea
     # names, merged over the auth headers. Empty values are omitted.
     req_headers = dict(_headers())
     {{#each pyHeaderParams}}
-    if {{pyName}}:
-        req_headers["{{pyStr wireName}}"] = {{pyName}}
+    if {{pyName}} is not None:
+        req_headers["{{pyStr wireName}}"] = str({{pyName}})
     {{/each}}
     {{#if pyCookieParams.length}}
     _cookie_parts = []
     {{#each pyCookieParams}}
-    if {{pyName}}:
+    if {{pyName}} is not None:
         _cookie_parts.append("{{pyStr wireName}}=" + quote(str({{pyName}}), safe=""))
     {{/each}}
     if _cookie_parts:
         _existing = req_headers.get("Cookie")
         _joined = "; ".join(_cookie_parts)
         req_headers["Cookie"] = (_existing + "; " + _joined) if _existing else _joined
+    {{/if}}
+    {{/if}}
+    {{#if hasRequestBody}}
+    {{#if bodyIsModel}}
+    # Pydantic body → plain dict for httpx. by_alias restores any non-identifier
+    # wire keys; exclude_none drops unset optionals so they are omitted, not nulled.
+    _body = body.model_dump(exclude_none=True, by_alias=True) if body is not None else None
+    {{else}}
+    # Free-form / array / complex body kept as the raw value (dict | None).
+    _body = body
     {{/if}}
     {{/if}}
     try:
@@ -140,12 +161,12 @@ async def {{functionName}}({{#each pyPathParams}}{{pyName}}: str, {{/each}}{{#ea
             {{/if}}
             {{#if hasRequestBody}}
             {{#if (eq bodyEncoding "form")}}
-            data=body,
+            data=_body,
             {{else}}
             {{#if (eq bodyEncoding "multipart")}}
-            files=body,
+            files=_body,
             {{else}}
-            json=body,
+            json=_body,
             {{/if}}
             {{/if}}
             {{/if}}

@@ -93,3 +93,70 @@ describe('R14-A: discovery.ts inputKey/wireName split for path and query params'
     expect(src).toMatch(/queryParams\.set\(p\.wireName,\s*String\(args\[p\.inputKey\]\)\)/);
   });
 });
+
+describe('R5-E: discovery.ts execute_tool scopes outbound auth per operation', () => {
+  it('renders parseable TypeScript (re-check after R5-E edits)', () => {
+    assertParses(src, 'discovery.ts (R5-E)');
+  });
+
+  it('imports the AuthRequirement type from ./auth.js (same source as the runtime executor)', () => {
+    expect(src).toMatch(/import\s+type\s+\{\s*AuthRequirement\s*\}\s+from\s+['"]\.\/auth\.js['"]/);
+  });
+
+  it('declares authRequirement?: AuthRequirement on the local CatalogEntry interface', () => {
+    // Required so tool.authRequirement typechecks and matches RequestOptions.
+    expect(src).toMatch(/authRequirement\?\s*:\s*AuthRequirement/);
+  });
+
+  it('forwards tool.authRequirement to executeRequest (the bug fix)', () => {
+    // Without this line the dynamic path applies EVERY configured scheme,
+    // ignoring `security: []` / scheme-scoped operations.
+    expect(src).toMatch(/authRequirement:\s*tool\.authRequirement/);
+  });
+});
+
+describe('R5-F: discovery.ts execute_tool refuses unsubstituted path placeholders', () => {
+  it('renders parseable TypeScript (re-check after R5-F edits)', () => {
+    assertParses(src, 'discovery.ts (R5-F)');
+  });
+
+  it('detects leftover {…} tokens in the substituted PATH (not the base URL) with a placeholder regex', () => {
+    // Scans the fully-substituted path SUFFIX for any remaining `{name}` tokens.
+    expect(src).toMatch(/pathSuffix\.match\(\/\\\{\[\^\}\]\+\\\}\/g\)/);
+  });
+
+  it('scans only tool.path, never config.baseUrl — a server-variable base URL must not false-positive', () => {
+    // R5-F follow-up: the placeholder scan target is `pathSuffix`, built by
+    // substituting into `tool.path` alone. `config.baseUrl` (which may carry an
+    // unresolved OpenAPI server variable like `https://api.{region}.x.com`) is
+    // prepended only AFTER the check, so it can never trigger the missing-param
+    // error. Assert the structural ordering in the emitted source.
+    expect(src).toContain('let pathSuffix = tool.path;');
+    // The check operates on pathSuffix, and the full URL is built from baseUrl
+    // + pathSuffix strictly after the guard.
+    const checkIdx = src.indexOf('pathSuffix.match(');
+    const urlBuildIdx = src.indexOf('config.baseUrl + pathSuffix');
+    expect(checkIdx).toBeGreaterThan(-1);
+    expect(urlBuildIdx).toBeGreaterThan(-1);
+    expect(checkIdx).toBeLessThan(urlBuildIdx);
+    // The base URL must NOT be part of the scanned string.
+    expect(src).not.toContain('(config.baseUrl + tool.path).match');
+  });
+
+  it('returns an isError MCP response naming the missing parameter(s) instead of firing the request', () => {
+    expect(src).toContain('Missing required path parameter(s):');
+    expect(src).toMatch(/isError:\s*true/);
+    // The error message must be derived from the unfilled token names (strip braces).
+    expect(src).toMatch(/\.map\(\(s\)\s*=>\s*s\.slice\(1,\s*-1\)\)/);
+  });
+
+  it('guards BEFORE the executeRequest call (so a malformed URL is never sent)', () => {
+    // The leftover-placeholder return must appear earlier in the source than the
+    // executeRequest invocation; otherwise the request would already be in flight.
+    const guardIdx = src.indexOf('Missing required path parameter(s):');
+    const execIdx = src.indexOf('await executeRequest(');
+    expect(guardIdx).toBeGreaterThan(-1);
+    expect(execIdx).toBeGreaterThan(-1);
+    expect(guardIdx).toBeLessThan(execIdx);
+  });
+});

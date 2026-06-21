@@ -25,6 +25,45 @@ describe('isPrivateOrReservedIp', () => {
     }
   });
 
+  it('flags TEST-NET-1/2/3 and benchmarking reserved IPv4 ranges (A4-14)', () => {
+    // RFC 5737 documentation ranges + RFC 2544 benchmarking range. These must
+    // never be reached; treat them as reserved like the other private blocks.
+    for (const ip of [
+      '192.0.2.0', // TEST-NET-1 network address
+      '192.0.2.1', // TEST-NET-1
+      '192.0.2.255', // TEST-NET-1 broadcast
+      '198.51.100.0', // TEST-NET-2 network address
+      '198.51.100.5', // TEST-NET-2
+      '198.51.100.255', // TEST-NET-2 broadcast
+      '203.0.113.0', // TEST-NET-3 network address
+      '203.0.113.9', // TEST-NET-3
+      '203.0.113.255', // TEST-NET-3 broadcast
+      '198.18.0.0', // 198.18.0.0/15 benchmarking — low edge
+      '198.18.0.1', // benchmarking
+      '198.19.255.254', // benchmarking
+      '198.19.255.255', // 198.18.0.0/15 — high edge
+    ]) {
+      expect(isPrivateOrReservedIp(ip), ip).toBe(true);
+    }
+  });
+
+  it('does NOT over-block addresses adjacent to the new reserved ranges (A4-14)', () => {
+    // One step outside each /24 or /15 boundary must stay public — proving the
+    // checks are exact CIDR matches, not over-broad octet prefixes.
+    for (const ip of [
+      '192.0.1.255', // just below 192.0.2.0/24
+      '192.0.3.0', // just above 192.0.2.0/24
+      '198.51.99.255', // just below 198.51.100.0/24
+      '198.51.101.0', // just above 198.51.100.0/24
+      '203.0.112.255', // just below 203.0.113.0/24
+      '203.0.114.1', // just above 203.0.113.0/24
+      '198.17.255.255', // just below 198.18.0.0/15
+      '198.20.0.1', // just above 198.18.0.0/15
+    ]) {
+      expect(isPrivateOrReservedIp(ip), ip).toBe(false);
+    }
+  });
+
   it('flags private IPv6 and IPv4-mapped private addresses', () => {
     for (const ip of ['::1', '::', 'fe80::1', 'fc00::1', 'fd12:3456::1', '::ffff:127.0.0.1']) {
       expect(isPrivateOrReservedIp(ip), ip).toBe(true);
@@ -71,6 +110,29 @@ describe('assertPublicUrl', () => {
 
   it('allows a public literal IP without DNS', async () => {
     await expect(assertPublicUrl('https://1.1.1.1/')).resolves.toBeUndefined();
+  });
+
+  it('rejects literal TEST-NET / benchmarking reserved hosts (A4-14)', async () => {
+    for (const url of [
+      'http://192.0.2.1/', // TEST-NET-1
+      'http://198.51.100.5/', // TEST-NET-2
+      'http://203.0.113.9/', // TEST-NET-3
+      'http://198.18.0.1/', // benchmarking low edge
+      'http://198.19.255.254/', // benchmarking high edge
+    ]) {
+      await expect(assertPublicUrl(url), url).rejects.toThrow(/private\/reserved/);
+    }
+  });
+
+  it('still allows hosts just outside the new reserved ranges (A4-14)', async () => {
+    // Boundary-adjacent public literals must pass the URL guard unchanged.
+    await expect(assertPublicUrl('http://198.20.0.1/')).resolves.toBeUndefined();
+    await expect(assertPublicUrl('http://203.0.114.1/')).resolves.toBeUndefined();
+  });
+
+  it('honors the escape hatch for a reserved TEST-NET host (A4-14)', async () => {
+    process.env.MCPMAKE_ALLOW_PRIVATE_HOSTS = '1';
+    await expect(assertPublicUrl('http://192.0.2.1/')).resolves.toBeUndefined();
   });
 });
 

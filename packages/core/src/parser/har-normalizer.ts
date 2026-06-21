@@ -86,11 +86,27 @@ function deriveParamName(segments: string[], currentIndex: number, counter: numb
   return counter === 0 ? 'id' : `id${counter + 1}`;
 }
 
+// Version / routing prefixes that look plural-ish or otherwise sneak past the
+// pattern but are never REST collections. `vN` is matched structurally below.
+const NON_COLLECTION_SEGMENTS = new Set(['api', 'rest', 'graphql', 'rpc', 'status']);
+
 function isCollectionName(segment: string): boolean {
-  // Common REST patterns: plurals, known resource names
-  return (
-    /^[a-z][a-z0-9_-]*s$/i.test(segment) || ['api', 'v1', 'v2', 'v3'].includes(segment) === false
-  );
+  // Discriminating REST collection heuristic. The previous version returned true
+  // for almost any segment (its second clause was `!['api','v1',...].includes(x)`,
+  // i.e. true for everything except those four), which over-parameterized paths.
+  //
+  // A collection segment is a *plural resource name*: lowercase, alphanumeric
+  // (allowing `_`/`-`), and ending in `s` but not `ss` (e.g. `users`, `posts`,
+  // `items`, `api_keys` — but not `class`, `address`). We additionally exclude
+  // version prefixes (`v1`, `v2`, …) and a small set of routing/non-resource
+  // tokens, so a generic singular segment like `user`, `profile`, or a version
+  // like `v1` is no longer treated as a collection.
+  const s = segment.toLowerCase();
+  if (NON_COLLECTION_SEGMENTS.has(s)) return false;
+  if (/^v\d+$/.test(s)) return false; // version prefixes: v1, v2, v10, ...
+  // Plural resource: starts with a letter, ends in `s`, but the char before the
+  // trailing `s` is not itself `s` (excludes `class`, `address`, `status`).
+  return /^[a-z][a-z0-9_-]*[^s]s$/.test(s);
 }
 
 function singularize(word: string): string {

@@ -249,10 +249,15 @@ describe('D-H2 — python header / cookie request params', () => {
       );
       const py = readFileSync(join(dir, 'server.py'), 'utf-8');
       // Hyphenated names become valid, de-duplicated Python identifiers in the sig.
-      expect(py).toMatch(/X_Tenant_Id: str = ""/);
-      expect(py).toMatch(/session_id: str = ""/);
-      // The upstream request uses the ORIGINAL wire names.
-      expect(py).toContain('req_headers["X-Tenant-Id"] = X_Tenant_Id');
+      // A4-H2 made the signature precise: a REQUIRED header (`X-Tenant-Id`) now has
+      // NO default (`str`), and an OPTIONAL cookie (`session-id`) is `str | None =
+      // None` — replacing the prior all-`str = ""` form so FastMCP marks the
+      // required header required and the cookie optional.
+      expect(py).toMatch(/X_Tenant_Id: str(?![ |])/); // required: bare `str`, no `= ""`, no `| None`
+      expect(py).toMatch(/session_id: str \| None = None/);
+      // The upstream request uses the ORIGINAL wire names. A4-H2 also wraps header
+      // values in str() (they may now be typed non-str) and gates on `is not None`.
+      expect(py).toContain('req_headers["X-Tenant-Id"] = str(X_Tenant_Id)');
       expect(py).toContain('_cookie_parts.append("session-id=" + quote(str(session_id)');
       expect(py).toContain('req_headers["Cookie"]');
     });

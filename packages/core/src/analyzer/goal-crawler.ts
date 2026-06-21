@@ -7,7 +7,6 @@
  * Stops when the LLM says GOAL_REACHED or we hit maxSteps.
  */
 
-import { chromium } from 'playwright';
 import type { Browser } from 'playwright';
 import type { SiteDescriptor, PageDescriptor } from '../types/site.js';
 import type { CrawlResult } from './site-crawler.js';
@@ -17,6 +16,7 @@ import { captureViewportScreenshot } from './screenshot-capture.js';
 import { logger } from '../utils/logger.js';
 import { requireLlmProvider } from '../llm/index.js';
 import { assertPublicUrl } from '../utils/ssrf-guard.js';
+import { loadChromium } from '../utils/playwright-loader.js';
 import crypto from 'node:crypto';
 
 const MAX_TOKENS = 256;
@@ -71,6 +71,7 @@ export async function goalDirectedCrawl(options: GoalCrawlOptions): Promise<Craw
   let browser: Browser | undefined;
 
   try {
+    const chromium = await loadChromium();
     browser = await chromium.launch({ headless: options.headless ?? false });
     const context = await browser.newContext({ viewport });
     const page = await context.newPage();

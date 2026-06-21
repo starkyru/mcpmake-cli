@@ -1,5 +1,10 @@
 import { jsonSchemaToZod } from 'json-schema-to-zod';
-import type { OperationDescriptor, JsonSchema, ParamMapping } from '../types/index.js';
+import type {
+  OperationDescriptor,
+  JsonSchema,
+  ParamMapping,
+  BodyParamDescriptor,
+} from '../types/index.js';
 import { logger } from '../utils/logger.js';
 
 const MAX_SCHEMA_DEPTH = 15;
@@ -109,6 +114,13 @@ export interface InputSchemaResult {
    * both `body` and `requestBody` are already taken by named parameters.
    */
   bodyInputKey: string | undefined;
+  /**
+   * The body descriptor (inputKey + schema + required + description) for the
+   * Python emitter's Pydantic-model generation (A4-H2), or undefined when there
+   * is no request body. Carries the body's JSON Schema alongside the same
+   * inputKey as {@link bodyInputKey} so the two cannot drift.
+   */
+  bodyParam: BodyParamDescriptor | undefined;
 }
 
 export function buildOperationInputSchema(op: OperationDescriptor): InputSchemaResult {
@@ -137,7 +149,16 @@ export function buildOperationInputSchema(op: OperationDescriptor): InputSchemaR
 
   for (const param of op.parameters) {
     const inputKey = uniqueKey(param.name, param.in);
-    mappings.push({ inputKey, wireName: param.name, in: param.in });
+    // Carry the per-param required/schema/description so the Python emitter can
+    // build a precise annotation (A4-H2). The TS emitter ignores the new fields.
+    mappings.push({
+      inputKey,
+      wireName: param.name,
+      in: param.in,
+      required: param.required,
+      schema: param.schema,
+      description: param.description,
+    });
 
     const zodType = jsonSchemaToZodCode(param.schema);
     let field = zodType;
@@ -153,6 +174,7 @@ export function buildOperationInputSchema(op: OperationDescriptor): InputSchemaR
   }
 
   let bodyInputKey: string | undefined;
+  let bodyParam: BodyParamDescriptor | undefined;
   if (op.requestBody) {
     // Choose a body key that does not collide with any parameter key already
     // in seenKeys. Start with `body`, fall back to `requestBody`, then append
@@ -168,6 +190,14 @@ export function buildOperationInputSchema(op: OperationDescriptor): InputSchemaR
     }
     seenKeys.add(bodyName);
     bodyInputKey = bodyName;
+    // The schema may be absent on hand-built fixtures; default to an empty
+    // schema so downstream consumers always receive a real object (A4-H2).
+    bodyParam = {
+      inputKey: bodyName,
+      schema: op.requestBody.schema ?? {},
+      required: op.requestBody.required ?? false,
+      description: op.requestBody.description,
+    };
 
     const bodyZod = jsonSchemaToZodCode(op.requestBody.schema);
     let field = bodyZod;
@@ -181,5 +211,5 @@ export function buildOperationInputSchema(op: OperationDescriptor): InputSchemaR
   }
 
   const code = fields.length === 0 ? 'z.object({})' : `z.object({\n${fields.join(',\n')},\n})`;
-  return { code, mappings, bodyInputKey };
+  return { code, mappings, bodyInputKey, bodyParam };
 }

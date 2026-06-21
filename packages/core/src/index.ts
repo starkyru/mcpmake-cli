@@ -141,6 +141,7 @@ export { fail } from './utils/fail.js';
 export { pathExists } from './utils/fs.js';
 export { confirmOperations } from './utils/interactive.js';
 export { watchFile } from './utils/watcher.js';
+export { loadChromium } from './utils/playwright-loader.js';
 
 // ---------------------------------------------------------------------------
 // Pricing

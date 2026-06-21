@@ -275,12 +275,17 @@ describe('codegen injection hardening', () => {
           ],
         }),
       );
-      // Wire names are preserved; input keys equal them here (D-H1).
-      expect(tool.paramMappings).toContainEqual({
-        inputKey: 'X-Tenant-Id',
-        wireName: 'X-Tenant-Id',
-        in: 'header',
-      });
+      // Wire names are preserved; input keys equal them here (D-H1). A4-H2 added
+      // additive metadata (required/schema/description) to each mapping, so pin
+      // the load-bearing identity fields via objectContaining rather than an
+      // exact-shape match.
+      expect(tool.paramMappings).toContainEqual(
+        expect.objectContaining({
+          inputKey: 'X-Tenant-Id',
+          wireName: 'X-Tenant-Id',
+          in: 'header',
+        }),
+      );
       expect(tool.buildHeadersBody).toContain("headers['X-Tenant-Id']");
       expect(tool.buildHeadersBody).toContain("cookieParts.push('session=");
       assertParses(renderTemplate('tool-handler.ts', tool), 'header/cookie handler');
@@ -381,8 +386,10 @@ describe('codegen injection hardening', () => {
         expect(py).not.toContain('f"{BASE_URL}');
         expect(py).toContain('url = BASE_URL + "');
 
-        // Hyphenated param name becomes a valid Python identifier.
-        expect(py).toMatch(/order_by: str = ""/);
+        // Hyphenated param name becomes a valid Python identifier. A4-H2 made the
+        // signature precise: an optional string query param is now typed
+        // `str | None = None` (was the all-`str` `= ""`), not bare `str`.
+        expect(py).toMatch(/order_by: str \| None = None/);
         expect(py).not.toMatch(/[(,]\s*order-by/);
 
         // baseUrl double-quote breakout neutralized: the closing quote that would

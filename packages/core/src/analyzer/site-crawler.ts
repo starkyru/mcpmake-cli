@@ -3,7 +3,6 @@
  * and extracting interactive elements from each page.
  */
 
-import { chromium } from 'playwright';
 import type { Browser, Page, Request, Response } from 'playwright';
 import type { Entry, Header } from 'har-format';
 import type { SiteDescriptor, PageDescriptor } from '../types/site.js';
@@ -12,6 +11,8 @@ import { makeNavigationHopRouteHandler } from './same-origin.js';
 import { captureViewportScreenshot } from './screenshot-capture.js';
 import { logger } from '../utils/logger.js';
 import { assertPublicUrl } from '../utils/ssrf-guard.js';
+import { redactEntrySecrets } from '../parser/har-filter.js';
+import { loadChromium } from '../utils/playwright-loader.js';
 import crypto from 'node:crypto';
 
 export interface CrawlOptions {
@@ -101,6 +102,7 @@ export async function crawlSite(options: CrawlOptions): Promise<CrawlResult> {
   let browser: Browser | undefined;
 
   try {
+    const chromium = await loadChromium();
     browser = await chromium.launch({ headless: options.headless ?? false });
     const context = await browser.newContext({ viewport });
     const page = await context.newPage();
@@ -335,7 +337,11 @@ async function buildCrawlHarEntry(
     }
   }
 
-  return {
+  // Scrub credentials at the crawl boundary too, so a crawl-built HAR never
+  // carries a live secret (Authorization/Cookie/Set-Cookie/API-key headers)
+  // even if it is persisted without going through filterHarEntries. Mirrors the
+  // recorder's buildHarEntry path. redactEntrySecrets is idempotent.
+  return redactEntrySecrets({
     startedDateTime: new Date(startTime).toISOString(),
     time: elapsed,
     request: {
@@ -377,7 +383,7 @@ async function buildCrawlHarEntry(
       wait: Math.max(1, elapsed - 2),
       receive: 1,
     },
-  };
+  });
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────

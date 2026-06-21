@@ -174,6 +174,39 @@ if (transportMode === 'http') {
   }
   const allowedOrigin = process.env.ALLOWED_ORIGIN;
   const authToken = process.env.MCP_AUTH_TOKEN;
+{{#if hasOAuth}}
+  /* ── OAuth issuer resolution inputs ──────────────────────────────────────
+   * The unauthenticated /.well-known/oauth-authorization-server endpoint must
+   * not reflect an arbitrary client-controlled Host header into the issuer
+   * (host-header spoofing). Operators pin the issuer with one of:
+   *   - ALLOWED_ORIGIN   (existing; takes precedence)
+   *   - MCP_PUBLIC_URL   (absolute http(s) URL; its origin is used)
+   *   - MCP_ALLOWED_HOSTS (comma/space-separated Host allowlist)
+   * With none set we fall back to the request Host for backward-compat (dev),
+   * after warning once that the issuer is Host-derived. */
+  const mcpPublicOrigin = (() => {
+    const raw = process.env.MCP_PUBLIC_URL;
+    if (!raw) return undefined;
+    try {
+      const u = new URL(raw);
+      if (u.protocol !== 'http:' && u.protocol !== 'https:') {
+        log('error', 'MCP_PUBLIC_URL must be an http(s) URL — ignoring', { MCP_PUBLIC_URL: raw });
+        return undefined;
+      }
+      return u.origin;
+    } catch {
+      log('error', 'MCP_PUBLIC_URL is not a valid absolute URL — ignoring', { MCP_PUBLIC_URL: raw });
+      return undefined;
+    }
+  })();
+  const allowedHosts = new Set(
+    (process.env.MCP_ALLOWED_HOSTS ?? '')
+      .split(/[\s,]+/)
+      .map((h) => h.trim().toLowerCase())
+      .filter((h) => h.length > 0),
+  );
+  let warnedHostDerivedIssuer = false;
+{{/if}}
   /* Fail closed: with no MCP_AUTH_TOKEN the server denies every authenticated
    * route (401) unless the operator opted in via MCP_ALLOW_UNAUTHENTICATED=true.
    * Warn loudly, once, when running wide open so it is never a silent default. */
@@ -369,7 +402,52 @@ if (transportMode === 'http') {
           return;
         }
         const proto = req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http';
-        const issuer = allowedOrigin ?? `${proto}://${req.headers.host ?? 'localhost'}`;
+        /* Resolve the OAuth issuer without trusting an arbitrary Host header.
+         * Precedence: ALLOWED_ORIGIN → MCP_PUBLIC_URL → MCP_ALLOWED_HOSTS →
+         * (dev fallback) the request Host, but only when no allowlist/public
+         * URL pins it. When MCP_ALLOWED_HOSTS is configured, a Host outside it
+         * is rejected rather than reflected. */
+        const rawHost = req.headers.host;
+        const host = typeof rawHost === 'string' ? rawHost.toLowerCase() : undefined;
+        // Parse the Host once. `hostname` (no port, no userinfo) drives the
+        // allowlist so a bare-hostname allowlist (MCP_ALLOWED_HOSTS=example.com)
+        // matches `Host: example.com:3000`; `hostPort` (hostname:port, userinfo
+        // STRIPPED) builds the issuer so a `Host: evil@example.com` cannot inject
+        // a userinfo segment into the issued metadata. URL parsing also handles
+        // IPv6 brackets. Falls back to undefined when the Host is malformed.
+        const parsedHost = (() => {
+          if (typeof rawHost !== 'string') return undefined;
+          try {
+            const u = new URL(`http://${rawHost}`);
+            return { hostname: u.hostname.toLowerCase(), hostPort: u.host };
+          } catch {
+            return undefined;
+          }
+        })();
+        const hostNoPort = parsedHost?.hostname ?? host;
+        let issuer: string;
+        if (allowedOrigin) {
+          issuer = allowedOrigin;
+        } else if (mcpPublicOrigin) {
+          issuer = mcpPublicOrigin;
+        } else if (allowedHosts.size > 0) {
+          if (!host || (!allowedHosts.has(host) && !(hostNoPort && allowedHosts.has(hostNoPort)))) {
+            log('error', 'Invalid Host header for OAuth metadata', { host: rawHost });
+            sendJson(res, 400, { error: 'Invalid Host header for OAuth metadata' });
+            return;
+          }
+          // Build from the parsed host:port (userinfo stripped), never raw.
+          issuer = `${proto}://${parsedHost?.hostPort ?? rawHost}`;
+        } else {
+          /* No issuer pinned: reflect the request Host for backward-compat with
+           * proxy deployments that set neither var. Warn once so operators know
+           * to lock it down via MCP_PUBLIC_URL or MCP_ALLOWED_HOSTS. */
+          if (!warnedHostDerivedIssuer) {
+            warnedHostDerivedIssuer = true;
+            log('info', 'OAuth issuer derived from the Host header — set MCP_PUBLIC_URL or MCP_ALLOWED_HOSTS to pin it', { host: rawHost });
+          }
+          issuer = `${proto}://${rawHost ?? 'localhost'}`;
+        }
         sendJson(
           res,
           200,

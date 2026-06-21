@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
+import { mkdtemp, rm, readFile, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { computeNextRun, RescanScheduler } from '../../src/rescan/rescan-scheduler.js';
 
 // All dates are constructed in UTC and compared against UTC getters so the
@@ -110,3 +113,268 @@ describe('RescanScheduler — interval unref (R2-B)', () => {
     scheduler.stop();
   });
 });
+
+describe('RescanScheduler — opt-in persistence (L-sched)', () => {
+  /** Run `fn` against a fresh temp dir, always cleaned up afterward. */
+  async function withTempDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
+    const dir = await mkdtemp(join(tmpdir(), 'rescan-sched-'));
+    try {
+      return await fn(dir);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+
+  it('defaults to pure in-memory: no persist path means no file is ever written', async () => {
+    await withTempDir(async (dir) => {
+      const persistPath = join(dir, 'schedules.json');
+      // No options object at all — preserves the original constructor signature.
+      const scheduler = new RescanScheduler(() => {});
+      scheduler.scheduleRescan('acme', '0 3 * * *');
+      // Give any (incorrectly) fired async write a chance to land.
+      await new Promise((r) => setTimeout(r, 20));
+      await expect(readFile(persistPath, 'utf-8')).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(scheduler.getSchedules().get('acme')?.cronExpr).toBe('0 3 * * *');
+    });
+  });
+
+  it('scheduleRescan writes the entry to persistPath as JSON with ISO dates', async () => {
+    await withTempDir(async (dir) => {
+      const persistPath = join(dir, 'nested', 'schedules.json');
+      const scheduler = new RescanScheduler(() => {}, { persistPath });
+      scheduler.scheduleRescan('acme', '0 3 * * *', true);
+      // Persistence is serialized + fire-and-forget; await the durable
+      // checkpoint deterministically (no wall-clock polling race).
+      await scheduler.flush();
+      const onDisk = await readPersisted(persistPath);
+
+      expect(onDisk).toHaveLength(1);
+      const entry = onDisk[0];
+      expect(entry.slug).toBe('acme');
+      expect(entry.cronExpr).toBe('0 3 * * *');
+      expect(entry.partial).toBe(true);
+      // Dates are serialized as ISO strings (round-trippable, ends in Z).
+      expect(typeof entry.nextRunAt).toBe('string');
+      expect(new Date(entry.nextRunAt).toISOString()).toBe(entry.nextRunAt);
+      expect(typeof entry.createdAt).toBe('string');
+      expect(new Date(entry.createdAt).toISOString()).toBe(entry.createdAt);
+    });
+  });
+
+  it('load() on a new scheduler with the same persistPath restores the schedule', async () => {
+    await withTempDir(async (dir) => {
+      const persistPath = join(dir, 'schedules.json');
+      const writer = new RescanScheduler(() => {}, { persistPath });
+      writer.scheduleRescan('acme', '0 3 * * *');
+      writer.scheduleRescan('globex', '30 9 * * 1', true);
+      await writer.flush(); // durable checkpoint — both serialized writes landed
+
+      // Simulate a restart: a brand-new instance reads from disk.
+      const restored = new RescanScheduler(() => {}, { persistPath });
+      expect(restored.getSchedules().size).toBe(0); // nothing until load()
+      await restored.load();
+
+      const schedules = restored.getSchedules();
+      expect(schedules.size).toBe(2);
+      expect(schedules.get('acme')?.cronExpr).toBe('0 3 * * *');
+      expect(schedules.get('acme')?.partial).toBe(false);
+      expect(schedules.get('globex')?.cronExpr).toBe('30 9 * * 1');
+      expect(schedules.get('globex')?.partial).toBe(true);
+    });
+  });
+
+  it('load() recomputes a persisted past nextRunAt to a future run', async () => {
+    await withTempDir(async (dir) => {
+      const persistPath = join(dir, 'schedules.json');
+      // Hand-craft a file whose nextRunAt is firmly in the past so load() must
+      // recompute it. cron "0 3 * * *" = daily at 03:00; independently derive
+      // the expected next run via the REAL computeNextRun against "now".
+      const past = new Date('2000-01-01T03:00:00.000Z').toISOString();
+      await writeFile(
+        persistPath,
+        JSON.stringify([
+          {
+            slug: 'acme',
+            cronExpr: '0 3 * * *',
+            partial: false,
+            nextRunAt: past,
+            createdAt: past,
+          },
+        ]),
+        'utf-8',
+      );
+
+      const before = new Date();
+      const scheduler = new RescanScheduler(() => {}, { persistPath });
+      await scheduler.load();
+      const after = new Date();
+
+      const entry = scheduler.getSchedules().get('acme');
+      expect(entry).toBeDefined();
+      // The stale past value must have been replaced with a future run...
+      expect(entry!.nextRunAt.getTime()).toBeGreaterThan(after.getTime());
+      // ...and it must equal what computeNextRun yields for the same window.
+      const expectedLow = computeNextRun('0 3 * * *', before)!;
+      const expectedHigh = computeNextRun('0 3 * * *', after)!;
+      expect(entry!.nextRunAt.getTime()).toBeGreaterThanOrEqual(expectedLow.getTime());
+      expect(entry!.nextRunAt.getTime()).toBeLessThanOrEqual(expectedHigh.getTime());
+    });
+  });
+
+  it('load() keeps a future persisted nextRunAt verbatim (no needless recompute)', async () => {
+    await withTempDir(async (dir) => {
+      const persistPath = join(dir, 'schedules.json');
+      const future = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+      await writeFile(
+        persistPath,
+        JSON.stringify([
+          {
+            slug: 'acme',
+            cronExpr: '0 3 * * *',
+            partial: false,
+            nextRunAt: future,
+            createdAt: future,
+          },
+        ]),
+        'utf-8',
+      );
+
+      const scheduler = new RescanScheduler(() => {}, { persistPath });
+      await scheduler.load();
+
+      expect(scheduler.getSchedules().get('acme')!.nextRunAt.toISOString()).toBe(future);
+    });
+  });
+
+  it('load() on a malformed JSON file does not throw and yields an empty map', async () => {
+    await withTempDir(async (dir) => {
+      const persistPath = join(dir, 'schedules.json');
+      await writeFile(persistPath, '{ this is not valid json ]', 'utf-8');
+
+      const scheduler = new RescanScheduler(() => {}, { persistPath });
+      await expect(scheduler.load()).resolves.toBeUndefined();
+      expect(scheduler.getSchedules().size).toBe(0);
+    });
+  });
+
+  it('load() skips structurally-bad entries but keeps valid ones (partial restore)', async () => {
+    await withTempDir(async (dir) => {
+      const persistPath = join(dir, 'schedules.json');
+      const future = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+      await writeFile(
+        persistPath,
+        JSON.stringify([
+          {
+            slug: 'good',
+            cronExpr: '0 3 * * *',
+            partial: false,
+            nextRunAt: future,
+            createdAt: future,
+          },
+          { slug: 'missing-cron', partial: false, nextRunAt: future, createdAt: future }, // no cronExpr
+          {
+            slug: 'bad-date',
+            cronExpr: '0 3 * * *',
+            partial: false,
+            nextRunAt: 'not-a-date',
+            createdAt: future,
+          },
+          'totally-not-an-object',
+        ]),
+        'utf-8',
+      );
+
+      const scheduler = new RescanScheduler(() => {}, { persistPath });
+      await scheduler.load();
+
+      const schedules = scheduler.getSchedules();
+      expect(schedules.size).toBe(1);
+      expect(schedules.has('good')).toBe(true);
+      expect(schedules.has('missing-cron')).toBe(false);
+      expect(schedules.has('bad-date')).toBe(false);
+    });
+  });
+
+  it('load() on a missing file is a no-op (empty map, no throw)', async () => {
+    await withTempDir(async (dir) => {
+      const persistPath = join(dir, 'does-not-exist.json');
+      const scheduler = new RescanScheduler(() => {}, { persistPath });
+      await expect(scheduler.load()).resolves.toBeUndefined();
+      expect(scheduler.getSchedules().size).toBe(0);
+    });
+  });
+
+  it('cancelRescan updates the persisted file (removes the cancelled slug)', async () => {
+    await withTempDir(async (dir) => {
+      const persistPath = join(dir, 'schedules.json');
+      const scheduler = new RescanScheduler(() => {}, { persistPath });
+      scheduler.scheduleRescan('acme', '0 3 * * *');
+      scheduler.scheduleRescan('globex', '0 4 * * *');
+      await scheduler.flush();
+      let onDisk = await readPersisted(persistPath);
+      expect(onDisk.map((e) => e.slug).sort()).toEqual(['acme', 'globex']);
+
+      expect(scheduler.cancelRescan('acme')).toBe(true);
+      await scheduler.flush(); // durable checkpoint — removal landed
+      onDisk = await waitForPersisted(persistPath, (e) => e.length === 1);
+      expect(onDisk.map((e) => e.slug)).toEqual(['globex']);
+    });
+  });
+
+  it('cancelRescan for an unknown slug does not rewrite the file', async () => {
+    await withTempDir(async (dir) => {
+      const persistPath = join(dir, 'schedules.json');
+      const scheduler = new RescanScheduler(() => {}, { persistPath });
+      scheduler.scheduleRescan('acme', '0 3 * * *');
+      await scheduler.flush();
+      const before = await readFile(persistPath, 'utf-8');
+
+      expect(scheduler.cancelRescan('nope')).toBe(false);
+      await scheduler.flush();
+      const after = await readFile(persistPath, 'utf-8');
+      expect(after).toBe(before);
+    });
+  });
+});
+
+// ─── persistence test helpers ──────────────────────────────────────
+
+interface OnDiskEntry {
+  slug: string;
+  cronExpr: string;
+  partial: boolean;
+  nextRunAt: string;
+  createdAt: string;
+}
+
+/**
+ * Poll the persist file (writes are fire-and-forget) until it parses as an
+ * array, returning the parsed entries. Fails the surrounding test on timeout.
+ */
+async function readPersisted(path: string): Promise<OnDiskEntry[]> {
+  return waitForPersisted(path, () => true);
+}
+
+/** Poll until the persisted array satisfies `pred`, or throw after ~1s. */
+async function waitForPersisted(
+  path: string,
+  pred: (entries: OnDiskEntry[]) => boolean,
+): Promise<OnDiskEntry[]> {
+  const deadline = Date.now() + 1000;
+  let last: OnDiskEntry[] | null = null;
+  for (;;) {
+    try {
+      const parsed = JSON.parse(await readFile(path, 'utf-8')) as OnDiskEntry[];
+      last = parsed;
+      if (Array.isArray(parsed) && pred(parsed)) return parsed;
+    } catch {
+      // file not written yet / mid-rename — retry
+    }
+    if (Date.now() > deadline) {
+      throw new Error(
+        `persist file ${path} did not reach expected state in time; last=${JSON.stringify(last)}`,
+      );
+    }
+    await new Promise((r) => setTimeout(r, 10));
+  }
+}

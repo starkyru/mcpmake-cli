@@ -37,7 +37,12 @@ function bodyEncodingFor(contentType: string): 'json' | 'form' | 'multipart' {
 }
 
 export function buildToolDefinition(op: OperationDescriptor): ToolDefinition {
-  const { code: inputSchemaCode, mappings, bodyInputKey } = buildOperationInputSchema(op);
+  const {
+    code: inputSchemaCode,
+    mappings,
+    bodyInputKey,
+    bodyParam,
+  } = buildOperationInputSchema(op);
 
   const descParts: string[] = [];
   if (op.summary) descParts.push(op.summary);
@@ -95,6 +100,9 @@ export function buildToolDefinition(op: OperationDescriptor): ToolDefinition {
     headerParams: op.parameters.filter((p) => p.in === 'header').map((p) => p.name),
     paramMappings: mappings,
     bodyInputKey,
+    // Full body descriptor for the Python emitter's Pydantic-model generation
+    // (A4-H2). Undefined when the operation has no request body.
+    bodyParam,
     hasRequestBody: !!op.requestBody,
     // Escaped for the single-quoted `contentType: '...'` literal sink.
     requestBodyContentType: escapeStringLiteral(rawContentType),

@@ -168,11 +168,18 @@ describe('schema-converter', () => {
       // Header params are no longer dropped from the schema; the key is
       // JSON.stringify'd so a name with a hyphen is still legal TS.
       expect(code).toContain('"X-Request-Id":');
-      expect(mappings).toContainEqual({
-        inputKey: 'X-Request-Id',
-        wireName: 'X-Request-Id',
-        in: 'header',
-      });
+      // A4-H2 enriched each mapping with required/schema/description; pin the
+      // load-bearing identity fields via objectContaining and assert the new
+      // metadata explicitly so the threading is covered.
+      expect(mappings).toContainEqual(
+        expect.objectContaining({
+          inputKey: 'X-Request-Id',
+          wireName: 'X-Request-Id',
+          in: 'header',
+          required: false,
+          schema: { type: 'string' },
+        }),
+      );
     });
 
     it('uses a unique body key when both "body" and "requestBody" params exist (R11-D)', () => {

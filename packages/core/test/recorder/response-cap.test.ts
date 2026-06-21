@@ -35,6 +35,16 @@ class FakePage {
     this.gotoGate?.();
   }
   async waitForTimeout(): Promise<void> {}
+  /**
+   * True once the recorder has registered its 'response' listener AND reached
+   * `goto` (so the gate exists to release). The recorder loads its chromium
+   * launcher via a dynamic `import('playwright')`, so the number of microtasks
+   * before listeners are registered is not fixed — `tick()` polls on this
+   * instead of a hardcoded count.
+   */
+  isReady(): boolean {
+    return (this.listeners.get('response')?.length ?? 0) > 0 && this.gotoGate !== undefined;
+  }
 }
 
 let fakePage: FakePage;
@@ -72,9 +82,19 @@ function makeResponse(request: unknown, headers: Record<string, string>, bodySpy
   };
 }
 
-/** Wait until the recorder has registered its listeners (a few microtasks). */
+/**
+ * Wait until the recorder has registered its listeners and reached `goto`.
+ * Polls `fakePage.isReady()` so the test is robust to the async hops the
+ * recorder takes (it `await import('playwright')`s its launcher), rather than
+ * assuming a fixed microtask count. Yields a macrotask between polls so a
+ * pending dynamic `import()` (which can settle on a macrotask) gets to resolve.
+ */
 async function tick(): Promise<void> {
-  for (let i = 0; i < 10; i++) await Promise.resolve();
+  for (let i = 0; i < 200; i++) {
+    if (fakePage.isReady()) return;
+    await new Promise((r) => setTimeout(r, 0));
+  }
+  throw new Error('recorder did not register listeners / reach goto in time');
 }
 
 describe('D-M2: recorder response cap + pending cleanup', () => {

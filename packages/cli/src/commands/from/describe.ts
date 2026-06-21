@@ -16,16 +16,10 @@ import {
   printWorkerNextSteps,
 } from './target-support.js';
 import { apiKeyArg, applyApiKey } from '../api-key.js';
+import { toPackageName } from '../../utils/cli-helpers.js';
 import { logger } from '@mcpmake/core';
 import { fail } from '@mcpmake/core';
 import type { OpenAPIV3 } from 'openapi-types';
-
-function toPackageName(title: string): string {
-  return title
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-|-$/g, '');
-}
 
 /**
  * Resolve and sanity-check a --save-spec target. Rejects empty values, NUL

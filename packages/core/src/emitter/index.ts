@@ -16,6 +16,15 @@ import { buildCatalog } from '../transformer/catalog-builder.js';
 import { logger } from '../utils/logger.js';
 import { sanitizeUrlLiteral, sanitizePyIdentifier } from '../utils/sanitize.js';
 import type { ToolDefinition } from '../types/index.js';
+import {
+  jsonSchemaToPyAnnotation,
+  renderParamAnnotation,
+  isModellableObject,
+  buildPydanticModel,
+  ModelNameAllocator,
+  isPyKeyword,
+  type PydanticModel,
+} from './python-annotations.js';
 
 export interface EmitOptions {
   outputDir: string;
@@ -389,13 +398,26 @@ function getSiteToolTemplate(tool: SiteToolDefinition): string {
 }
 
 /**
- * Build a Python-safe view of a tool. Path/query param names become valid,
- * de-duplicated Python identifiers (used as function args and locals), while the
- * original API name is preserved for the URL path token and query-string key.
- * This lets server.py.hbs build the URL with plain `str.replace()` instead of an
- * f-string, removing the brace-expression evaluation / breakout vectors.
+ * Build a Python-safe view of a tool (A4-H2). Path/query/header/cookie param
+ * names become valid, de-duplicated Python identifiers (used as function args
+ * and locals), while the original API name is preserved for the URL path token,
+ * query-string key, and wire header/cookie name. Each param now also carries a
+ * PRECISE Python type annotation derived from its JSON Schema so FastMCP infers
+ * a full-fidelity input schema (types, enums, bounds, required, description)
+ * instead of the previous all-`str` signature. The request body becomes a
+ * Pydantic `BaseModel` when it is a plain object, falling back to `dict` for
+ * array/free-form/complex bodies.
+ *
+ * @param tool   the tool to render
+ * @param alloc  file-level model-name allocator (model class names are unique
+ *               across ALL tools, since they are emitted at module scope)
+ * @param models file-level accumulator of generated Pydantic model defs
  */
-function toPythonToolView(tool: ToolDefinition): Record<string, unknown> {
+function toPythonToolView(
+  tool: ToolDefinition,
+  alloc: ModelNameAllocator,
+  models: PydanticModel[],
+): Record<string, unknown> {
   // Pre-seed with names that are either hardcoded args in server.py.hbs
   // ("body") or local variables used inside the tool body ("url", "params",
   // "req_headers", "resp", "raw", "data", "content_type", "client", "chunks",
@@ -425,32 +447,145 @@ function toPythonToolView(tool: ToolDefinition): Record<string, unknown> {
     used.add(candidate);
     return candidate;
   };
-  const pyPathParams = tool.pathParams.map((apiName) => ({
-    apiName,
-    pyName: uniquePyName(apiName),
-    brace: `{${apiName}}`,
-  }));
-  const pyQueryParams = tool.queryParams.map((apiName) => ({
-    apiName,
-    pyName: uniquePyName(apiName),
-  }));
+
+  // Index the enriched mappings (carrying required/schema/description) by
+  // wire-name+location so we can look up a param's schema while preserving the
+  // existing path/query ordering (driven off pathParams/queryParams arrays).
+  const mappingFor = (
+    wireName: string,
+    location: 'path' | 'query' | 'header' | 'cookie',
+  ): { required?: boolean; schema?: import('../types/index.js').JsonSchema } | undefined =>
+    tool.paramMappings.find((m) => m.in === location && m.wireName === wireName);
+
+  // Compute the full annotation RHS (`int`, `Annotated[str | None, Field(...)] = None`,
+  // …) for one parameter from its schema + required flag. Path params are always
+  // required (no default); for others, optional → `| None = None`.
+  const annotationFor = (
+    wireName: string,
+    location: 'path' | 'query' | 'header' | 'cookie',
+    forceRequired: boolean,
+  ): { annotation: string; optional: boolean } => {
+    const m = mappingFor(wireName, location);
+    const required = forceRequired || m?.required === true;
+    const { annotation: base, fieldArgs } = jsonSchemaToPyAnnotation(m?.schema);
+    const optional = !required;
+    return { annotation: renderParamAnnotation(base, fieldArgs, optional), optional };
+  };
+
+  const pyPathParams = tool.pathParams.map((apiName) => {
+    // Path params are required by definition; force no default.
+    const { annotation } = annotationFor(apiName, 'path', true);
+    return {
+      apiName,
+      pyName: uniquePyName(apiName),
+      brace: `{${apiName}}`,
+      annotation,
+    };
+  });
+  const pyQueryParams = tool.queryParams.map((apiName) => {
+    const { annotation, optional } = annotationFor(apiName, 'query', false);
+    return {
+      apiName,
+      pyName: uniquePyName(apiName),
+      annotation,
+      optional,
+    };
+  });
   // Header/cookie request params (D-H2). Driven off paramMappings so the
   // function arg uses a sanitized, de-duplicated Python identifier while the
   // upstream request still uses the original wire name. De-duplicated by wire
   // name so a header/cookie repeated across mappings cannot emit two args.
-  const dedupeByWire = (kind: 'header' | 'cookie'): { wireName: string; pyName: string }[] => {
+  const dedupeByWire = (
+    kind: 'header' | 'cookie',
+  ): { wireName: string; pyName: string; annotation: string; optional: boolean }[] => {
     const seen = new Set<string>();
-    const out: { wireName: string; pyName: string }[] = [];
+    const out: { wireName: string; pyName: string; annotation: string; optional: boolean }[] = [];
     for (const m of tool.paramMappings) {
       if (m.in !== kind || seen.has(m.wireName)) continue;
       seen.add(m.wireName);
-      out.push({ wireName: m.wireName, pyName: uniquePyName(m.wireName) });
+      const { annotation, optional } = annotationFor(m.wireName, kind, false);
+      out.push({ wireName: m.wireName, pyName: uniquePyName(m.wireName), annotation, optional });
     }
     return out;
   };
   const pyHeaderParams = dedupeByWire('header');
   const pyCookieParams = dedupeByWire('cookie');
-  return { ...tool, pyPathParams, pyQueryParams, pyHeaderParams, pyCookieParams };
+
+  // Request body annotation (A4-H2). A plain-object body becomes a Pydantic
+  // model (full nested-object fidelity); arrays / free-form / complex bodies
+  // fall back to `dict | None` (the prior behavior) — documented in the template.
+  let bodyAnnotation: string | undefined;
+  let bodyIsModel = false;
+  let bodyModelName: string | undefined;
+  if (tool.hasRequestBody) {
+    const bodySchema = tool.bodyParam?.schema;
+    const bodyRequired = tool.bodyParam?.required === true;
+    if (isModellableObject(bodySchema)) {
+      bodyModelName = buildPydanticModel(bodySchema!, `${tool.functionName}_body`, alloc, models);
+      bodyIsModel = true;
+      bodyAnnotation = bodyRequired ? bodyModelName : `${bodyModelName} | None = None`;
+    } else {
+      // Fallback: array / free-form / $ref-still-present / non-object body.
+      bodyAnnotation = 'dict | None = None';
+    }
+  }
+
+  // Build the ORDERED function-signature parameter list. Python forbids a
+  // non-default argument after a default one, so required params (no `= ...`)
+  // MUST all precede optional params (`... = None`). We therefore partition by
+  // optionality rather than by location: required path/query/header/cookie/body
+  // first (in that stable location order), then all optionals. The body is
+  // placed by its own optionality so a required body lands in the required group
+  // and an optional body in the optional group.
+  interface SigParam {
+    text: string; // full `name: annotation[ = default]`
+    optional: boolean;
+  }
+  const sigParams: SigParam[] = [];
+  for (const p of pyPathParams)
+    sigParams.push({ text: `${p.pyName}: ${p.annotation}`, optional: false });
+  for (const p of pyQueryParams)
+    sigParams.push({ text: `${p.pyName}: ${p.annotation}`, optional: p.optional });
+  for (const p of pyHeaderParams)
+    sigParams.push({ text: `${p.pyName}: ${p.annotation}`, optional: p.optional });
+  for (const p of pyCookieParams)
+    sigParams.push({ text: `${p.pyName}: ${p.annotation}`, optional: p.optional });
+  if (tool.hasRequestBody && bodyAnnotation !== undefined) {
+    const bodyOptional = bodyAnnotation.includes('= None');
+    sigParams.push({ text: `body: ${bodyAnnotation}`, optional: bodyOptional });
+  }
+  // Stable partition: required first (preserving their relative order), then
+  // optional (preserving theirs). Array.prototype.sort is not guaranteed stable
+  // across all engines for this, so partition explicitly.
+  const pySignature = [
+    ...sigParams.filter((p) => !p.optional),
+    ...sigParams.filter((p) => p.optional),
+  ]
+    .map((p) => p.text)
+    .join(', ');
+
+  // The emitted `async def {{functionName}}(...)` must be a legal Python
+  // identifier and not a keyword. tool.functionName is camelCase derived from the
+  // operationId for the TS target (where e.g. `class`/`import`/`return` are legal),
+  // so sanitize it for Python and suffix `_` if it lands on a keyword — otherwise
+  // a one-word keyword operationId emits `async def class(...)` → SyntaxError
+  // (dead-on-import server). The MCP-visible tool name (`@server.tool(name=…)`)
+  // uses the snake_case `name`, not this, so it is unaffected.
+  let pyFunctionName = sanitizePyIdentifier(tool.functionName);
+  if (isPyKeyword(pyFunctionName)) pyFunctionName = `${pyFunctionName}_`;
+
+  return {
+    ...tool,
+    functionName: pyFunctionName,
+    pyPathParams,
+    pyQueryParams,
+    pyHeaderParams,
+    pyCookieParams,
+    pySignature,
+    bodyAnnotation,
+    bodyIsModel,
+    bodyModelName,
+  };
 }
 
 /**
@@ -474,9 +609,19 @@ export async function emitPythonProject(
 
   const units: CodeUnit[] = [];
 
+  // File-level Pydantic model accumulator + name allocator. Models are emitted
+  // once at module scope, so their class names must be unique across every tool
+  // (A4-H2). The allocator is seeded with the runtime/import names already in
+  // server.py so a generated model can never shadow them.
+  const pydanticModels: PydanticModel[] = [];
+  const modelAlloc = new ModelNameAllocator();
+  const pyTools = manifest.tools.map((t) => toPythonToolView(t, modelAlloc, pydanticModels));
+
   const templateData = {
     ...manifest,
-    tools: manifest.tools.map(toPythonToolView),
+    tools: pyTools,
+    // Joined Pydantic class defs to emit at module scope (before the tools).
+    pydanticModels: pydanticModels.map((m) => m.source).join('\n'),
     authEnvVars: manifest.envVars.filter((v) => v.name !== 'BASE_URL'),
     environmentsJson: environmentsJson(manifest),
     // Gate the apiKey-in-query merge so projects without query auth are unchanged.

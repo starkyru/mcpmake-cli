@@ -7,7 +7,11 @@ compatibility_flags = ["nodejs_compat"]
 
 # Non-secret configuration. Override per-environment as needed.
 [vars]
-BASE_URL = "{{baseUrl}}"
+# {{{json}}} emits a JSON string literal, which is a valid TOML basic string with
+# identical escape semantics. Unlike a raw "{{baseUrl}}" interpolation, this fully
+# escapes backslashes/quotes/newlines so an attacker-controlled URL cannot inject a
+# spurious key or [section] header into the generated wrangler.toml (A4-15).
+BASE_URL = {{{json baseUrl}}}
 MAX_RETRIES = "3"
 REQUEST_INTERVAL_MS = "100"
 # ALLOWED_ORIGIN = "https://your-client.example.com"

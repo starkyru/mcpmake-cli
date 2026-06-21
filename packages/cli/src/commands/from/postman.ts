@@ -17,16 +17,10 @@ import {
   printWorkerNextSteps,
 } from './target-support.js';
 import { apiKeyArg, applyApiKey, modelArg, providerArg } from '../api-key.js';
+import { toPackageName } from '../../utils/cli-helpers.js';
 import { logger } from '@mcpmake/core';
 import { fail } from '@mcpmake/core';
 import type { AuthScheme, EnvVarDescriptor } from '@mcpmake/core';
-
-function toPackageName(name: string): string {
-  return name
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-|-$/g, '');
-}
 
 export default defineConfigurableCommand('postman', {
   meta: {

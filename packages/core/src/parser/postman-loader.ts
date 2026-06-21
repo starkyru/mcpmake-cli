@@ -195,6 +195,23 @@ function resolveUrl(url: PostmanUrl | string, vars: Map<string, string>): string
   return parsed.toString();
 }
 
+// Bound transitive resolution: a chain {{a}}->{{b}}->{{c}}... can need multiple
+// passes, but the cap guarantees termination even when variable values form a
+// cycle ({{a}}->{{b}}->{{a}}). On hitting the cap (or a no-op pass) we leave any
+// still-unresolved tokens as-is rather than looping forever.
+const MAX_VAR_RESOLUTION_PASSES = 10;
+
 function resolveVars(str: string, vars: Map<string, string>): string {
-  return str.replace(/\{\{(\w+)\}\}/g, (_, key) => vars.get(key) ?? `{{${key}}}`);
+  let current = str;
+  for (let pass = 0; pass < MAX_VAR_RESOLUTION_PASSES; pass++) {
+    // Single substitution pass. Unknown keys are preserved verbatim ({{key}});
+    // because the replacement re-emits that exact token, a known->unknown chain
+    // converges to a fixed point and the no-change check below stops the loop.
+    const next = current.replace(/\{\{(\w+)\}\}/g, (_, key) => vars.get(key) ?? `{{${key}}}`);
+    if (next === current) return next; // fixed point reached — fully resolved or only unknowns remain
+    current = next;
+  }
+  // Cap reached (e.g. a {{a}}<->{{b}} cycle): return the last state, leaving the
+  // remaining {{...}} tokens untouched so callers see them instead of hanging.
+  return current;
 }

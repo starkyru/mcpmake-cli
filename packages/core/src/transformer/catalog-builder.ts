@@ -1,4 +1,4 @@
-import type { ToolDefinition } from '../types/index.js';
+import type { ToolAuthRequirement, ToolDefinition } from '../types/index.js';
 
 /**
  * Maps the MCP input key (what the agent supplies) to the wire parameter name
@@ -28,6 +28,12 @@ export interface CatalogEntry {
   /** The MCP input key under which the request body is passed (e.g. `body`,
    *  `requestBody`, `requestBody_2`). Only set when `hasRequestBody` is true. */
   bodyInputKey?: string;
+  /** Per-operation outbound-auth requirement derived from OpenAPI `security`
+   *  (D-H2). Forwarded to executeRequest so the dynamic `execute_tool` path
+   *  scopes auth exactly like the static per-tool handlers: `{mode:'public'}`
+   *  sends no auth, `{mode:'schemes'}` sends only the listed schemes, and an
+   *  absent field falls back to applying every configured scheme. */
+  authRequirement?: ToolAuthRequirement;
 }
 
 /**
@@ -66,6 +72,7 @@ export function buildCatalog(tools: ToolDefinition[]): CatalogEntry[] {
       ...(tool.hasRequestBody && tool.bodyInputKey !== undefined
         ? { bodyInputKey: tool.bodyInputKey }
         : {}),
+      ...(tool.authRequirement ? { authRequirement: tool.authRequirement } : {}),
     };
   });
 }

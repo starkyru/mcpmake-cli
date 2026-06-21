@@ -1,3 +1,5 @@
+import { writeFile, rename, readFile, mkdir } from 'node:fs/promises';
+import { dirname } from 'node:path';
 import { logger } from '../utils/logger.js';
 
 export interface ScheduleEntry {
@@ -10,9 +12,35 @@ export interface ScheduleEntry {
 
 export type RescanCallback = (slug: string, partial: boolean) => void | Promise<void>;
 
+/** Options for {@link RescanScheduler}. */
+export interface RescanSchedulerOptions {
+  /**
+   * Optional path to a JSON file used to persist registered schedules so they
+   * survive a process restart. When omitted, the scheduler is purely in-memory
+   * (no disk I/O) and behaves exactly as it did before persistence existed.
+   */
+  persistPath?: string;
+}
+
+/** On-disk shape of a single persisted schedule (Dates serialized as ISO strings). */
+interface PersistedEntry {
+  slug: string;
+  cronExpr: string;
+  partial: boolean;
+  nextRunAt: string;
+  createdAt: string;
+}
+
+/** Suffix for the temp file used to write the persistence file atomically. */
+const PERSIST_TEMP_SUFFIX = '.mcpmake-tmp';
+
 /**
- * In-memory scheduler for periodic site rescans.
+ * Scheduler for periodic site rescans.
  * Checks every 60 seconds for due rescans and invokes the callback.
+ *
+ * Schedules live in memory by default. Pass a `persistPath` to opt into
+ * best-effort, file-based persistence so registered schedules survive a process
+ * restart (see {@link load}).
  */
 export class RescanScheduler {
   private schedules = new Map<string, ScheduleEntry>();
@@ -20,9 +48,17 @@ export class RescanScheduler {
   private callback: RescanCallback;
   private running = false;
   private ticking = false;
+  private readonly persistPath: string | undefined;
+  // Serializes persistence writes: every schedulePersist() appends to this
+  // chain so two rapid scheduleRescan/cancelRescan calls can never race on the
+  // shared file (interleaved writeFile+rename to one temp path would otherwise
+  // lose data or leave the target missing mid-rename). Last write wins.
+  private persistChain: Promise<void> = Promise.resolve();
+  private persistSeq = 0;
 
-  constructor(callback: RescanCallback) {
+  constructor(callback: RescanCallback, options: RescanSchedulerOptions = {}) {
     this.callback = callback;
+    this.persistPath = options.persistPath;
   }
 
   /** Register or update a rescan schedule for a site slug. */
@@ -40,6 +76,7 @@ export class RescanScheduler {
       createdAt: new Date(),
     });
     logger.info(`Scheduled rescan for "${slug}" — next run at ${nextRunAt.toISOString()}`);
+    this.schedulePersist();
   }
 
   /** Cancel a pending rescan schedule. */
@@ -47,6 +84,7 @@ export class RescanScheduler {
     const deleted = this.schedules.delete(slug);
     if (deleted) {
       logger.info(`Cancelled rescan schedule for "${slug}"`);
+      this.schedulePersist();
     }
     return deleted;
   }
@@ -82,6 +120,7 @@ export class RescanScheduler {
     this.ticking = true;
     try {
       const now = new Date();
+      let mutated = false;
       for (const entry of this.schedules.values()) {
         if (entry.nextRunAt <= now) {
           try {
@@ -99,17 +138,174 @@ export class RescanScheduler {
             // Invalid cron — remove the schedule
             this.schedules.delete(entry.slug);
           }
+          mutated = true;
         }
+      }
+      // Persist once per tick, only if the map actually changed (advanced a
+      // nextRunAt or dropped an invalid cron), so the on-disk file stays in sync.
+      if (mutated) {
+        this.schedulePersist();
+        await this.persistChain;
       }
     } finally {
       this.ticking = false;
     }
   }
 
+  /**
+   * Await all pending persistence writes — a durable checkpoint. Resolves
+   * immediately when persistence is off. Callers (and tests) can await this to
+   * be sure a prior `scheduleRescan`/`cancelRescan` has hit disk.
+   */
+  async flush(): Promise<void> {
+    await this.persistChain;
+  }
+
   /** Get all registered schedules (for introspection / testing). */
   getSchedules(): ReadonlyMap<string, ScheduleEntry> {
     return this.schedules;
   }
+
+  /**
+   * Repopulate schedules from `persistPath` (no-op when persistence is off).
+   *
+   * Missing file, malformed JSON, and individual bad entries are tolerated:
+   * such cases are skipped with a warning and never throw, so a corrupt or
+   * absent file leaves the scheduler empty rather than crashing startup. A
+   * persisted `nextRunAt` that is already in the past is recomputed from the
+   * cron expression against "now", so a schedule that came due during downtime
+   * fires promptly on the next tick instead of being skipped or storming.
+   */
+  async load(): Promise<void> {
+    if (!this.persistPath) return;
+
+    let raw: string;
+    try {
+      raw = await readFile(this.persistPath, 'utf-8');
+    } catch (err) {
+      // Missing file is the normal first-run case — nothing to restore.
+      const code = (err as NodeJS.ErrnoException)?.code;
+      if (code !== 'ENOENT') {
+        logger.warn(
+          `Could not read rescan schedule file "${this.persistPath}": ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+      return;
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      logger.warn(`Malformed rescan schedule file "${this.persistPath}" — ignoring`);
+      return;
+    }
+
+    if (!Array.isArray(parsed)) {
+      logger.warn(
+        `Unexpected rescan schedule file shape in "${this.persistPath}" (expected an array) — ignoring`,
+      );
+      return;
+    }
+
+    const now = new Date();
+    for (const item of parsed) {
+      const entry = parsePersistedEntry(item, now);
+      if (entry) {
+        this.schedules.set(entry.slug, entry);
+      } else {
+        logger.warn(`Skipping malformed schedule entry in "${this.persistPath}"`);
+      }
+    }
+  }
+
+  /**
+   * Queue a persistence write, serialized after any in-flight write. Returns
+   * void (fire-and-forget for callers); await {@link flush} for durability.
+   * Serialization is what makes back-to-back schedule/cancel calls safe: each
+   * write runs to completion before the next starts, so they can't interleave
+   * on the shared file.
+   */
+  private schedulePersist(): void {
+    // Snapshot the schedules NOW so the queued write reflects the state at call
+    // time even if later writes mutate the map further (each persistNow re-reads
+    // the live map, but ordering guarantees the final write reflects final state).
+    this.persistChain = this.persistChain.then(() => this.persistNow());
+  }
+
+  /**
+   * Best-effort, atomic write of the current schedules to `persistPath`.
+   *
+   * No-op when persistence is off. Writes to a UNIQUE sibling temp file then
+   * renames over the target so a crash mid-write cannot corrupt the file and
+   * concurrent-but-serialized writes never collide on one temp path. Any I/O
+   * error is caught and warned — persistence failure must never crash the
+   * scheduler (and must never reject the serialization chain).
+   */
+  private async persistNow(): Promise<void> {
+    if (!this.persistPath) return;
+
+    const payload: PersistedEntry[] = [...this.schedules.values()].map((e) => ({
+      slug: e.slug,
+      cronExpr: e.cronExpr,
+      partial: e.partial,
+      nextRunAt: e.nextRunAt.toISOString(),
+      createdAt: e.createdAt.toISOString(),
+    }));
+
+    const tempPath = `${this.persistPath}.${this.persistSeq++}${PERSIST_TEMP_SUFFIX}`;
+    try {
+      await mkdir(dirname(this.persistPath), { recursive: true });
+      await writeFile(tempPath, JSON.stringify(payload, null, 2), 'utf-8');
+      await rename(tempPath, this.persistPath);
+    } catch (err) {
+      logger.warn(
+        `Failed to persist rescan schedules to "${this.persistPath}": ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+}
+
+/**
+ * Validate one parsed JSON value as a {@link ScheduleEntry}, returning null for
+ * any structurally invalid entry. A `nextRunAt` in the past (relative to `now`)
+ * is recomputed from the cron so downtime-missed runs fire promptly; if the
+ * persisted cron is itself invalid the entry is rejected.
+ */
+function parsePersistedEntry(value: unknown, now: Date): ScheduleEntry | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const v = value as Record<string, unknown>;
+
+  if (
+    typeof v['slug'] !== 'string' ||
+    typeof v['cronExpr'] !== 'string' ||
+    typeof v['partial'] !== 'boolean' ||
+    typeof v['nextRunAt'] !== 'string' ||
+    typeof v['createdAt'] !== 'string'
+  ) {
+    return null;
+  }
+
+  const slug = v['slug'];
+  const cronExpr = v['cronExpr'];
+  const partial = v['partial'];
+
+  const createdAt = new Date(v['createdAt']);
+  if (isNaN(createdAt.getTime())) return null;
+
+  let nextRunAt = new Date(v['nextRunAt']);
+  if (isNaN(nextRunAt.getTime())) return null;
+
+  // A run that came due during downtime would otherwise be either skipped or
+  // (for "* * * * *"-style crons) replayed for every missed minute. Recompute
+  // the next run from the cron so it fires once, promptly, going forward.
+  if (nextRunAt <= now) {
+    const recomputed = computeNextRun(cronExpr, now);
+    if (!recomputed) return null; // persisted cron no longer parses — drop it
+    nextRunAt = recomputed;
+  }
+
+  return { slug, cronExpr, partial, nextRunAt, createdAt };
 }
 
 // ─── Simple Cron Parsing ──────────────────────────────────────────
