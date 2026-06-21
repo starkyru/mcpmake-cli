@@ -136,6 +136,15 @@ export function register(server: McpServer, config: AppConfig): void {
               text: JSON.stringify(result, null, 2),
             },
           ],
+{{#if outputSchemaCode}}
+          // MCP SDK validates structuredContent against outputSchema when set.
+          // wrapArrayRoot wraps array responses as { items: <array> } and leaves
+          // object responses bare — mirror that shape here so validation passes.
+          structuredContent:
+            result !== null && typeof result === 'object' && !Array.isArray(result)
+              ? (result as Record<string, unknown>)
+              : { items: result },
+{{/if}}
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);

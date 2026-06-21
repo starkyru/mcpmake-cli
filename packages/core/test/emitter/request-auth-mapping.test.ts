@@ -530,3 +530,206 @@ describe('R24-A — per-location apiKey interface dedup (node + worker templates
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// R25 — duplicate http-bearer / http-basic / oauth2 schemes must not produce
+// duplicate interface properties (TS2300) or duplicate function declarations
+// (TS2393) in the generated config.ts.
+// transpileModule strips types so TS2300 is invisible; we assert the structural
+// invariant by counting occurrences of the property/function strings directly.
+// ---------------------------------------------------------------------------
+describe('R25 — non-apiKey scheme dedup (http-bearer / http-basic / oauth2)', () => {
+  /** Two http-bearer schemes — the previous TS2300 trigger for bearerToken?. */
+  function twoBearerSchemes() {
+    const { authSchemes } = detectAuthSchemes({
+      BearerA: { type: 'http', scheme: 'bearer' },
+      BearerB: { type: 'http', scheme: 'bearer' },
+    });
+    return authSchemes;
+  }
+
+  /** Two http-basic schemes. */
+  function twoBasicSchemes() {
+    const { authSchemes } = detectAuthSchemes({
+      BasicA: { type: 'http', scheme: 'basic' },
+      BasicB: { type: 'http', scheme: 'basic' },
+    });
+    return authSchemes;
+  }
+
+  /** Two oauth2 schemes (common: per-app + per-user OAuth, e.g. Stripe/GitHub). */
+  function twoOAuth2Schemes() {
+    const { authSchemes } = detectAuthSchemes({
+      OAuth2App: {
+        type: 'oauth2',
+        flows: {
+          clientCredentials: {
+            tokenUrl: 'https://api.example.com/token',
+            scopes: { read: 'Read access' },
+          },
+        },
+      },
+      OAuth2User: {
+        type: 'oauth2',
+        flows: {
+          authorizationCode: {
+            authorizationUrl: 'https://api.example.com/auth',
+            tokenUrl: 'https://api.example.com/token',
+            scopes: { write: 'Write access' },
+          },
+        },
+      },
+    });
+    return authSchemes;
+  }
+
+  /** Single bearer — backward compat: field must still be present. */
+  function singleBearerScheme() {
+    const { authSchemes } = detectAuthSchemes({
+      BearerOnly: { type: 'http', scheme: 'bearer' },
+    });
+    return authSchemes;
+  }
+
+  /** Single basic — backward compat. */
+  function singleBasicScheme() {
+    const { authSchemes } = detectAuthSchemes({
+      BasicOnly: { type: 'http', scheme: 'basic' },
+    });
+    return authSchemes;
+  }
+
+  /** Single oauth2 — backward compat. */
+  function singleOAuth2Scheme() {
+    const { authSchemes } = detectAuthSchemes({
+      OAuth2Only: {
+        type: 'oauth2',
+        flows: { clientCredentials: { tokenUrl: 'https://api.example.com/token', scopes: {} } },
+      },
+    });
+    return authSchemes;
+  }
+
+  /** Mixed spec: one apiKey + one bearer + one oauth2 — all fields present once. */
+  function mixedSchemes() {
+    const { authSchemes } = detectAuthSchemes({
+      ApiKey: { type: 'apiKey', in: 'header', name: 'X-API-Key' },
+      Bearer: { type: 'http', scheme: 'bearer' },
+      OAuth2: {
+        type: 'oauth2',
+        flows: { clientCredentials: { tokenUrl: 'https://api.example.com/token', scopes: {} } },
+      },
+    });
+    return authSchemes;
+  }
+
+  // --- http-bearer: node ---
+
+  it('node: two http-bearer schemes → exactly one bearerToken?: string', () => {
+    const config = renderTemplate('config.ts', { authSchemes: twoBearerSchemes() });
+    const matches = config.match(/bearerToken\?:\s*string/g) ?? [];
+    expect(matches).toHaveLength(1);
+    assertParses(config, 'node two-bearer config.ts');
+  });
+
+  it('node: single http-bearer → bearerToken?: string still present (backward compat)', () => {
+    const config = renderTemplate('config.ts', { authSchemes: singleBearerScheme() });
+    expect(config).toContain('bearerToken?: string');
+    assertParses(config, 'node single-bearer config.ts');
+  });
+
+  // --- http-bearer: worker ---
+
+  it('worker: two http-bearer schemes → exactly one bearerToken?: string', () => {
+    const config = renderWorkerTemplate('config.ts', { authSchemes: twoBearerSchemes() });
+    const matches = config.match(/bearerToken\?:\s*string/g) ?? [];
+    expect(matches).toHaveLength(1);
+    assertParses(config, 'worker two-bearer config.ts');
+  });
+
+  it('worker: single http-bearer → bearerToken?: string still present (backward compat)', () => {
+    const config = renderWorkerTemplate('config.ts', { authSchemes: singleBearerScheme() });
+    expect(config).toContain('bearerToken?: string');
+    assertParses(config, 'worker single-bearer config.ts');
+  });
+
+  // --- http-basic: node ---
+
+  it('node: two http-basic schemes → exactly one basicUsername?: string', () => {
+    const config = renderTemplate('config.ts', { authSchemes: twoBasicSchemes() });
+    const matches = config.match(/basicUsername\?:\s*string/g) ?? [];
+    expect(matches).toHaveLength(1);
+    assertParses(config, 'node two-basic config.ts');
+  });
+
+  it('node: single http-basic → basicUsername?: string + basicPassword?: string still present (backward compat)', () => {
+    const config = renderTemplate('config.ts', { authSchemes: singleBasicScheme() });
+    expect(config).toContain('basicUsername?: string');
+    expect(config).toContain('basicPassword?: string');
+    assertParses(config, 'node single-basic config.ts');
+  });
+
+  // --- http-basic: worker ---
+
+  it('worker: two http-basic schemes → exactly one basicUsername?: string', () => {
+    const config = renderWorkerTemplate('config.ts', { authSchemes: twoBasicSchemes() });
+    const matches = config.match(/basicUsername\?:\s*string/g) ?? [];
+    expect(matches).toHaveLength(1);
+    assertParses(config, 'worker two-basic config.ts');
+  });
+
+  it('worker: single http-basic → basicUsername?: string + basicPassword?: string still present (backward compat)', () => {
+    const config = renderWorkerTemplate('config.ts', { authSchemes: singleBasicScheme() });
+    expect(config).toContain('basicUsername?: string');
+    expect(config).toContain('basicPassword?: string');
+    assertParses(config, 'worker single-basic config.ts');
+  });
+
+  // --- oauth2: node only (worker template has no oauth2 block) ---
+
+  it('node: two oauth2 schemes → exactly one oauth2Token?: string', () => {
+    const config = renderTemplate('config.ts', { authSchemes: twoOAuth2Schemes() });
+    const matches = config.match(/oauth2Token\?:\s*string/g) ?? [];
+    expect(matches).toHaveLength(1);
+    assertParses(config, 'node two-oauth2 config.ts');
+  });
+
+  it('node: two oauth2 schemes → exactly one resolveOAuthScopes function', () => {
+    const config = renderTemplate('config.ts', { authSchemes: twoOAuth2Schemes() });
+    const matches = config.match(/function resolveOAuthScopes\(\)/g) ?? [];
+    expect(matches).toHaveLength(1);
+    assertParses(config, 'node two-oauth2 config.ts (fn dedup)');
+  });
+
+  it('node: single oauth2 → all oauth2 fields present (backward compat)', () => {
+    const config = renderTemplate('config.ts', { authSchemes: singleOAuth2Scheme() });
+    expect(config).toContain('oauth2Token?: string');
+    expect(config).toContain('oauth2ClientId?: string');
+    expect(config).toContain('oauth2ClientSecret?: string');
+    expect(config).toContain('oauth2Scopes: string[]');
+    expect(config).toContain('function resolveOAuthScopes()');
+    assertParses(config, 'node single-oauth2 config.ts');
+  });
+
+  // --- mixed spec: apiKey + bearer + oauth2 (one each) ---
+
+  it('node: mixed (apiKey + bearer + oauth2) → all fields present exactly once', () => {
+    const config = renderTemplate('config.ts', { authSchemes: mixedSchemes() });
+    expect((config.match(/apiKey\?:\s*string/g) ?? []).length).toBe(1);
+    expect((config.match(/bearerToken\?:\s*string/g) ?? []).length).toBe(1);
+    expect((config.match(/oauth2Token\?:\s*string/g) ?? []).length).toBe(1);
+    expect((config.match(/function resolveOAuthScopes\(\)/g) ?? []).length).toBe(1);
+    assertParses(config, 'node mixed-auth config.ts');
+  });
+
+  it('worker: mixed (apiKey + bearer) → all fields present exactly once', () => {
+    const { authSchemes } = detectAuthSchemes({
+      ApiKey: { type: 'apiKey', in: 'header', name: 'X-API-Key' },
+      Bearer: { type: 'http', scheme: 'bearer' },
+    });
+    const config = renderWorkerTemplate('config.ts', { authSchemes });
+    expect((config.match(/apiKey\?:\s*string/g) ?? []).length).toBe(1);
+    expect((config.match(/bearerToken\?:\s*string/g) ?? []).length).toBe(1);
+    assertParses(config, 'worker mixed-auth config.ts');
+  });
+});

@@ -163,40 +163,52 @@ export function detectAuthSchemes(
     return true;
   });
 
-  // Mark only the FIRST apiKey scheme as the one that emits the shared
-  // `apiKey` value field in the config templates. Subsequent apiKey schemes
-  // (e.g. a second header or a query companion) still contribute their
-  // per-location metadata (headerName / apiKeyQueryName) — they just omit the
-  // duplicate `apiKey?: string` / `apiKey: process.env.X` lines that would
-  // otherwise produce TS2300 "Duplicate identifier" in the generated server.
-  // The shared value works for the common same-key-in-multiple-locations case.
-  // Deferred fidelity gap: specs that require DISTINCT key values per scheme
-  // (e.g. X-App-Id + X-App-Key) will share the first scheme's env var — full
-  // multi-value support is a future feature.
+  // Mark only the FIRST scheme of each type as the one that emits the shared
+  // interface fields in the config templates. Subsequent same-type schemes
+  // still contribute their per-scheme runtime assignments (legal TS duplicate
+  // object-literal keys — last-wins) but omit the interface property
+  // declarations that would produce TS2300 "Duplicate identifier".
   //
-  // Similarly, mark only the FIRST apiKey scheme per location type as the one
-  // that emits the per-location interface property (`apiKeyQueryName?: string`).
-  // Two same-location schemes (e.g. two `in: query` schemes) would otherwise
-  // produce a second `apiKeyQueryName?: string` in the AppConfig interface →
-  // TS2300 "Duplicate identifier" in the generated server. The object-literal
-  // assignments in loadConfig() are legal TS (last-wins), but we also guard
-  // those for cleanliness so only the first scheme's assignment appears.
+  // apiKey: also deduplicated per-location for the `apiKeyQueryName` field.
+  // bearer/basic/oauth2: annotated with emitBearer/emitBasic/emitOAuth2 so the
+  // node + worker templates suppress the duplicate interface fields (and, for
+  // oauth2, the duplicate `resolveOAuthScopes` function declaration → TS2393).
   let firstApiKeySeen = false;
   let firstQueryApiKeySeen = false;
+  let firstBearerSeen = false;
+  let firstBasicSeen = false;
+  let firstOAuth2Seen = false;
   const annotatedSchemes = authSchemes.map((s) => {
-    if (s.type !== 'apiKey') return s;
-    const emitApiKeyValue = !firstApiKeySeen;
-    firstApiKeySeen = true;
-    const emitApiKeyQueryName = s.in === 'query' ? !firstQueryApiKeySeen : undefined;
-    if (s.in === 'query') firstQueryApiKeySeen = true;
-    // The extra annotation properties are not part of the AuthScheme type but
-    // ARE present at runtime for Handlebars template consumption. The cast is
-    // safe: the receiver (template engine) reads JS objects, not TS types.
-    return {
-      ...s,
-      emitApiKeyValue,
-      ...(emitApiKeyQueryName !== undefined && { emitApiKeyQueryName }),
-    } as AuthScheme;
+    if (s.type === 'apiKey') {
+      const emitApiKeyValue = !firstApiKeySeen;
+      firstApiKeySeen = true;
+      const emitApiKeyQueryName = s.in === 'query' ? !firstQueryApiKeySeen : undefined;
+      if (s.in === 'query') firstQueryApiKeySeen = true;
+      // The extra annotation properties are not part of the AuthScheme type but
+      // ARE present at runtime for Handlebars template consumption. The cast is
+      // safe: the receiver (template engine) reads JS objects, not TS types.
+      return {
+        ...s,
+        emitApiKeyValue,
+        ...(emitApiKeyQueryName !== undefined && { emitApiKeyQueryName }),
+      } as AuthScheme;
+    }
+    if (s.type === 'http-bearer') {
+      const emitBearer = !firstBearerSeen;
+      firstBearerSeen = true;
+      return { ...s, emitBearer } as AuthScheme;
+    }
+    if (s.type === 'http-basic') {
+      const emitBasic = !firstBasicSeen;
+      firstBasicSeen = true;
+      return { ...s, emitBasic } as AuthScheme;
+    }
+    if (s.type === 'oauth2') {
+      const emitOAuth2 = !firstOAuth2Seen;
+      firstOAuth2Seen = true;
+      return { ...s, emitOAuth2 } as AuthScheme;
+    }
+    return s;
   });
 
   return { authSchemes: annotatedSchemes, envVars: uniqueEnvVars, oauthFlows };

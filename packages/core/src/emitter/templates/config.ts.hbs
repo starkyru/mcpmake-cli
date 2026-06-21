@@ -13,13 +13,18 @@ export interface AppConfig {
 {{/if}}
 {{/if}}
 {{#if (eq type "http-bearer")}}
+{{#unless (eq emitBearer false)}}
   bearerToken?: string;
+{{/unless}}
 {{/if}}
 {{#if (eq type "http-basic")}}
+{{#unless (eq emitBasic false)}}
   basicUsername?: string;
   basicPassword?: string;
+{{/unless}}
 {{/if}}
 {{#if (eq type "oauth2")}}
+{{#unless (eq emitOAuth2 false)}}
   oauth2Token?: string;
   oauth2ClientId?: string;
   oauth2ClientSecret?: string;
@@ -29,6 +34,7 @@ export interface AppConfig {
   /** OAuth scopes requested on token grants. Defaults to the spec-declared
    * scopes; override at runtime with OAUTH2_SCOPES (space-separated). */
   oauth2Scopes: string[];
+{{/unless}}
 {{/if}}
 {{/each}}
   maxRetries: number;
@@ -85,6 +91,7 @@ function loadDefaultHeaders(): Record<string, string> {
 
 {{#each authSchemes}}
 {{#if (eq type "oauth2")}}
+{{#unless (eq emitOAuth2 false)}}
 /**
  * Resolve the OAuth scopes requested on token grants. Defaults to the
  * spec-declared scopes baked in at generation time; `OAUTH2_SCOPES`
@@ -99,6 +106,7 @@ function resolveOAuthScopes(): string[] {
   return {{#if scopes}}{{{json scopes}}}{{else}}[]{{/if}};
 }
 
+{{/unless}}
 {{/if}}
 {{/each}}
 const posInt = (v: string | undefined, d: number): number => {
