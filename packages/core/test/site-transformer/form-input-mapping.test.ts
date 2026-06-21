@@ -5,6 +5,7 @@ import type {
   SiteDescriptor,
   SiteToolDefinition,
   FormFieldDescriptor,
+  LinkDescriptor,
   SelectorSet,
 } from '../../src/types/site.js';
 
@@ -91,6 +92,67 @@ describe('D-H4: website form input keys match handler keys', () => {
     // No duplicate schema property.
     expect(tool.inputSchemaCode).toContain('"foo_bar":');
     expect(tool.inputSchemaCode).toContain('"foo_bar_2":');
+  });
+});
+
+describe('dup-filename: colliding raw names get unique file/function names', () => {
+  /** Build a two-page site where each page has one navigation link to "/" with
+   *  the identical visible text "Home" — the precondition for the duplicate
+   *  generated-filename crash in `rescan --write`. */
+  function dupLinkSite(): SiteDescriptor {
+    const homeLink = (linkId: string): LinkDescriptor => ({
+      linkId,
+      selector: sel(`#${linkId}`),
+      text: 'Home',
+      href: '/',
+      isNavigation: true,
+    });
+    const page = (pageId: string, url: string, link: LinkDescriptor) => ({
+      pageId,
+      url,
+      title: pageId,
+      forms: [],
+      buttons: [],
+      links: [link],
+      analyzedAt: '2026-06-20T00:00:00.000Z',
+    });
+    return {
+      siteId: 'site_dup',
+      baseUrl: 'https://example.com',
+      pages: [
+        page('alpha', 'https://example.com/a', homeLink('home_a')),
+        page('beta', 'https://example.com/b', homeLink('home_b')),
+      ],
+      analyzedAt: '2026-06-20T00:00:00.000Z',
+      version: 1,
+      crawlDepth: 1,
+      metadata: {},
+    };
+  }
+
+  it('keeps name, fileName, and functionName unique across same-text links', () => {
+    const tools = generateSiteTools(dupLinkSite());
+    const navTools = tools.filter(
+      (t) => t.toolType === 'navigation' && t.fileName.startsWith('navigate-to-home'),
+    );
+
+    // Two links resolve to the same raw name `navigate_to_home`; both must be
+    // emitted as distinct tools (the bug dropped/collided one).
+    expect(navTools).toHaveLength(2);
+
+    // No two tools may share any of the three identity fields.
+    const names = navTools.map((t) => t.name);
+    const fileNames = navTools.map((t) => t.fileName);
+    const functionNames = navTools.map((t) => t.functionName);
+    expect(new Set(names).size).toBe(2);
+    expect(new Set(fileNames).size).toBe(2);
+    expect(new Set(functionNames).size).toBe(2);
+
+    // Exact expected, hand-written values: the second link gets the `_2` suffix
+    // on the deduplicated name, which now flows into the file and function too.
+    expect([...names].sort()).toEqual(['navigate_to_home', 'navigate_to_home_2']);
+    expect([...fileNames].sort()).toEqual(['navigate-to-home', 'navigate-to-home-2']);
+    expect([...functionNames].sort()).toEqual(['navigateToHome', 'navigateToHome2']);
   });
 });
 

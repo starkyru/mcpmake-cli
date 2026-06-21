@@ -28,10 +28,10 @@ export default defineCommand({
       alias: 't',
       description: 'Paste a deploy token (mfd_…) instead of the browser flow (CI/headless)',
     },
-    'no-browser': {
+    browser: {
       type: 'boolean',
-      description: "Don't try to open the browser automatically",
-      default: false,
+      description: 'Open the browser automatically (use --no-browser to disable)',
+      default: true,
     },
     insecure: {
       type: 'boolean',
@@ -98,7 +98,10 @@ export default defineCommand({
     logger.info('');
     logger.info(`and enter the code:   ${userCode}`);
     logger.info('');
-    if (!args['no-browser']) {
+    // citty/mri parses the `--no-browser` token as negating the `browser`
+    // boolean (args.browser === false); absent/default leaves it true. Treat
+    // auto-open as enabled unless it was explicitly disabled.
+    if (args.browser !== false) {
       // Only auto-open http(s) URLs. A malicious --server could return a
       // file:// or javascript: URI in verification_uri_complete; skip the
       // auto-open and let the user open the printed URL manually instead.

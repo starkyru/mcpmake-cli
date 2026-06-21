@@ -28,13 +28,29 @@ const SAFE_PATH = /^[A-Za-z0-9._/-]+$/;
 const SAFE_TOKEN = /^[A-Za-z0-9._-]+$/;
 
 /**
+ * Path-traversal guard for SAFE_PATH-typed values (spec path, output dir).
+ *
+ * SAFE_PATH allows `.` and `/`, so `..` segments and leading-`/` absolute paths
+ * slip past it. This rejects a value that is absolute (leading `/`) or contains
+ * any `..` path segment, forcing a plain relative path. A filename that merely
+ * contains two dots (e.g. `my..spec.yaml`) is fine — only an exact `..` segment
+ * (split on `/`) is rejected.
+ */
+function isUnsafePath(value: string): boolean {
+  if (value.startsWith('/')) return true;
+  return value.split('/').some((segment) => segment === '..');
+}
+
+/**
  * Reject values that could break out of the generated shell `run:` step or YAML.
  * These are operator-supplied (spec path, output dir, server name, version) and
  * flow into a CI shell command; restricting them to filename/identifier
- * characters removes every command-substitution / expansion vector.
+ * characters removes every command-substitution / expansion vector. For the
+ * path-typed values (SAFE_PATH) we additionally reject traversal (`..`) and
+ * absolute paths so the value cannot escape the repo root.
  */
 function assertCiSafe(value: string, label: string, pattern: RegExp): void {
-  if (!pattern.test(value)) {
+  if (!pattern.test(value) || (pattern === SAFE_PATH && isUnsafePath(value))) {
     throw new Error(
       `Unsafe ${label} for the CI workflow: "${value}". ` +
         `Only letters, digits and ${pattern === SAFE_PATH ? '. _ / -' : '. _ -'} are allowed.`,
@@ -190,12 +206,12 @@ const initCommand = defineCommand({
     // Reject shell/YAML-unsafe values up front with a friendly message (the same
     // checks are enforced inside buildWorkflowYaml as a hard safety net).
     const version = String(args['mcpmake-version']);
-    if (!SAFE_PATH.test(args.spec)) {
+    if (!SAFE_PATH.test(args.spec) || isUnsafePath(args.spec)) {
       await fail(
         `Unsafe spec path "${args.spec}". Use a plain relative path (letters, digits, . _ / -).`,
       );
     }
-    if (!SAFE_PATH.test(String(args.output))) {
+    if (!SAFE_PATH.test(String(args.output)) || isUnsafePath(String(args.output))) {
       await fail(
         `Unsafe --output "${args.output}". Use a plain relative path (letters, digits, . _ / -).`,
       );

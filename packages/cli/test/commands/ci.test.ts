@@ -61,4 +61,24 @@ describe('ci init: buildWorkflowYaml', () => {
     expect(() => buildWorkflowYaml({ ...base, version: '; rm -rf / #' })).toThrow(/Unsafe/);
     expect(() => buildWorkflowYaml({ ...base, name: 'a"; evil; "' })).toThrow(/Unsafe/);
   });
+
+  it('rejects path-traversal in the spec/output paths (`..` segment or absolute)', () => {
+    const base = {
+      spec: 'api.yaml',
+      output: './server',
+      source: 'openapi' as const,
+      transport: 'stdio' as const,
+      version: 'latest',
+    };
+    // The SAFE_PATH charset permits `.` and `/`, so a `..` traversal would slip
+    // through without the explicit segment guard. Every escaping form throws.
+    for (const bad of ['../../etc/x', '..', '../x', 'a/../b', 'a/..', './ok/../bad', '/etc/x']) {
+      expect(() => buildWorkflowYaml({ ...base, spec: bad })).toThrow(/Unsafe/);
+      expect(() => buildWorkflowYaml({ ...base, output: bad })).toThrow(/Unsafe/);
+    }
+    // Legit relative paths (incl. a filename that merely contains two dots) pass.
+    for (const ok of ['api-spec.yaml', 'specs/api.yaml', './mcp-server', 'my..spec.yaml']) {
+      expect(() => buildWorkflowYaml({ ...base, spec: ok, output: ok })).not.toThrow();
+    }
+  });
 });

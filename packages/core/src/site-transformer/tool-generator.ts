@@ -136,8 +136,13 @@ function buildFormTool(
     title: toToolTitle(rawName),
     description,
     inputSchemaCode,
-    fileName: toFileName(rawName),
-    functionName: toFunctionName(rawName),
+    // Derive from the deduplicated `name`, not `rawName`: two forms with the
+    // same raw name otherwise collapse onto one file/function, and the
+    // force/atomic writer double-renames the single staged temp → ENOENT.
+    // `name` is already snake_cased + unique, and toFileName/toFunctionName's
+    // snake-casing is idempotent, so these stay unique and in sync.
+    fileName: toFileName(name),
+    functionName: toFunctionName(name),
     toolType: 'page-action',
     pageId: page.pageId,
     pageUrl: page.url,
@@ -177,8 +182,10 @@ function buildButtonTool(
     title: toToolTitle(rawName),
     description,
     inputSchemaCode,
-    fileName: toFileName(rawName),
-    functionName: toFunctionName(rawName),
+    // Derive from the deduplicated `name` so colliding raw names get unique,
+    // in-sync files/functions (see buildFormTool for the full rationale).
+    fileName: toFileName(name),
+    functionName: toFunctionName(name),
     toolType: 'element-action',
     pageId: page.pageId,
     pageUrl: page.url,
@@ -214,8 +221,10 @@ function buildLinkTool(
     title: toToolTitle(rawName),
     description,
     inputSchemaCode,
-    fileName: toFileName(rawName),
-    functionName: toFunctionName(rawName),
+    // Derive from the deduplicated `name` so two same-text links get unique,
+    // in-sync files/functions (see buildFormTool for the full rationale).
+    fileName: toFileName(name),
+    functionName: toFunctionName(name),
     toolType: 'navigation',
     pageId: page.pageId,
     pageUrl: page.url,
@@ -243,8 +252,10 @@ function buildNavigationTool(
     inputSchemaCode: `z.object({
   sessionId: z.string().max(64).regex(/^[a-zA-Z0-9_-]+$/).optional().describe('Browser session ID'),
 })`,
-    fileName: toFileName(rawName),
-    functionName: toFunctionName(rawName),
+    // Derive from the deduplicated `name` so colliding raw names get unique,
+    // in-sync files/functions (see buildFormTool for the full rationale).
+    fileName: toFileName(name),
+    functionName: toFunctionName(name),
     toolType: 'navigation',
     pageUrl: url,
     selectors: [],

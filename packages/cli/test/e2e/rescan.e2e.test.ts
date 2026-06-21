@@ -22,7 +22,7 @@
 
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { readFileSync, existsSync, cpSync } from 'node:fs';
+import { readFileSync, existsSync, cpSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { runCli, combined } from './helpers/run-cli.js';
@@ -279,17 +279,14 @@ describe.skipIf(!E2E || !E2E_BROWSER)('e2e (browser): rescan', () => {
     }
   });
 
-  // BUG (E7): `rescan --write` crashes (exit 1, ENOENT during atomic rename)
-  // whenever two distinct site tools resolve to the SAME generated filename.
-  // The site tool-generator de-duplicates tool *names* (`navigate_to_home`,
-  // `navigate_to_home_2`) but derives `fileName`/`functionName` from the
-  // *pre-dedup* raw name, so two links/forms with identical text collapse onto
-  // one `src/tools/<name>.ts`. The force/atomic writer (emitter/code-writer.ts)
-  // then stages that path once but tries to `rename` it twice → the second
-  // rename hits ENOENT (the temp was consumed by the first). Two ordinary
-  // "Home" links across pages are enough to trigger it. Asserted here against
-  // ACTUAL behavior so the suite stays green; see "BUGS FOUND" in the report.
-  it('BUG: --write crashes on duplicate tool filenames (two same-text links)', async () => {
+  // Regression test for the dup-filename fix: when two distinct site tools
+  // resolve to the same raw name (two "Home" links across pages), the tool-
+  // generator now derives `fileName`/`functionName` from the *deduplicated*
+  // tool name, so they no longer collapse onto one `src/tools/<name>.ts`. The
+  // force/atomic writer (emitter/code-writer.ts) stages and renames each path
+  // exactly once instead of double-renaming a single temp → ENOENT. Two
+  // ordinary "Home" links across pages are enough to exercise the path.
+  it('--write handles duplicate tool filenames (two same-text links)', async () => {
     if (!chromiumOk) {
       console.warn('SKIP: chromium not available (offline) — nightly CI provisions it.');
       return;
@@ -303,21 +300,27 @@ describe.skipIf(!E2E || !E2E_BROWSER)('e2e (browser): rescan', () => {
           ['from', 'website', dup.baseUrl, '-o', proj, '--name', 'dup-site', '--headless'],
           { cwd: dir, env: browserEnv(), timeoutMs: 90_000 },
         );
-        // The initial (non-force) emit tolerates the collision by skip-existing,
-        // so generation itself succeeds.
         expect(g.code).toBe(0);
 
-        // rescan --write uses the force/atomic+prune path, which double-renames
-        // the collided temp file and crashes.
+        // rescan --write uses the force/atomic+prune path; with the fix the two
+        // same-text links emit distinct files, so it completes cleanly.
         const r = await runCli(['rescan', proj, '--heal=false', '--write', '--headless'], {
           cwd: dir,
           env: browserEnv(),
           timeoutMs: 90_000,
         });
-        expect(r.code).toBe(1);
+        expect(r.code).toBe(0);
         const text = combined(r);
-        expect(text).toContain('ENOENT');
-        expect(text).toContain('.mcpmake-tmp');
+        expect(text).toContain('Regenerated');
+
+        // Both same-text "Home" links land in their own tool file: the second
+        // gets the deduplicated `_2` suffix carried through to the filename.
+        const homeTools = readdirSync(join(proj, 'src/tools')).filter((f) =>
+          f.startsWith('navigate-to-home'),
+        );
+        expect(homeTools).toHaveLength(2);
+        expect(homeTools).toContain('navigate-to-home.ts');
+        expect(homeTools).toContain('navigate-to-home-2.ts');
       });
     } finally {
       await dup.close();

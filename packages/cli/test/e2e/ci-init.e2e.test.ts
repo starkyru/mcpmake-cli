@@ -133,24 +133,20 @@ describe.skipIf(!E2E)('e2e: mcpmake ci init', () => {
     });
   });
 
-  it(
-    'BUG: a `../../` path-traversal spec arg is NOT rejected — it is accepted and ' +
-      'embedded verbatim in the workflow',
-    async () => {
-      // The SAFE_PATH regex `^[A-Za-z0-9._/-]+$` permits `.` and `/`, so
-      // "../../etc/x" passes validation: there is no explicit `..` traversal
-      // guard. Spec asked for an "Unsafe spec path" rejection here; the CLI
-      // instead writes the workflow with the traversal path inlined. We assert
-      // the ACTUAL (buggy) behavior so the suite stays green and the regression
-      // is documented. See BUGS FOUND in the sprint report.
-      await withTempDir(async (dir) => {
-        const r = await runCli(['ci', 'init', '../../etc/x', '-s', 'openapi'], { cwd: dir });
-        expect(r.code).toBe(0); // BUG: expected 1 with "Unsafe spec path"
-        const yaml = await readFile(join(dir, WORKFLOW_REL), 'utf-8');
-        expect(yaml).toContain('from openapi "../../etc/x"'); // traversal path embedded
-      });
-    },
-  );
+  it('rejects a `../../` path-traversal spec arg with "Unsafe spec path"', async () => {
+    // SAFE_PATH `^[A-Za-z0-9._/-]+$` permits `.` and `/`, so the explicit
+    // isUnsafePath traversal guard is what rejects "../../etc/x": it carries a
+    // `..` segment. The CLI must exit 1 with the same "Unsafe spec path"
+    // message as a shell-metachar payload and write nothing.
+    await withTempDir(async (dir) => {
+      const r = await runCli(['ci', 'init', '../../etc/x', '-s', 'openapi'], { cwd: dir });
+      expect(r.code).toBe(1);
+      expect(combined(r)).toContain(
+        'Unsafe spec path "../../etc/x". Use a plain relative path (letters, digits, . _ / -).',
+      );
+      expect(existsSync(join(dir, WORKFLOW_REL))).toBe(false);
+    });
+  });
 
   it('never writes into the real repo .github/workflows', async () => {
     // Defense in depth: run an init in a sandbox and prove the real repo's

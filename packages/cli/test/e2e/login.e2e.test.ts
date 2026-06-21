@@ -71,18 +71,10 @@ describe.skipIf(!E2E)('e2e login: device flow + token paste', () => {
         // The poll loop actually polled past the pending reply before granting.
         expect(fc.tokenPolls()).toBeGreaterThanOrEqual(2);
 
-        // BUG: `--no-browser` does NOT suppress the browser auto-open. The arg is
-        // declared as `'no-browser'`, but citty/mri (v0.1.6) interprets the
-        // `--no-X` token as negating a phantom boolean `browser` (setting
-        // `args.browser = false`) and leaves `args['no-browser']` at its `false`
-        // default. The command checks `!args['no-browser']`, which is therefore
-        // always truthy, so it still calls openBrowser and prints "Opening your
-        // browser…" even though the user asked it not to. Reported under BUGS
-        // FOUND. We assert the ACTUAL (buggy) behaviour so a future fix flips this
-        // expectation deliberately. (The fake cloud points
-        // verification_uri_complete at a closed loopback port so the spawned
-        // opener is a harmless no-op.)
-        expect(out).toContain('Opening your browser…');
+        // `--no-browser` correctly suppresses the auto-open: citty/mri sets
+        // args.browser=false, the command gates on that, so openBrowser is never
+        // called and the "Opening your browser…" line is absent.
+        expect(out).not.toContain('Opening your browser…');
       } finally {
         await fc.stop();
       }

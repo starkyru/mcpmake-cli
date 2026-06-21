@@ -20,7 +20,7 @@ export async function writeCodeUnits(
 
   // Resolve + traversal-guard every unit up front so a malicious relative path
   // can never escape the output dir, and so we fail before touching the disk.
-  const planned = units.map((unit) => {
+  const resolved = units.map((unit) => {
     const absPath = resolve(outputDir, unit.filePath);
     if (!absPath.startsWith(resolvedOutputDir + '/') && absPath !== resolvedOutputDir) {
       throw new Error(
@@ -29,6 +29,26 @@ export async function writeCodeUnits(
     }
     return { absPath, unit };
   });
+
+  // Defense-in-depth: collapse units that resolve to the SAME absolute path so
+  // the force/atomic path never stages one temp once but renames it twice
+  // (→ ENOENT on the second rename). Two site tools sharing a generated
+  // filename is the known trigger; the tool-generator now keeps them distinct,
+  // but a future collision must not crash or silently drop a file. Last writer
+  // wins, first-occurrence order is preserved, and every drop is warned once —
+  // a no-op when there are no collisions.
+  const byPath = new Map<string, (typeof resolved)[number]>();
+  for (const entry of resolved) {
+    const existing = byPath.get(entry.absPath);
+    if (existing) {
+      logger.warn(
+        `Duplicate output path: ${entry.unit.filePath} overwrites ${existing.unit.filePath} ` +
+          `(both resolve to the same file) — keeping the last.`,
+      );
+    }
+    byPath.set(entry.absPath, entry);
+  }
+  const planned = [...byPath.values()];
 
   if (options.dryRun) {
     for (const { unit } of planned) {
