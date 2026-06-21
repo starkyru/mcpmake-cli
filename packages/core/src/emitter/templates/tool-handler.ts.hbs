@@ -31,9 +31,9 @@ const controlSchema = {
 };
 
 const inputSchema = ({{{inputSchemaCode}}}).extend(controlSchema);
-{{#if outputSchemaCode}}
+{{#if outputSchemaCode}}{{#unless isAsync}}
 const outputSchema = {{{outputSchemaCode}}};
-{{/if}}
+{{/unless}}{{/if}}
 
 /** Execute the HTTP request for this tool and return the (optionally filtered) data. */
 async function runRequest(rawInput: Record<string, unknown>, config: AppConfig): Promise<unknown> {
@@ -86,9 +86,9 @@ export function register(server: McpServer, config: AppConfig): void {
       title: '{{title}}',
       description: `{{{description}}}`,
       inputSchema,
-{{#if outputSchemaCode}}
+{{#if outputSchemaCode}}{{#unless isAsync}}
       outputSchema,
-{{/if}}
+{{/unless}}{{/if}}
 {{#if annotations}}
       annotations: {
 {{#if annotations.readOnlyHint}}
@@ -136,15 +136,19 @@ export function register(server: McpServer, config: AppConfig): void {
               text: JSON.stringify(result, null, 2),
             },
           ],
-{{#if outputSchemaCode}}
+{{#if outputSchemaCode}}{{#unless isAsync}}
           // MCP SDK validates structuredContent against outputSchema when set.
-          // wrapArrayRoot wraps array responses as { items: <array> } and leaves
-          // object responses bare — mirror that shape here so validation passes.
+          // wrapArrayRoot (schema-converter.ts) wraps ONLY type:array schemas as
+          // { type:object, properties:{ items }, required:[items] } and passes
+          // objects AND scalars through bare.  Mirror that exactly at runtime:
+          //   - array  → { items: result }  (matches the wrapped object schema)
+          //   - object → result as-is        (bare object, no wrap)
+          //   - scalar → result as-is        (bare scalar; cast required for TS)
           structuredContent:
-            result !== null && typeof result === 'object' && !Array.isArray(result)
-              ? (result as Record<string, unknown>)
-              : { items: result },
-{{/if}}
+            Array.isArray(result)
+              ? { items: result }
+              : (result as unknown as Record<string, unknown>),
+{{/unless}}{{/if}}
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
