@@ -184,7 +184,7 @@ function pickCanonicalEntry(entries: NormalizedEntry[]): NormalizedEntry {
 function detectAuth(entry: Entry): DetectedAuth[] {
   const result: DetectedAuth[] = [];
 
-  for (const header of entry.request.headers) {
+  for (const header of entry.request.headers ?? []) {
     const name = header.name.toLowerCase();
 
     if (name === 'authorization') {
@@ -228,7 +228,7 @@ function detectAuth(entry: Entry): DetectedAuth[] {
   // Detect auth tokens passed in the query string. The literal value is never
   // copied into the result — only the (de-duplicated) param name is reported.
   const seenQueryAuth = new Set<string>();
-  for (const qs of entry.request.queryString) {
+  for (const qs of entry.request.queryString ?? []) {
     if (isQueryAuthKey(qs.name) && !seenQueryAuth.has(qs.name.toLowerCase())) {
       seenQueryAuth.add(qs.name.toLowerCase());
       result.push({

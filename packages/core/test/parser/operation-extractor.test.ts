@@ -8,6 +8,20 @@ import type { OpenAPIV3 } from 'openapi-types';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const FIXTURES = resolve(__dirname, '..', 'fixtures');
 
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/** Minimal well-formed OpenAPI 3.0 document used as a base for targeted tests. */
+function minimalDoc(overrides: Partial<OpenAPIV3.Document> = {}): OpenAPIV3.Document {
+  return {
+    openapi: '3.0.0',
+    info: { title: 'Test API', version: '1.0.0' },
+    paths: {},
+    ...overrides,
+  };
+}
+
 describe('operation-extractor', () => {
   it('extracts all operations from petstore spec', async () => {
     const { api } = await loadOpenApiSpec(resolve(FIXTURES, 'petstore.yaml'));
@@ -71,5 +85,95 @@ describe('operation-extractor', () => {
       expect(op.security.length).toBeGreaterThan(0);
       expect(op.security[0].schemeName).toBe('ApiKeyAuth');
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// R20-A: guards for fields omitted in minimal/LLM-generated specs
+// ---------------------------------------------------------------------------
+
+describe('operation-extractor — missing optional spec fields (R20-A)', () => {
+  it('does not throw when an operation has no responses; returns empty responses array', () => {
+    const doc = minimalDoc({
+      paths: {
+        '/ping': {
+          get: {
+            operationId: 'ping',
+            // `responses` intentionally absent — valid in a minimal/LLM-generated doc
+          } as OpenAPIV3.OperationObject,
+        },
+      },
+    });
+
+    const result = extractOperations(doc);
+
+    expect(result.operations).toHaveLength(1);
+    expect(result.operations[0].operationId).toBe('ping');
+    expect(result.operations[0].responses).toEqual([]);
+  });
+
+  it('does not throw when the doc has no `info` field; falls back to sensible defaults', () => {
+    // Cast through `unknown` because TypeScript rightly treats `info` as required;
+    // real-world LLM-generated or hand-rolled docs may omit it.
+    const doc = minimalDoc({ info: undefined as unknown as OpenAPIV3.InfoObject });
+
+    const result = extractOperations(doc);
+
+    expect(result.info.title).toBe('api');
+    expect(result.info.version).toBe('0.0.0');
+    expect(result.info.description).toBeUndefined();
+  });
+
+  it('does not throw when `info` is present but has no title or version', () => {
+    const doc = minimalDoc({
+      info: {} as OpenAPIV3.InfoObject,
+    });
+
+    const result = extractOperations(doc);
+
+    expect(result.info.title).toBe('api');
+    expect(result.info.version).toBe('0.0.0');
+  });
+
+  it('preserves real title/version when info is fully populated', () => {
+    const doc = minimalDoc({
+      info: { title: 'My Service', version: '2.1.0', description: 'Does stuff' },
+    });
+
+    const result = extractOperations(doc);
+
+    expect(result.info.title).toBe('My Service');
+    expect(result.info.version).toBe('2.1.0');
+    expect(result.info.description).toBe('Does stuff');
+  });
+
+  it('handles a mix: missing responses on one operation, present on another', () => {
+    const doc = minimalDoc({
+      paths: {
+        '/a': {
+          get: {
+            operationId: 'opA',
+            // no responses
+          } as OpenAPIV3.OperationObject,
+        },
+        '/b': {
+          get: {
+            operationId: 'opB',
+            responses: {
+              '200': { description: 'ok' },
+            },
+          },
+        },
+      },
+    });
+
+    const result = extractOperations(doc);
+
+    const opA = result.operations.find((o) => o.operationId === 'opA')!;
+    const opB = result.operations.find((o) => o.operationId === 'opB')!;
+
+    expect(opA.responses).toEqual([]);
+    expect(opB.responses).toHaveLength(1);
+    expect(opB.responses[0].statusCode).toBe('200');
   });
 });

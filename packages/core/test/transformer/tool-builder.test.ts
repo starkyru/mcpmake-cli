@@ -248,6 +248,58 @@ describe('tool-builder', () => {
       expect(tools[0].name).toBe('execute_tool_2');
     });
 
+    it('R19-B: two tools whose names share their first 128 chars get distinct names after truncation', () => {
+      // If two operationIds produce names that differ only beyond position 128, the
+      // dedup pass (second pass) leaves them both as-is (they ARE distinct strings).
+      // Without the R19-B fix the subsequent truncation collapses them to the same
+      // 128-char prefix, causing duplicate server.registerTool() calls at startup.
+      // The suffix appended by the dedup pass itself is short (<5 chars), so we
+      // craft raw names via x-mcp-name rather than relying on operationId slugging.
+      //
+      // Strategy: supply two ops whose mcpExtensions.name values are identical in
+      // their first 128 chars but differ at position 128+. After buildAllTools the
+      // returned names must both be ≤128 chars AND globally distinct.
+      // Both names are 130 chars. They share their first 128 chars (128 'a's) and
+      // differ only at positions 129-130. The dedup pass sees two distinct strings
+      // and leaves them both unchanged. The truncation pass then slices both to the
+      // same 128-char prefix ('a'.repeat(128)) — without the R19-B fix they collide.
+      const sharedPrefix = 'a'.repeat(128); // exactly 128 'a' chars
+      const ops = [
+        makeOp({
+          operationId: 'opA',
+          method: 'get',
+          path: '/a',
+          mcpExtensions: { name: `${sharedPrefix}xx` }, // 130 chars, differs at 129-130
+        }),
+        makeOp({
+          operationId: 'opB',
+          method: 'get',
+          path: '/b',
+          mcpExtensions: { name: `${sharedPrefix}yy` }, // 130 chars, same first 128
+        }),
+      ];
+      const tools = buildAllTools(ops);
+      expect(tools).toHaveLength(2);
+      const names = tools.map((t) => t.name);
+      // Both names must be within the 128-char MCP limit
+      for (const n of names) {
+        expect(n.length).toBeLessThanOrEqual(128);
+      }
+      // Names must be globally distinct — no duplicate registerTool() collision
+      expect(new Set(names).size).toBe(2);
+    });
+
+    it('R19-B: short names (≤128 chars) are unchanged by the truncation pass', () => {
+      // The common case: names well under the limit must not acquire any suffix.
+      const ops = [
+        makeOp({ operationId: 'listPets', method: 'get', path: '/pets' }),
+        makeOp({ operationId: 'createPet', method: 'post', path: '/pets' }),
+      ];
+      const tools = buildAllTools(ops);
+      expect(tools[0].name).toBe('list_pets');
+      expect(tools[1].name).toBe('create_pet');
+    });
+
     it('skips an operation with an unsupported body media type and returns the others (R10-A)', () => {
       // One XML body operation among two valid JSON ones.  Without the per-op
       // try/catch, bodyEncodingFor throws for application/xml and aborts ALL

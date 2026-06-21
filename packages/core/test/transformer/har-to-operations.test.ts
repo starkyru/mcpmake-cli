@@ -148,6 +148,39 @@ describe('har-to-operations query-string auth (M10)', () => {
   });
 });
 
+describe('har-to-operations missing optional HAR fields (R19-A)', () => {
+  it('processes a cluster whose entry has no queryString field without throwing', () => {
+    // Simulate a Safari / minimal HAR export where queryString is omitted.
+    const entry = makeEntry('https://api.example.com/v1/items');
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    delete (entry.request as any).queryString;
+
+    // Both normalizeEntry (queryString loop) and detectAuth (queryString loop)
+    // must tolerate the missing field.
+    expect(() => convert([entry])).not.toThrow();
+    const result = convert([entry]);
+    expect(result.operations).toHaveLength(1);
+    // No query params and no query-based auth should be detected.
+    const op = result.operations[0];
+    expect(op.parameters.filter((p) => p.in === 'query')).toHaveLength(0);
+    expect(result.detectedAuth.filter((a) => a.in === 'query')).toHaveLength(0);
+  });
+
+  it('processes a cluster whose entry has no headers field without throwing', () => {
+    // Some minimal or hand-written HARs omit the headers array entirely.
+    const entry = makeEntry('https://api.example.com/v1/items');
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    delete (entry.request as any).headers;
+
+    // detectAuth iterates entry.request.headers; must not throw.
+    expect(() => convert([entry])).not.toThrow();
+    const result = convert([entry]);
+    expect(result.operations).toHaveLength(1);
+    // No header-based auth schemes should be detected.
+    expect(result.detectedAuth.filter((a) => a.in !== 'query')).toHaveLength(0);
+  });
+});
+
 describe('har-to-operations request body contentType (R10-B)', () => {
   it('uses application/json contentType when the first body is form but a JSON sibling exists', () => {
     // Cluster with two entries for the same endpoint: first has a form body

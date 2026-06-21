@@ -18,6 +18,25 @@ import { activeKeyVar, apiKeyArg, applyApiKey, modelArg, providerArg } from './a
 import type { SiteDescriptor, SiteRegenMetadata, SiteProjectManifest } from '@mcpmake/core';
 
 /**
+ * Return true when the parsed JSON value has the minimum shape required to use
+ * a SiteDescriptor safely: `pages` must be an array (prevents the TypeError at
+ * `.pages.length`), `version` must be a number (prevents `NaN` being written
+ * into the regenerated snapshot), and `baseUrl` must be a string (prevents
+ * passing `undefined` into the crawl engine).
+ */
+export function isValidSiteDescriptorShape(
+  value: unknown,
+): value is Pick<SiteDescriptor, 'pages' | 'version' | 'baseUrl'> {
+  if (typeof value !== 'object' || value === null) return false;
+  const v = value as Record<string, unknown>;
+  return (
+    Array.isArray(v['pages']) &&
+    typeof v['version'] === 'number' &&
+    typeof v['baseUrl'] === 'string'
+  );
+}
+
+/**
  * Parse a numeric CLI flag as a non-negative integer. Rejects non-numeric /
  * negative input with a clear error instead of silently coercing it to NaN→0
  * (which would zero out crawl scope). An unset/empty flag falls back.
@@ -97,6 +116,12 @@ export default defineCommand({
       oldSite = JSON.parse(await readFile(descriptorPath, 'utf-8')) as SiteDescriptor;
     } catch (err) {
       return await fail(`Failed to read site snapshot: ${descriptorPath}`, err);
+    }
+
+    if (!isValidSiteDescriptorShape(oldSite)) {
+      return await fail(
+        `Malformed site snapshot at ${descriptorPath} — missing or invalid "pages", "version", or "baseUrl". Re-generate with \`from website\`.`,
+      );
     }
 
     const baseUrl = args.url ?? oldSite.baseUrl;

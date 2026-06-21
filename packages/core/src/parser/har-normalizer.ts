@@ -65,7 +65,7 @@ export function normalizeEntry(entry: Entry): NormalizedEntry {
   const normalizedPath = '/' + normalizedSegments.join('/');
 
   const queryParams: QueryParam[] = [];
-  for (const qs of entry.request.queryString) {
+  for (const qs of entry.request.queryString ?? []) {
     queryParams.push({
       name: qs.name,
       exampleValue: qs.value,

@@ -77,4 +77,18 @@ describe('har-normalizer', () => {
     expect(result.queryParams[0].inferredType).toBe('integer');
     expect(result.queryParams[1].inferredType).toBe('boolean');
   });
+
+  it('normalizes entry with no queryString field without throwing (R19-A)', () => {
+    // Safari Web Inspector and older Charles Proxy omit queryString entirely
+    // when there is no query component on the request URL. The HAR spec marks
+    // the field as optional. Before the fix this caused a TypeError at runtime.
+    const entry = makeEntry('https://api.example.com/users/42');
+    // Simulate a real-world HAR export where queryString is simply absent.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    delete (entry.request as any).queryString;
+
+    const result = normalizeEntry(entry);
+    expect(result.queryParams).toHaveLength(0);
+    expect(result.normalizedPath).toBe('/users/{userId}');
+  });
 });

@@ -307,11 +307,32 @@ export function buildAllTools(operations: OperationDescriptor[]): ToolDefinition
     usedFileNames.add(fileName);
   }
 
-  // Enforce MCP spec name length limit (128 chars)
+  // Enforce MCP spec name length limit (128 chars). Truncation is applied after
+  // the dedup pass, so two names that are distinct only beyond character 128 would
+  // re-collide here (R19-B). Re-check uniqueness after each truncation: on
+  // collision append a numeric suffix (`_2`, `_3`, …) and re-truncate so the
+  // final name is both ≤128 chars and globally unique. The common case (name
+  // already ≤128 chars) is unchanged — no suffix, no re-check needed.
+  const truncatedNames = new Set<string>();
   for (const tool of tools) {
-    if (tool.name.length > 128) {
-      tool.name = tool.name.slice(0, 128);
+    const truncated = tool.name.slice(0, 128);
+    if (!truncatedNames.has(truncated)) {
+      tool.name = truncated;
+      truncatedNames.add(truncated);
+      continue;
     }
+    // Collision after truncation: find the next free suffixed name that fits in
+    // 128 chars. The base is re-sliced to leave room for the suffix.
+    let n = 2;
+    let suffix = `_${n}`;
+    let name = truncated.slice(0, 128 - suffix.length) + suffix;
+    while (truncatedNames.has(name)) {
+      n++;
+      suffix = `_${n}`;
+      name = truncated.slice(0, 128 - suffix.length) + suffix;
+    }
+    tool.name = name;
+    truncatedNames.add(name);
   }
 
   return tools;

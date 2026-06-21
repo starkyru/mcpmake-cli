@@ -65,7 +65,7 @@ export function extractOperations(api: OpenAPIV3.Document): ExtractionResult {
         requestBody: extractRequestBody(
           operation.requestBody as OpenAPIV3.RequestBodyObject | undefined,
         ),
-        responses: extractResponses(operation.responses as OpenAPIV3.ResponsesObject),
+        responses: extractResponses((operation.responses ?? {}) as OpenAPIV3.ResponsesObject),
         security: extractSecurity(operation.security ?? globalSecurity),
         // An explicit `security: []` on the operation makes it public (overrides
         // global security). Detected here because extractSecurity flattens the
@@ -82,9 +82,9 @@ export function extractOperations(api: OpenAPIV3.Document): ExtractionResult {
     baseUrl,
     securitySchemes,
     info: {
-      title: api.info.title,
-      version: api.info.version,
-      description: api.info.description,
+      title: api.info?.title ?? 'api',
+      version: api.info?.version ?? '0.0.0',
+      description: api.info?.description,
     },
   };
 }
