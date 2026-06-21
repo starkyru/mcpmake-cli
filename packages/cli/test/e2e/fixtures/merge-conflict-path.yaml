@@ -1,0 +1,15 @@
+# Merge fixture that conflicts with merge-a.yaml on GET /alpha — both specs
+# define the same method+path, so `mergeSpecs` throws
+# "Path conflict: GET /alpha exists in both specs" and the CLI exits non-zero.
+openapi: '3.0.0'
+info:
+  version: 1.0.0
+  title: Service C
+paths:
+  /alpha:
+    get:
+      operationId: getAlphaAgain
+      summary: A second, conflicting GET on the alpha resource path
+      responses:
+        '200':
+          description: ok

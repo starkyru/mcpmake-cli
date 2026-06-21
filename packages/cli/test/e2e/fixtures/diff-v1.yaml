@@ -1,0 +1,32 @@
+# Diff fixture "v1" (Sprint E2). Paired with diff-v2.yaml so `mcpmake diff`
+# exercises all four deltas:
+#   - list_pets  : present in both but description + a query param change (changed)
+#   - delete_pet : present here, gone in v2 (removed)
+#   - (v2 adds list_owners) (added)
+openapi: '3.0.0'
+info:
+  version: 1.0.0
+  title: Diff V1
+servers:
+  - url: https://example.test/v1
+paths:
+  /pets:
+    get:
+      operationId: listPets
+      summary: List all pets in the store catalog
+      responses:
+        '200':
+          description: ok
+  /pets/{petId}:
+    delete:
+      operationId: deletePet
+      summary: Delete a specific pet by its identifier
+      parameters:
+        - name: petId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: deleted

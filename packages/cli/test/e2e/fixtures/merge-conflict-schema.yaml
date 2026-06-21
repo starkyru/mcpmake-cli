@@ -1,0 +1,22 @@
+# Merge fixture that conflicts with merge-schema-base.yaml on a component schema:
+# both define `Shared`, so `mergeSpecs` throws
+# 'Schema conflict: "Shared" exists in both specs' and the CLI exits non-zero.
+openapi: '3.0.0'
+info:
+  version: 1.0.0
+  title: Schema Two
+paths:
+  /two:
+    get:
+      operationId: getTwo
+      summary: Get the second resource
+      responses:
+        '200':
+          description: ok
+components:
+  schemas:
+    Shared:
+      type: object
+      properties:
+        b:
+          type: integer

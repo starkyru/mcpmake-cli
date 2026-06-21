@@ -1,0 +1,79 @@
+openapi: 3.0.0
+info:
+  title: Acme API
+  version: 2.3.0
+servers:
+  - url: https://api.acme.com/v1
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+security:
+  - bearerAuth: []
+paths:
+  /accounts:
+    post:
+      operationId: createAccount
+      summary: Create account
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+    get:
+      operationId: listAccounts
+      responses:
+        '200':
+          description: ok
+  /accounts/{id}:
+    get:
+      operationId: getAccount
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: ok
+    delete:
+      operationId: deleteAccount
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: gone
+  /cards:
+    post:
+      operationId: createCard
+      responses:
+        '200':
+          description: ok
+  /cards/issuing:
+    post:
+      operationId: createIssuingCard
+      responses:
+        '200':
+          description: ok

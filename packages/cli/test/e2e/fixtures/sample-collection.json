@@ -1,0 +1,41 @@
+{
+  "info": {
+    "name": "Sample Widgets API",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "List widgets",
+      "request": {
+        "method": "GET",
+        "header": [{ "key": "Authorization", "value": "Bearer test-token-123" }],
+        "url": {
+          "raw": "https://api.widgets.example.com/widgets",
+          "protocol": "https",
+          "host": ["api", "widgets", "example", "com"],
+          "path": ["widgets"]
+        }
+      }
+    },
+    {
+      "name": "Create widget",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Authorization", "value": "Bearer test-token-123" },
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "url": {
+          "raw": "https://api.widgets.example.com/widgets",
+          "protocol": "https",
+          "host": ["api", "widgets", "example", "com"],
+          "path": ["widgets"]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\"name\": \"gadget\"}"
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+# Merge fixture "B" — disjoint path from merge-a.yaml, identical ApiKeyAuth
+# security scheme (must merge silently).
+openapi: '3.0.0'
+info:
+  version: 1.0.0
+  title: Service B
+servers:
+  - url: https://b.example.test
+paths:
+  /beta:
+    post:
+      operationId: createBeta
+      summary: Create a beta resource
+      responses:
+        '201':
+          description: created
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key

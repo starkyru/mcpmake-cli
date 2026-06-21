@@ -1,0 +1,32 @@
+# Adversarial lint fixture (Sprint E2).
+#
+# Deliberately produces one finding at each level so `mcpmake lint` can be
+# exercised end to end:
+#   - error: operationId `ping` collides with the reserved MCP built-in method
+#     name (rule: reserved-names).
+#   - warn:  the second operation's generated tool name is 95 chars, over the
+#     Cursor 60-char limit (rule: tool-name-length).
+#   - info:  that same tool has no readOnly/destructive annotations
+#     (rule: missing-annotations).
+#
+# `lint` exits 1 because at least one finding is an error; `--level error`
+# must drop the warn and info findings, leaving only the reserved-names error.
+openapi: '3.0.0'
+info:
+  version: 1.0.0
+  title: Adversarial Lint Fixture
+paths:
+  /ping:
+    get:
+      operationId: ping
+      summary: A reserved name that collides with the MCP built-in ping method
+      responses:
+        '200':
+          description: ok
+  /widgets:
+    post:
+      operationId: createWidgetWithAnExceedinglyVerboseAndOverlyDescriptiveLongOperationIdentifierName
+      summary: Creates a widget with a deliberately very long operation id name
+      responses:
+        '201':
+          description: created

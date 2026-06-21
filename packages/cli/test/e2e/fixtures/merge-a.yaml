@@ -1,0 +1,24 @@
+# Merge fixture "A" (Sprint E2). Disjoint paths from merge-b.yaml so the union
+# merges cleanly. Carries an `ApiKeyAuth` security scheme identical to merge-b's,
+# so the merge must dedupe it silently (no conflict). info/servers come from this
+# base spec.
+openapi: '3.0.0'
+info:
+  version: 1.0.0
+  title: Service A
+servers:
+  - url: https://a.example.test
+paths:
+  /alpha:
+    get:
+      operationId: getAlpha
+      summary: Get the alpha resource
+      responses:
+        '200':
+          description: ok
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key

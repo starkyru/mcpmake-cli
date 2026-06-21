@@ -17,6 +17,9 @@ export default defineConfig({
   },
   test: {
     include: ['packages/*/test/**/*.test.ts'],
+    // The e2e tier (spawns the built bin) has its own config; never run it in
+    // the fast unit tier.
+    exclude: ['**/*.e2e.test.ts', '**/node_modules/**'],
     // Browser-recorder / website tests spin up Playwright; give them headroom.
     testTimeout: 60_000,
     hookTimeout: 60_000,

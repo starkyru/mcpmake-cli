@@ -1,0 +1,34 @@
+config-version: 2
+organization: acme
+openapi:
+  path: openapi.yml
+environments:
+  production: https://api.acme.com/v1
+  sandbox: https://sandbox.acme.com/v1
+client_settings:
+  opts:
+    api_key:
+      type: string
+      read_env: ACME_API_KEY
+      auth:
+        security_scheme: bearerAuth
+targets:
+  mcp_server:
+    code: true
+    docs_search: true
+resources:
+  accounts:
+    methods:
+      create: post /accounts
+      list: get /accounts
+      retrieve: get /accounts/{id}
+      del: delete /accounts/{id}
+  cards:
+    methods:
+      create: post /cards
+    subresources:
+      issuing:
+        methods:
+          create: post /cards/issuing
+settings:
+  unwrap_response: true

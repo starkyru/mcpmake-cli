@@ -17,6 +17,7 @@
     "build": "npm run build --workspace @mcpmake/core && npm run build --workspace mcpmake",
     "typecheck": "npm run build --workspace @mcpmake/core && npm run typecheck --workspace @mcpmake/core && npm run typecheck --workspace mcpmake",
     "test": "vitest run",
+    "test:e2e": "vitest run -c vitest.e2e.config.ts",
     "format": "prettier --write 'packages/*/src/**/*.ts' 'packages/*/test/**/*.ts'",
     "format:check": "prettier --check 'packages/*/src/**/*.ts' 'packages/*/test/**/*.ts'",
     "publish:all": "npm run build && npm publish --workspace @mcpmake/core && npm publish --workspace mcpmake"

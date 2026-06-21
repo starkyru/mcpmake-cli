@@ -1,0 +1,91 @@
+openapi: 3.0.0
+info:
+  title: Collision API
+  version: 1.0.0
+servers:
+  - url: https://collision.example.com/v1
+paths:
+  # A path param literally named `url` AND a query param literally named `body`,
+  # on an operation that ALSO has a JSON request body. In the Python target the
+  # request body is the function arg `body` and the path-token replace uses a
+  # local `url`; both names are pre-seeded in the de-collision allocator, so the
+  # `url` path param and `body` query param must be renamed (url_1 / body_1) or
+  # the emitted `async def` is a SyntaxError (duplicate arg) / dead-on-import.
+  /resolve/{url}:
+    post:
+      operationId: resolveUrl
+      summary: Resolve a URL with a body payload
+      parameters:
+        - name: url
+          in: path
+          required: true
+          description: The URL token to resolve
+          schema:
+            type: string
+        - name: body
+          in: query
+          required: false
+          description: A query parameter confusingly named body
+          schema:
+            type: string
+        - name: data
+          in: query
+          required: false
+          description: Collides with the response-body local `data`
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - target
+              properties:
+                target:
+                  type: string
+                count:
+                  type: integer
+      responses:
+        '200':
+          description: ok
+  # An operationId that sanitizes to a Python keyword (`import`) — the emitted
+  # `async def import(...)` would be a SyntaxError unless suffixed (`import_`).
+  /imports:
+    post:
+      operationId: import
+      summary: Trigger an import
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                source:
+                  type: string
+      responses:
+        '200':
+          description: ok
+  # A header param named `headers` (collides with the `_headers()`/`headers`
+  # locals) plus a plain GET with a query param named `params`.
+  /search:
+    get:
+      operationId: search
+      parameters:
+        - name: headers
+          in: header
+          required: false
+          description: Collides with the headers local
+          schema:
+            type: string
+        - name: params
+          in: query
+          required: false
+          description: Collides with the params local
+          schema:
+            type: string
+      responses:
+        '200':
+          description: ok

@@ -1,0 +1,21 @@
+# Base for the schema-conflict merge test. Defines a `Shared` component schema
+# that collides with merge-conflict-schema.yaml's `Shared`.
+openapi: '3.0.0'
+info:
+  version: 1.0.0
+  title: Schema One
+paths:
+  /one:
+    get:
+      operationId: getOne
+      summary: Get the first resource
+      responses:
+        '200':
+          description: ok
+components:
+  schemas:
+    Shared:
+      type: object
+      properties:
+        a:
+          type: string

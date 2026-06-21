@@ -1,0 +1,7 @@
+# Lint fixture with no operations — `extractOperations` finds nothing, so
+# `mcpmake lint` must fail with "No operations found in the spec." (exit 1).
+openapi: '3.0.0'
+info:
+  version: 1.0.0
+  title: Empty Paths
+paths: {}

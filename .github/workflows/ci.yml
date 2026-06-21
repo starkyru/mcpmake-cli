@@ -23,3 +23,23 @@ jobs:
       # high/critical to avoid breaking CI on dev-only or transitive moderate
       # advisories that have no non-breaking fix (e.g. @anthropic-ai/sdk).
       - run: npm audit --omit=dev --audit-level=high
+
+  # End-to-end tier: spawns the *built* bin in a scrubbed-env sandbox. Separate
+  # job so the fast build-and-test gate above is unchanged. Net-free by default
+  # (no real LLM/cloud — mock loopback servers only). Heavy/browser tiers
+  # (MCPMAKE_E2E_HEAVY / MCPMAKE_E2E_BROWSER) are intentionally NOT set here;
+  # they run on a nightly/dispatch workflow.
+  e2e:
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm run test:e2e
+        env:
+          MCPMAKE_E2E: '1'

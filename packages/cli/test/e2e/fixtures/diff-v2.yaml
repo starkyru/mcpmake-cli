@@ -1,0 +1,29 @@
+# Diff fixture "v2" — see diff-v1.yaml. listPets gains a `limit` query param and
+# a new description (changed); /owners is new (added list_owners); delete_pet is
+# dropped (removed).
+openapi: '3.0.0'
+info:
+  version: 2.0.0
+  title: Diff V2
+servers:
+  - url: https://example.test/v2
+paths:
+  /pets:
+    get:
+      operationId: listPets
+      summary: List every pet plus pagination support added later
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: ok
+  /owners:
+    get:
+      operationId: listOwners
+      summary: List all the registered pet owners in the system
+      responses:
+        '200':
+          description: ok
