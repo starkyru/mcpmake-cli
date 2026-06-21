@@ -15,7 +15,7 @@ export async function healBrokenSelector(
   elementDescription: string,
   model?: string,
 ): Promise<SelectorSet | null> {
-  const provider = getLlmProvider();
+  const provider = await getLlmProvider();
   if (!provider) {
     logger.warn('No LLM provider configured — skipping selector healing');
     return null;

@@ -105,9 +105,33 @@ function redactSecrets(input: string): string {
   );
 }
 
-/** Strip mcpmake-style tokens (`mf_<hex>`). */
-function redactMfTokens(input: string): string {
-  return input.replace(/mf_[a-f0-9]+/g, 'mf_[redacted]');
+/**
+ * Strip mcpmake tokens — both the legacy `mf_…` and the current `mfd_…` deploy
+ * tokens. Deploy tokens are NOT lowercase-hex (e.g. `mfd_Secret-ABC123`), so the
+ * value class must cover the full token charset. The boundary is `\b` plus a
+ * single `+` quantifier (no nested quantifiers — no catastrophic backtracking).
+ * The `mf`/`mfd` prefix is preserved so the redacted report stays informative.
+ */
+function redactMcpmakeTokens(input: string): string {
+  return input.replace(/\bmf(d?)_[A-Za-z0-9._-]+/g, 'mf$1_[redacted]');
+}
+
+/**
+ * Strip well-known LLM provider API keys by their published shapes, using
+ * conservative token boundaries. Order matters: the more specific `sk-ant-` and
+ * `sk-proj-` prefixes are matched before the generic `sk-…` so they keep their
+ * descriptive prefix in the output. Every value class is a single `+`/`{n,}`
+ * (no nested quantifiers — no catastrophic backtracking).
+ *
+ * - Anthropic: `sk-ant-…`
+ * - OpenAI project keys: `sk-proj-…`
+ * - OpenAI legacy keys: `sk-<>=10 chars>` (the generic fallback).
+ */
+function redactApiKeys(input: string): string {
+  return input
+    .replace(/\bsk-ant-[A-Za-z0-9_-]+/g, 'sk-ant-[redacted]')
+    .replace(/\bsk-proj-[A-Za-z0-9_-]+/g, 'sk-proj-[redacted]')
+    .replace(/\bsk-[A-Za-z0-9]{10,}/g, 'sk-[redacted]');
 }
 
 /** Strip URL query strings (`?foo=bar` → `?[redacted]`) so creds in URLs don't leak. */
@@ -122,7 +146,9 @@ function redactQueryStrings(input: string): string {
  * directly without invoking `fail()` (which calls `process.exit`).
  */
 export function redactText(input: string): string {
-  return redactQueryStrings(redactMfTokens(redactSecrets(redactHomePaths(input))));
+  return redactQueryStrings(
+    redactApiKeys(redactMcpmakeTokens(redactSecrets(redactHomePaths(input)))),
+  );
 }
 
 /** @deprecated internal alias — prefer the exported `redactText`. */
@@ -134,21 +160,66 @@ function truncate(input: string, max: number): string {
 
 // --- Payload assembly ------------------------------------------------------
 
+/** Known top-level commands. Anything not in this set is never reported. */
+const KNOWN_COMMANDS = new Set([
+  'from',
+  'merge',
+  'verify',
+  'update',
+  'login',
+  'logout',
+  'whoami',
+  'deploy',
+  'publish',
+  'lint',
+  'diff',
+  'bundle',
+  'ci',
+  'rescan',
+  'pricing',
+]);
+
+/** Known `from <subcommand>` spec sources. */
+const KNOWN_FROM_SUBCOMMANDS = new Set([
+  'openapi',
+  'har',
+  'url',
+  'describe',
+  'postman',
+  'website',
+  'stainless',
+]);
+
 /**
- * Best-effort command name from argv, e.g. `from openapi` or `deploy`. Joins the
- * first one or two non-flag tokens (subcommands like `from openapi` need two).
+ * Derive the telemetry command name from argv using a strict allowlist — e.g.
+ * `from openapi` or `deploy`. The command name is NEVER taken from arbitrary
+ * argv values: only recognized command/subcommand tokens are emitted, so a stray
+ * secret or path positional (e.g. `login mfd_secret`, `deploy ./secret.yaml`)
+ * can never become the reported command. An unrecognized first token yields `''`.
+ *
+ * Exported so this parsing contract can be unit-tested directly without invoking
+ * `fail()` (which calls `process.exit`).
  */
-function deriveCommand(): string {
+export function deriveCommand(): string {
   const tokens = process.argv.slice(2).filter((t) => !t.startsWith('-'));
-  return tokens.slice(0, 2).join(' ');
+  const first = tokens[0];
+  if (!first || !KNOWN_COMMANDS.has(first)) {
+    return '';
+  }
+  if (first === 'from') {
+    const sub = tokens[1];
+    return sub && KNOWN_FROM_SUBCOMMANDS.has(sub) ? `from ${sub}` : 'from';
+  }
+  return first;
 }
 
 function buildPayload(message: string, error?: unknown): ReportPayload {
   const errorMessage = error instanceof Error && error.message ? error.message : message;
   const stack = error instanceof Error && error.stack ? error.stack : '';
   return {
-    // Redact the command too: a positional arg can be a path or URL with creds
-    // (e.g. a mistyped `mcpmake /Users/me/secret.yaml`).
+    // `deriveCommand` already emits only allowlisted command tokens, so it can
+    // never contain a secret; the `redact()` pass is kept as a defense-in-depth
+    // second layer in case the allowlist ever grows a credential-shaped command.
     command: truncate(redact(deriveCommand()), CAPS.command),
     errorMessage: truncate(redact(errorMessage), CAPS.errorMessage),
     stack: truncate(redact(stack), CAPS.stack),

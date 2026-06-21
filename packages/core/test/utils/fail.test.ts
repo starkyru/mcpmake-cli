@@ -7,7 +7,7 @@
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import os from 'node:os';
-import { redactText, resolveTelemetryMode } from '../../src/utils/fail.js';
+import { redactText, resolveTelemetryMode, deriveCommand } from '../../src/utils/fail.js';
 
 describe('redactText', () => {
   afterEach(() => {
@@ -53,8 +53,22 @@ describe('redactText', () => {
     );
   });
 
-  it('redacts mcpmake-style mf_ tokens', () => {
+  it('redacts legacy mcpmake mf_ tokens', () => {
     expect(redactText('token mf_deadbeef0123 expired')).toBe('token mf_[redacted] expired');
+  });
+
+  it('redacts current mfd_ deploy tokens, including non-hex chars', () => {
+    // Exact regression case from the audit (A3-H3): `mfd_Secret-ABC123` must not survive.
+    const out = redactText('login --token mfd_Secret-ABC123');
+    expect(out).not.toContain('mfd_Secret-ABC123');
+    expect(out).toContain('mfd_[redacted]');
+    expect(out).toContain('[redacted]');
+  });
+
+  it('redacts Anthropic and OpenAI API key shapes', () => {
+    expect(redactText('using sk-ant-api03-AbC_dEf-123XyZ now')).toBe('using sk-ant-[redacted] now');
+    expect(redactText('key sk-proj-AbC123_def-456 set')).toBe('key sk-proj-[redacted] set');
+    expect(redactText('OPENAI_API_KEY=sk-AbCdEfGhIjKl0123')).toBe('OPENAI_API_KEY=sk-[redacted]');
   });
 
   it('redacts URL query strings (creds embedded in URLs)', () => {
@@ -105,5 +119,43 @@ describe('resolveTelemetryMode', () => {
   it('degrades to off when stdout is not a TTY (piped / non-interactive)', () => {
     expect(resolveTelemetryMode({ configured: 'auto', isTTY: false, ci: false })).toBe('off');
     expect(resolveTelemetryMode({ configured: 'prompt', isTTY: false, ci: false })).toBe('off');
+  });
+});
+
+describe('deriveCommand', () => {
+  const originalArgv = process.argv;
+  afterEach(() => {
+    process.argv = originalArgv;
+  });
+
+  it('emits `from <subcommand>` for a known from spec source', () => {
+    process.argv = ['node', 'mcpmake', 'from', 'openapi', 'spec.yaml'];
+    expect(deriveCommand()).toBe('from openapi');
+  });
+
+  it('drops a secret positional, reporting only the known command', () => {
+    // `login mfd_secret` must never surface the token as the command name.
+    process.argv = ['node', 'mcpmake', 'login', 'mfd_secret'];
+    expect(deriveCommand()).toBe('login');
+  });
+
+  it('drops a path positional, reporting only the known command', () => {
+    process.argv = ['node', 'mcpmake', 'deploy', '/path/secret.yaml'];
+    expect(deriveCommand()).toBe('deploy');
+  });
+
+  it('emits nothing for an unknown first token (never echoes arbitrary argv)', () => {
+    process.argv = ['node', 'mcpmake', 'mfd_Secret-ABC123'];
+    expect(deriveCommand()).toBe('');
+  });
+
+  it('emits bare `from` when the subcommand is unrecognized', () => {
+    process.argv = ['node', 'mcpmake', 'from', './not-a-subcommand'];
+    expect(deriveCommand()).toBe('from');
+  });
+
+  it('ignores leading flags when finding the command token', () => {
+    process.argv = ['node', 'mcpmake', '--verbose', 'whoami'];
+    expect(deriveCommand()).toBe('whoami');
   });
 });

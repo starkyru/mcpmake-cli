@@ -20,6 +20,7 @@ import { getProvider, getProviderNames } from '@mcpmake/core';
 import { logger } from '@mcpmake/core';
 import { fail } from '@mcpmake/core';
 import { watchFile } from '@mcpmake/core';
+import { childEnv } from '../../env.js';
 import type { OpenAPIV3 } from 'openapi-types';
 
 const execFile = promisify(execFileCb);
@@ -305,12 +306,16 @@ export default defineConfigurableCommand('openapi', {
         await execFile('npm', ['install', '--omit=dev'], {
           cwd: projectDir,
           timeout: 120_000,
+          // Strip NODE_OPTIONS/loader vars so this spawn can't be hijacked into
+          // running attacker code (defense in depth — see childEnv).
+          env: childEnv(),
         });
 
         logger.info('Building project...');
         await execFile('npm', ['run', 'build'], {
           cwd: projectDir,
           timeout: 120_000,
+          env: childEnv(),
         });
 
         logger.info('Creating .mcpb bundle...');

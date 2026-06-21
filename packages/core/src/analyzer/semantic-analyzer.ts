@@ -76,7 +76,7 @@ export async function analyzeSemantics(
   pages: PageDescriptor[],
   model?: string,
 ): Promise<PageDescriptor[]> {
-  const provider = getLlmProvider();
+  const provider = await getLlmProvider();
   if (!provider) {
     logger.warn('No LLM provider configured — skipping semantic analysis');
     return pages;

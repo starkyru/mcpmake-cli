@@ -21,7 +21,7 @@ Rules:
 - Keep it practical — 3-10 operations is typical`;
 
 export async function generateSpecFromDescription(options: GenerateSpecOptions): Promise<string> {
-  const provider = requireLlmProvider('describe mode');
+  const provider = await requireLlmProvider('describe mode');
 
   let userPrompt = `Generate an OpenAPI 3.0 spec for: ${options.description}`;
   if (options.baseUrl) {

@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { isPrivateOrReservedIp, assertPublicUrl } from '../../src/utils/ssrf-guard.js';
 
 describe('isPrivateOrReservedIp', () => {
@@ -71,5 +71,55 @@ describe('assertPublicUrl', () => {
 
   it('allows a public literal IP without DNS', async () => {
     await expect(assertPublicUrl('https://1.1.1.1/')).resolves.toBeUndefined();
+  });
+});
+
+// A3-H1 regression: WHATWG `new URL()` canonicalizes `[::ffff:127.0.0.1]` to the
+// hexadecimal form `[::ffff:7f00:1]`, which a dotted-decimal-only check missed.
+// These assert the binary classifier catches IPv4-mapped + NAT64 in BOTH forms.
+describe('ssrf-guard — IPv4-mapped / NAT64 IPv6 (A3-H1)', () => {
+  const original = process.env.MCPMAKE_ALLOW_PRIVATE_HOSTS;
+  beforeEach(() => delete process.env.MCPMAKE_ALLOW_PRIVATE_HOSTS);
+  afterEach(() => {
+    if (original === undefined) delete process.env.MCPMAKE_ALLOW_PRIVATE_HOSTS;
+    else process.env.MCPMAKE_ALLOW_PRIVATE_HOSTS = original;
+  });
+
+  const privateLiterals: Array<[string, string]> = [
+    ['::ffff:7f00:1', 'hex 127.0.0.1 (loopback)'],
+    ['::ffff:a9fe:a9fe', 'hex 169.254.169.254 (metadata)'],
+    ['::ffff:0a00:0001', 'hex 10.0.0.1 (private)'],
+    ['64:ff9b::7f00:1', 'NAT64 loopback (hex)'],
+    ['64:ff9b::127.0.0.1', 'NAT64 loopback (dotted)'],
+  ];
+  for (const [ip, label] of privateLiterals) {
+    it(`flags ${ip} (${label}) as private/reserved`, () => {
+      expect(isPrivateOrReservedIp(ip)).toBe(true);
+    });
+  }
+
+  it('allows a public IPv4-mapped literal (8.8.8.8) in hex and dotted form', () => {
+    expect(isPrivateOrReservedIp('::ffff:0808:0808')).toBe(false);
+    expect(isPrivateOrReservedIp('::ffff:8.8.8.8')).toBe(false);
+  });
+
+  it('rejects bracketed mapped/NAT64 private URLs without DNS', async () => {
+    for (const url of [
+      'http://[::ffff:7f00:1]/',
+      'http://[::ffff:a9fe:a9fe]/',
+      'http://[::ffff:0a00:0001]/',
+      'http://[64:ff9b::7f00:1]/',
+    ]) {
+      await expect(assertPublicUrl(url)).rejects.toThrow(/private\/reserved/);
+    }
+  });
+
+  it('allows a bracketed public mapped literal [::ffff:0808:0808] without DNS', async () => {
+    await expect(assertPublicUrl('http://[::ffff:0808:0808]/')).resolves.toBeUndefined();
+  });
+
+  it('honors the escape hatch for a mapped loopback', async () => {
+    process.env.MCPMAKE_ALLOW_PRIVATE_HOSTS = '1';
+    await expect(assertPublicUrl('http://[::ffff:7f00:1]/')).resolves.toBeUndefined();
   });
 });

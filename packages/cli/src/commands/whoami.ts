@@ -21,6 +21,11 @@ export default defineCommand({
       alias: 't',
       description: 'Deploy token to check (defaults to the stored one)',
     },
+    insecure: {
+      type: 'boolean',
+      description: 'Allow sending the deploy token to a non-HTTPS, non-localhost target',
+      default: false,
+    },
   },
   async run({ args }) {
     const stored = await loadCredentials();
@@ -33,7 +38,10 @@ export default defineCommand({
       logger.info('Not logged in. Run:  mcpmake login');
       return;
     }
-    const who = await apiRequest('GET', serverUrl, '/api/cli/whoami', { token }).catch(() => null);
+    const who = await apiRequest('GET', serverUrl, '/api/cli/whoami', {
+      token,
+      insecure: args.insecure ?? false,
+    }).catch(() => null);
     if (!who || who.status !== 200) {
       return await fail('Stored token was rejected. Run `mcpmake login` again.');
     }

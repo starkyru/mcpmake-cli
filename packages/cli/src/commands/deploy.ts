@@ -1,11 +1,10 @@
 import { defineConfigurableCommand } from '@mcpmake/core';
 import { readFile, stat } from 'node:fs/promises';
 import { basename, extname, resolve } from 'node:path';
-import http from 'node:http';
-import https from 'node:https';
 import { logger } from '@mcpmake/core';
 import { fail } from '@mcpmake/core';
 import { loadCredentials, resolveDeployToken } from '../auth/credentials.js';
+import { request, assertSecureChannel, isLoopbackHost } from '../auth/api-client.js';
 
 const MAX_SPEC_SIZE = 5 * 1024 * 1024; // 5 MB
 
@@ -144,7 +143,14 @@ export default defineConfigurableCommand('deploy', {
     logger.info('Uploading spec...');
 
     try {
-      const result = await postMultipart(serverUrl, '/api/servers', boundary, body, token);
+      const result = await postMultipart(
+        serverUrl,
+        '/api/servers',
+        boundary,
+        body,
+        token,
+        args.insecure ?? false,
+      );
 
       logger.success('Server deployed!');
       logger.info('');
@@ -180,18 +186,13 @@ interface DeployResult {
   claudeDesktopConfig: Record<string, unknown>;
 }
 
-/** True for localhost / loopback hosts, where unencrypted dev traffic is acceptable. */
-function isLoopbackHost(hostname: string): boolean {
-  const h = hostname.replace(/^\[|\]$/g, '').toLowerCase();
-  return h === 'localhost' || h === '127.0.0.1' || h === '::1' || h.endsWith('.localhost');
-}
-
 /**
  * Guard the credential channel. Returns true when the token will cross an
  * unencrypted-but-permitted link (loopback, or non-HTTPS with explicit opt-in)
  * so the caller can warn; false for a secure HTTPS channel. Refuses (exits)
  * when a token would be sent over plaintext to a remote host without opt-in.
- * Never includes the token in any message.
+ * Delegates the policy to the shared `assertSecureChannel` so auth and deploy
+ * stay in lockstep; never includes the token in any message.
  */
 async function assertTokenChannel(serverUrl: string, insecure: boolean): Promise<boolean> {
   let url: URL;
@@ -201,14 +202,13 @@ async function assertTokenChannel(serverUrl: string, insecure: boolean): Promise
     return fail(`Invalid server URL: ${serverUrl}`);
   }
 
-  if (url.protocol === 'https:') return false;
-  if (isLoopbackHost(url.hostname)) return true;
-  if (insecure || process.env.MCPMAKE_INSECURE === '1') return true;
-
-  return fail(
-    `Refusing to send the deploy token to ${serverUrl} over an unencrypted (non-HTTPS) channel. ` +
-      'Use an https:// URL, or pass --insecure (or set MCPMAKE_INSECURE=1) to override for trusted networks.',
-  );
+  try {
+    assertSecureChannel(url, insecure);
+  } catch (err) {
+    return fail(err instanceof Error ? err.message : String(err));
+  }
+  // Permitted but plaintext (loopback, or remote with explicit opt-in) → warn.
+  return url.protocol !== 'https:';
 }
 
 /** Redact a secret to its last 4 chars unless the user explicitly opted to reveal it. */
@@ -234,65 +234,43 @@ function formatClaudeConfig(
 }
 
 /**
- * POST multipart form data to the hosting backend.
+ * POST multipart form data to the hosting backend via the shared bounded
+ * transport (timeout + response-size cap + credential-channel policy), keeping
+ * deploy's own 4xx/5xx error handling and parsed `DeployResult` contract.
  */
-function postMultipart(
+async function postMultipart(
   serverUrl: string,
   path: string,
   boundary: string,
   body: Buffer,
   token?: string,
+  insecure?: boolean,
 ): Promise<DeployResult> {
-  return new Promise((resolve, reject) => {
-    const url = new URL(path, serverUrl);
-    const transport = url.protocol === 'https:' ? https : http;
-
-    const headers: Record<string, string | number> = {
+  const url = new URL(path, serverUrl);
+  const { status, text } = await request('POST', url, {
+    headers: {
       'Content-Type': `multipart/form-data; boundary=${boundary}`,
       'Content-Length': body.length,
-    };
-    if (token) {
-      headers['Authorization'] = `Bearer ${token}`;
-    }
-
-    const req = transport.request(
-      {
-        hostname: url.hostname,
-        port: url.port,
-        path: url.pathname,
-        method: 'POST',
-        headers,
-      },
-      (res) => {
-        const chunks: Buffer[] = [];
-        res.on('data', (chunk: Buffer) => chunks.push(chunk));
-        res.on('end', () => {
-          const responseBody = Buffer.concat(chunks).toString('utf-8');
-
-          if (res.statusCode && res.statusCode >= 400) {
-            try {
-              const err = JSON.parse(responseBody);
-              reject(new Error(err.error ?? `Server returned ${res.statusCode}`));
-            } catch {
-              reject(new Error(`Server returned ${res.statusCode}: ${responseBody}`));
-            }
-            return;
-          }
-
-          try {
-            resolve(JSON.parse(responseBody));
-          } catch {
-            reject(new Error(`Invalid response from server: ${responseBody}`));
-          }
-        });
-      },
-    );
-
-    req.on('error', (err) => {
-      reject(new Error(`Connection failed: ${err.message}`));
-    });
-
-    req.write(body);
-    req.end();
+    },
+    body,
+    token,
+    insecure,
   });
+
+  if (status >= 400) {
+    let jsonError: { error?: string } | undefined;
+    try {
+      jsonError = JSON.parse(text);
+    } catch {
+      // Non-JSON error body — surface the raw text with the status code.
+      throw new Error(`Server returned ${status}: ${text}`);
+    }
+    throw new Error(jsonError?.error ?? `Server returned ${status}`);
+  }
+
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error(`Invalid response from server: ${text}`);
+  }
 }

@@ -15,8 +15,12 @@ export default defineCommand({
       return;
     }
     // Best-effort server-side revoke so a stolen credentials file is useless.
+    // The stored serverUrl was channel-validated when it was saved, but the
+    // shared client still refuses plaintext-remote revoke without an opt-in
+    // (MCPMAKE_INSECURE=1) — a refusal here just leaves the local clear below.
     const res = await apiRequest('POST', creds.serverUrl, '/api/cli/logout', {
       token: creds.token,
+      insecure: process.env.MCPMAKE_INSECURE === '1',
     }).catch(() => null);
     await clearCredentials();
     if (res && res.status === 200) {

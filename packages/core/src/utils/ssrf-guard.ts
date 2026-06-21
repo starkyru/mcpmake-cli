@@ -52,12 +52,86 @@ function isPrivateIpv4(ip: string): boolean {
   return false;
 }
 
+/**
+ * Parse an IPv6 literal into its 8 hextets (16-bit groups), or null if malformed.
+ * Handles `::` compression (incl. leading/trailing `::`) and a trailing embedded
+ * dotted-decimal IPv4 (`::ffff:127.0.0.1` → its low 32 bits become two hextets).
+ */
+function ipv6Hextets(raw: string): number[] | null {
+  let ip = raw.toLowerCase();
+  // Drop a zone id (`fe80::1%eth0`) if present — irrelevant to classification.
+  const zone = ip.indexOf('%');
+  if (zone !== -1) ip = ip.slice(0, zone);
+  if (ip === '') return null;
+
+  // Expand a trailing embedded IPv4 (e.g. `::ffff:1.2.3.4`) into two hextets.
+  const lastColon = ip.lastIndexOf(':');
+  const tail = lastColon === -1 ? ip : ip.slice(lastColon + 1);
+  if (tail.includes('.')) {
+    const octets = ipv4Octets(tail);
+    if (!octets) return null;
+    const [a, b, c, d] = octets;
+    const hextetTail = `${((a << 8) | b).toString(16)}:${((c << 8) | d).toString(16)}`;
+    ip = (lastColon === -1 ? '' : ip.slice(0, lastColon + 1)) + hextetTail;
+  }
+
+  const parseGroups = (s: string): number[] | null => {
+    if (s === '') return [];
+    const out: number[] = [];
+    for (const g of s.split(':')) {
+      if (g === '' || g.length > 4 || !/^[0-9a-f]+$/.test(g)) return null;
+      out.push(parseInt(g, 16));
+    }
+    return out;
+  };
+
+  const dbl = ip.indexOf('::');
+  let groups: number[];
+  if (dbl === -1) {
+    const g = parseGroups(ip);
+    if (!g || g.length !== 8) return null;
+    groups = g;
+  } else {
+    if (ip.indexOf('::', dbl + 1) !== -1) return null; // more than one `::`
+    const head = parseGroups(ip.slice(0, dbl));
+    const tailGroups = parseGroups(ip.slice(dbl + 2));
+    if (!head || !tailGroups) return null;
+    const fill = 8 - head.length - tailGroups.length;
+    if (fill < 0) return null;
+    groups = [...head, ...new Array(fill).fill(0), ...tailGroups];
+  }
+  return groups.length === 8 ? groups : null;
+}
+
 function isPrivateIpv6(raw: string): boolean {
   const ip = raw.toLowerCase();
   if (ip === '::1' || ip === '::') return true; // loopback / unspecified
-  // IPv4-mapped (::ffff:a.b.c.d) and IPv4-compatible / NAT64 — re-check embedded v4.
+
+  // Classify embedded IPv4 from the BINARY address, not a textual regex: WHATWG
+  // `new URL()` canonicalizes `[::ffff:127.0.0.1]` to hex (`::ffff:7f00:1`), so a
+  // dotted-decimal-only check misses the canonical form. We parse to hextets and
+  // reconstruct the v4 octets from the low two groups for both IPv4-mapped
+  // (`::ffff:X:Y`, the 6th hextet is 0xffff) and NAT64 (`64:ff9b::X:Y`).
+  const h = ipv6Hextets(ip);
+  if (h) {
+    const reconstructV4 = (): string => {
+      const [g6, g7] = [h[6], h[7]];
+      return `${g6 >> 8}.${g6 & 0xff}.${g7 >> 8}.${g7 & 0xff}`;
+    };
+    // ::ffff:X:Y — IPv4-mapped (first 5 hextets 0, 6th = 0xffff).
+    if (h[0] === 0 && h[1] === 0 && h[2] === 0 && h[3] === 0 && h[4] === 0 && h[5] === 0xffff) {
+      return isPrivateIpv4(reconstructV4());
+    }
+    // 64:ff9b::X:Y — NAT64 well-known prefix (64:ff9b::/96).
+    if (h[0] === 0x64 && h[1] === 0xff9b && h[2] === 0 && h[3] === 0 && h[4] === 0 && h[5] === 0) {
+      return isPrivateIpv4(reconstructV4());
+    }
+  }
+
+  // Belt-and-suspenders: keep the dotted-decimal textual path working too.
   const mapped = ip.match(/(?:::ffff:|::ffff:0:|64:ff9b::)(\d+\.\d+\.\d+\.\d+)$/);
   if (mapped) return isPrivateIpv4(mapped[1]);
+
   if (ip.startsWith('fe8') || ip.startsWith('fe9') || ip.startsWith('fea') || ip.startsWith('feb'))
     return true; // fe80::/10 link-local
   if (ip.startsWith('fc') || ip.startsWith('fd')) return true; // fc00::/7 unique-local

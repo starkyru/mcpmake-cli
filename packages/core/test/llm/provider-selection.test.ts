@@ -1,4 +1,12 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+
+// Mock DNS so the DNS-aware base-URL guard can be exercised without real network
+// resolution. `vi.mock` is hoisted; the factory installs a controllable `lookup`.
+const lookupMock = vi.fn();
+vi.mock('node:dns/promises', () => ({
+  lookup: (...args: unknown[]) => lookupMock(...args),
+}));
+
 import { getLlmProvider, requireLlmProvider, resolveProviderKind } from '../../src/llm/index.js';
 
 describe('provider selection', () => {
@@ -16,6 +24,7 @@ describe('provider selection', () => {
     delete process.env.OPENAI_BASE_URL;
     delete process.env.MCPMAKE_LLM_PROVIDER;
     delete process.env.MCPMAKE_ALLOW_PRIVATE_HOSTS;
+    lookupMock.mockReset();
   });
 
   afterEach(() => {
@@ -60,117 +69,168 @@ describe('provider selection', () => {
   });
 
   describe('getLlmProvider', () => {
-    it('returns null for anthropic when ANTHROPIC_API_KEY is unset', () => {
-      expect(getLlmProvider()).toBeNull();
+    it('returns null for anthropic when ANTHROPIC_API_KEY is unset', async () => {
+      expect(await getLlmProvider()).toBeNull();
     });
 
-    it('returns an anthropic provider when ANTHROPIC_API_KEY is set', () => {
+    it('returns an anthropic provider when ANTHROPIC_API_KEY is set', async () => {
       process.env.ANTHROPIC_API_KEY = 'sk-ant-test';
-      const provider = getLlmProvider();
+      const provider = await getLlmProvider();
       expect(provider).not.toBeNull();
       expect(provider?.name).toBe('anthropic');
     });
 
-    it('returns null under openai without OPENAI_API_KEY', () => {
+    it('returns null under openai without OPENAI_API_KEY', async () => {
       process.env.MCPMAKE_LLM_PROVIDER = 'openai';
-      expect(getLlmProvider()).toBeNull();
+      expect(await getLlmProvider()).toBeNull();
     });
 
-    it('returns an openai provider when OPENAI_API_KEY is set', () => {
+    it('returns an openai provider when OPENAI_API_KEY is set', async () => {
       process.env.MCPMAKE_LLM_PROVIDER = 'openai';
       process.env.OPENAI_API_KEY = 'sk-openai-test';
-      const provider = getLlmProvider();
+      const provider = await getLlmProvider();
       expect(provider).not.toBeNull();
       expect(provider?.name).toBe('openai');
     });
 
-    it('returns null under openai-compatible when OPENAI_BASE_URL is unset, even with a key', () => {
+    it('returns null under openai-compatible when OPENAI_BASE_URL is unset, even with a key', async () => {
       process.env.MCPMAKE_LLM_PROVIDER = 'openai-compatible';
       process.env.OPENAI_API_KEY = 'sk-openai-test';
-      expect(getLlmProvider()).toBeNull();
+      expect(await getLlmProvider()).toBeNull();
     });
 
-    it('returns an openai-compatible provider with a base url and no key', () => {
+    it('returns an openai-compatible provider with a base url and no key', async () => {
       // Documented Ollama flow points at localhost — operator opts in via the
       // existing private-hosts escape hatch.
       process.env.MCPMAKE_LLM_PROVIDER = 'openai-compatible';
       process.env.OPENAI_BASE_URL = 'http://localhost:11434/v1';
       process.env.MCPMAKE_ALLOW_PRIVATE_HOSTS = '1';
-      const provider = getLlmProvider();
+      const provider = await getLlmProvider();
       expect(provider).not.toBeNull();
       expect(provider?.name).toBe('openai-compatible');
     });
   });
 
   describe('base-URL SSRF guard', () => {
-    it('rejects a private OPENAI_BASE_URL without MCPMAKE_ALLOW_PRIVATE_HOSTS', () => {
+    it('rejects a private OPENAI_BASE_URL without MCPMAKE_ALLOW_PRIVATE_HOSTS', async () => {
       process.env.MCPMAKE_LLM_PROVIDER = 'openai-compatible';
       process.env.OPENAI_BASE_URL = 'http://127.0.0.1:11434/v1';
-      expect(() => getLlmProvider()).toThrow(/MCPMAKE_ALLOW_PRIVATE_HOSTS/);
+      await expect(getLlmProvider()).rejects.toThrow(/MCPMAKE_ALLOW_PRIVATE_HOSTS/);
     });
 
-    it('accepts a private OPENAI_BASE_URL when MCPMAKE_ALLOW_PRIVATE_HOSTS is set', () => {
+    it('accepts a private OPENAI_BASE_URL when MCPMAKE_ALLOW_PRIVATE_HOSTS is set', async () => {
       process.env.MCPMAKE_LLM_PROVIDER = 'openai-compatible';
       process.env.OPENAI_BASE_URL = 'http://127.0.0.1:11434/v1';
       process.env.MCPMAKE_ALLOW_PRIVATE_HOSTS = '1';
-      const provider = getLlmProvider();
+      const provider = await getLlmProvider();
       expect(provider).not.toBeNull();
       expect(provider?.name).toBe('openai-compatible');
     });
 
-    it('rejects a private ANTHROPIC_BASE_URL without the escape hatch', () => {
+    it('rejects a private ANTHROPIC_BASE_URL without the escape hatch', async () => {
       process.env.ANTHROPIC_API_KEY = 'sk-ant-test';
       process.env.ANTHROPIC_BASE_URL = 'http://169.254.169.254/';
-      expect(() => getLlmProvider()).toThrow(/private\/loopback/);
+      await expect(getLlmProvider()).rejects.toThrow(/private\/loopback/);
     });
 
-    it('rejects a localhost hostname (not just a literal IP) without the escape hatch', () => {
+    it('rejects a localhost hostname (not just a literal IP) without the escape hatch', async () => {
       process.env.MCPMAKE_LLM_PROVIDER = 'openai-compatible';
       process.env.OPENAI_BASE_URL = 'http://localhost:11434/v1';
-      expect(() => getLlmProvider()).toThrow(/MCPMAKE_ALLOW_PRIVATE_HOSTS/);
+      await expect(getLlmProvider()).rejects.toThrow(/MCPMAKE_ALLOW_PRIVATE_HOSTS/);
     });
 
-    it('rejects a non-http(s) base URL', () => {
+    it('rejects a non-http(s) base URL', async () => {
       process.env.ANTHROPIC_API_KEY = 'sk-ant-test';
       process.env.ANTHROPIC_BASE_URL = 'file:///etc/passwd';
-      expect(() => getLlmProvider()).toThrow(/http\(s\)/);
+      await expect(getLlmProvider()).rejects.toThrow(/http\(s\)/);
     });
 
-    it('accepts a public base URL', () => {
+    it('accepts a public base URL', async () => {
       process.env.ANTHROPIC_API_KEY = 'sk-ant-test';
       process.env.ANTHROPIC_BASE_URL = 'https://api.anthropic.com';
-      const provider = getLlmProvider();
+      lookupMock.mockResolvedValue([{ address: '160.79.104.10', family: 4 }]);
+      const provider = await getLlmProvider();
       expect(provider).not.toBeNull();
       expect(provider?.name).toBe('anthropic');
     });
 
-    it('is a no-op when no base URL is set (default anthropic flow)', () => {
+    it('is a no-op when no base URL is set (default anthropic flow)', async () => {
       process.env.ANTHROPIC_API_KEY = 'sk-ant-test';
-      const provider = getLlmProvider();
+      const provider = await getLlmProvider();
       expect(provider).not.toBeNull();
       expect(provider?.name).toBe('anthropic');
+      expect(lookupMock).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('base-URL SSRF guard — DNS-aware (A3-M2)', () => {
+    it('rejects a hostname that resolves to a private address (e.g. localtest.me → 127.0.0.1)', async () => {
+      process.env.MCPMAKE_LLM_PROVIDER = 'openai-compatible';
+      process.env.OPENAI_BASE_URL = 'http://localtest.me:11434/v1';
+      lookupMock.mockResolvedValue([{ address: '127.0.0.1', family: 4 }]);
+      await expect(getLlmProvider()).rejects.toThrow(
+        /resolves to private\/reserved address 127\.0\.0\.1/,
+      );
+      expect(lookupMock).toHaveBeenCalledWith('localtest.me', { all: true });
+    });
+
+    it('rejects when ANY resolved address is private (mixed public + private)', async () => {
+      process.env.MCPMAKE_LLM_PROVIDER = 'openai-compatible';
+      process.env.OPENAI_BASE_URL = 'http://rebind.example:11434/v1';
+      lookupMock.mockResolvedValue([
+        { address: '8.8.8.8', family: 4 },
+        { address: '10.0.0.5', family: 4 },
+      ]);
+      await expect(getLlmProvider()).rejects.toThrow(/private\/reserved address 10\.0\.0\.5/);
+    });
+
+    it('accepts a hostname that resolves only to public addresses', async () => {
+      process.env.MCPMAKE_LLM_PROVIDER = 'openai';
+      process.env.OPENAI_API_KEY = 'sk-openai-test';
+      process.env.OPENAI_BASE_URL = 'http://api.example.com/v1';
+      lookupMock.mockResolvedValue([{ address: '93.184.216.34', family: 4 }]);
+      const provider = await getLlmProvider();
+      expect(provider).not.toBeNull();
+      expect(provider?.name).toBe('openai');
+    });
+
+    it('refuses to send credentials when DNS resolution fails', async () => {
+      process.env.MCPMAKE_LLM_PROVIDER = 'openai';
+      process.env.OPENAI_API_KEY = 'sk-openai-test';
+      process.env.OPENAI_BASE_URL = 'http://does-not-resolve.invalid/v1';
+      lookupMock.mockRejectedValue(new Error('ENOTFOUND'));
+      await expect(getLlmProvider()).rejects.toThrow(/could not be resolved/);
+    });
+
+    it('skips DNS entirely when MCPMAKE_ALLOW_PRIVATE_HOSTS is set', async () => {
+      process.env.MCPMAKE_LLM_PROVIDER = 'openai-compatible';
+      process.env.OPENAI_BASE_URL = 'http://localtest.me:11434/v1';
+      process.env.MCPMAKE_ALLOW_PRIVATE_HOSTS = '1';
+      const provider = await getLlmProvider();
+      expect(provider).not.toBeNull();
+      expect(lookupMock).not.toHaveBeenCalled();
     });
   });
 
   describe('requireLlmProvider', () => {
-    it('returns the provider when one is available', () => {
+    it('returns the provider when one is available', async () => {
       process.env.ANTHROPIC_API_KEY = 'sk-ant-test';
-      const provider = requireLlmProvider('spec generation');
+      const provider = await requireLlmProvider('spec generation');
       expect(provider.name).toBe('anthropic');
     });
 
-    it('throws mentioning ANTHROPIC_API_KEY under default anthropic with no key', () => {
-      expect(() => requireLlmProvider('spec generation')).toThrow(/ANTHROPIC_API_KEY/);
+    it('throws mentioning ANTHROPIC_API_KEY under default anthropic with no key', async () => {
+      await expect(requireLlmProvider('spec generation')).rejects.toThrow(/ANTHROPIC_API_KEY/);
     });
 
-    it('throws mentioning OPENAI_API_KEY under openai with no key', () => {
+    it('throws mentioning OPENAI_API_KEY under openai with no key', async () => {
       process.env.MCPMAKE_LLM_PROVIDER = 'openai';
-      expect(() => requireLlmProvider('spec generation')).toThrow(/OPENAI_API_KEY/);
+      await expect(requireLlmProvider('spec generation')).rejects.toThrow(/OPENAI_API_KEY/);
     });
 
-    it('throws mentioning OPENAI_BASE_URL under openai-compatible with no base url', () => {
+    it('throws mentioning OPENAI_BASE_URL under openai-compatible with no base url', async () => {
       process.env.MCPMAKE_LLM_PROVIDER = 'openai-compatible';
-      expect(() => requireLlmProvider('spec generation')).toThrow(/OPENAI_BASE_URL/);
+      await expect(requireLlmProvider('spec generation')).rejects.toThrow(/OPENAI_BASE_URL/);
     });
   });
 });

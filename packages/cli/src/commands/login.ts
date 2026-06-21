@@ -1,6 +1,12 @@
 import { defineCommand } from 'citty';
 import { logger, fail } from '@mcpmake/core';
-import { apiRequest, openBrowser, sleep, type ApiResponse } from '../auth/api-client.js';
+import {
+  apiRequest,
+  openBrowser,
+  sleep,
+  assertSecureChannel,
+  type ApiResponse,
+} from '../auth/api-client.js';
 import { saveCredentials, looksLikeDeployToken } from '../auth/credentials.js';
 
 const DEFAULT_SERVER = 'https://mcpmake.dev';
@@ -27,17 +33,31 @@ export default defineCommand({
       description: "Don't try to open the browser automatically",
       default: false,
     },
+    insecure: {
+      type: 'boolean',
+      description: 'Allow sending the deploy token to a non-HTTPS, non-localhost target',
+      default: false,
+    },
   },
   async run({ args }) {
     const serverUrl = String(args.server).replace(/\/+$/, '');
+    const insecure = args.insecure ?? false;
 
     // --- Paste fallback (CI / headless): verify the token, then store it. ------
     if (args.token) {
       if (!looksLikeDeployToken(args.token)) {
         return await fail('A deploy token must start with "mfd_". Mint one on the Account page.');
       }
+      // Refuse to send the token over plaintext before we even contact the
+      // server, with a clear (token-free) message rather than a generic reject.
+      try {
+        assertSecureChannel(new URL(serverUrl), insecure);
+      } catch (e) {
+        return await fail(e instanceof Error ? e.message : String(e));
+      }
       const who = await apiRequest('GET', serverUrl, '/api/cli/whoami', {
         token: args.token,
+        insecure,
       }).catch((e): ApiResponse => ({ status: 0, body: { error: String(e) } }));
       if (who.status !== 200) {
         return await fail('That deploy token was rejected by the server.');
@@ -105,7 +125,9 @@ export default defineCommand({
       return await fail('Login timed out before approval. Run `mcpmake login` again.');
     }
 
-    const who = await apiRequest('GET', serverUrl, '/api/cli/whoami', { token }).catch(() => null);
+    const who = await apiRequest('GET', serverUrl, '/api/cli/whoami', { token, insecure }).catch(
+      () => null,
+    );
     const email = who && who.status === 200 ? (who.body.email as string) : undefined;
     await saveCredentials({ serverUrl, token, email });
     logger.success(`Logged in${email ? ` as ${email}` : ''}. Deploy with:  mcpmake deploy <spec>`);

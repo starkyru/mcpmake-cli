@@ -40,7 +40,7 @@ export async function goalDirectedCrawl(options: GoalCrawlOptions): Promise<Craw
   const maxSteps = options.maxSteps ?? DEFAULT_MAX_STEPS;
   const viewport = options.viewport ?? DEFAULT_VIEWPORT;
 
-  const provider = requireLlmProvider('goal-directed crawl (--goal)');
+  const provider = await requireLlmProvider('goal-directed crawl (--goal)');
 
   // Sanitize site-derived text (page titles, link labels/hrefs) before placing
   // it in the LLM prompt: strip control characters and bound the length so a

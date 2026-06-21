@@ -6,6 +6,7 @@ import { logger } from '@mcpmake/core';
 import { fail } from '@mcpmake/core';
 import { pathExists } from '@mcpmake/core';
 import { generateMcpb } from '@mcpmake/core';
+import { childEnv } from '../env.js';
 
 const execFile = promisify(execFileCb);
 
@@ -69,6 +70,9 @@ async function buildProject(projectDir: string): Promise<void> {
     await execFile('npm', ['install', '--omit=dev'], {
       cwd: projectDir,
       timeout: 120_000,
+      // Strip NODE_OPTIONS/loader vars so this spawn can't be hijacked into
+      // running attacker code (defense in depth — see childEnv).
+      env: childEnv(),
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -80,6 +84,7 @@ async function buildProject(projectDir: string): Promise<void> {
     await execFile('npm', ['run', 'build'], {
       cwd: projectDir,
       timeout: 120_000,
+      env: childEnv(),
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

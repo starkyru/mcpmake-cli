@@ -37,7 +37,7 @@ export async function improveToolNames(
   operations: OperationDescriptor[],
   model?: string,
 ): Promise<OperationDescriptor[]> {
-  const provider = getLlmProvider();
+  const provider = await getLlmProvider();
   if (!provider) {
     logger.warn('No LLM provider configured — skipping LLM tool naming');
     return operations;
