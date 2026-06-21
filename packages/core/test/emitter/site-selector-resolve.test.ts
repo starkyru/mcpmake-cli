@@ -1,18 +1,19 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { writeFileSync, rmSync } from 'node:fs';
-import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { writeFileSync, rmSync, mkdtempSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { renderSiteTemplate } from '../../src/emitter/site-template-loader.js';
 
-const here = dirname(fileURLToPath(import.meta.url));
+// Write transient generated files into an OS temp directory so they are
+// never inside the repo tree.  This prevents format:check from discovering
+// (then ENOENTing) the files, and avoids phantom files on interrupted runs.
+const tmpDir = mkdtempSync(join(tmpdir(), 'mcpmake-site-selector-'));
 
-// Render the generated browser-manager to a temp module under the repo (so
-// vitest's transform pipeline compiles it) and import it to exercise the real
-// resolveSelector runtime logic against a mock Playwright Page.
-const tmpFile = join(here, `__browser_manager_runtime_${process.pid}.ts`);
-// browser-manager imports './telemetry.js' — write the rendered sibling so the
-// temp module resolves it (no-ops at runtime since no telemetry env is set).
-const telemetrySibling = join(here, 'telemetry.ts');
+// browser-manager.ts is the module under test; telemetry.ts is a sibling it
+// imports at runtime (no-ops when no telemetry env is set).
+const tmpFile = join(tmpDir, `__browser_manager_runtime_${process.pid}.ts`);
+const telemetrySibling = join(tmpDir, 'telemetry.ts');
+
 /* eslint-disable @typescript-eslint/no-explicit-any */
 let bm: any;
 
@@ -23,8 +24,11 @@ beforeAll(async () => {
 });
 
 afterAll(() => {
-  rmSync(tmpFile, { force: true });
-  rmSync(telemetrySibling, { force: true });
+  try {
+    rmSync(tmpDir, { recursive: true, force: true });
+  } catch {
+    // best-effort; OS will clean up on reboot
+  }
 });
 
 /** Mock page where a selector "exists" if it's in `present` (fast path via $). */

@@ -114,6 +114,16 @@ ${safeTree}`;
       }
     }
 
+    // Sanitize humanLabel: strip control characters and cap length so a
+    // malicious LLM response cannot persist control chars into the descriptor.
+    if (parsed.humanLabel != null) {
+      if (typeof parsed.humanLabel !== 'string' || parsed.humanLabel.length > 200) {
+        logger.warn('LLM returned an invalid humanLabel — skipping healing');
+        return null;
+      }
+      parsed.humanLabel = parsed.humanLabel.replace(/[\x00-\x1f\x7f]/g, ' ').trim();
+    }
+
     logger.info(`Healed selector: ${brokenSelector.primary} → ${parsed.primary}`);
     return parsed;
   } catch (err) {

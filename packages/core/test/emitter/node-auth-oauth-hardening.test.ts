@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import ts from 'typescript';
 import { renderTemplate } from '../../src/emitter/template-loader.js';
+import { renderWorkerTemplate } from '../../src/emitter/worker-template-loader.js';
 
 /** Transpile rendered TS and fail on any syntactic diagnostic (proves it parses). */
 function assertParses(source: string, label: string): void {
@@ -166,5 +167,210 @@ describe('L-catch — OAuth failures are observable, never silently swallowed', 
     expect(auth).toContain('OAuth token fetch failed');
     // The fallback behavior itself is preserved.
     expect(auth).toContain("headers['Authorization'] = `Bearer ${config.oauth2Token}`");
+  });
+});
+
+describe('R4-F — OAuth error message omits raw response body', () => {
+  const oauth = renderTemplate('oauth.ts', { authSchemes: [OAUTH_SCHEME] });
+
+  it('renders parseable TypeScript after the fix', () => {
+    assertParses(oauth, 'oauth.ts (R4-F)');
+  });
+
+  it('client-credentials error does not include the raw upstream body', () => {
+    // The old pattern read response.text() and interpolated it into the thrown message.
+    expect(oauth).not.toMatch(/response\.text\(\)[^;]*client credentials/);
+    expect(oauth).not.toMatch(/client credentials failed.*\$\{body\}/);
+  });
+
+  it('client-credentials error still surfaces the HTTP status code', () => {
+    expect(oauth).toContain('OAuth client credentials failed');
+    expect(oauth).toContain('response.status');
+  });
+});
+
+describe('R4-D — SSE connection set has a capacity cap', () => {
+  const sse = renderTemplate('task-sse.ts', {});
+
+  it('renders parseable TypeScript', () => {
+    assertParses(sse, 'task-sse.ts (R4-D)');
+  });
+
+  it('reads MCP_MAX_SSE_CONNECTIONS before adding a connection', () => {
+    expect(sse).toContain('MCP_MAX_SSE_CONNECTIONS');
+    // Cap check must precede connections.add.
+    const capIdx = sse.indexOf('MCP_MAX_SSE_CONNECTIONS');
+    const addIdx = sse.indexOf('connections.add(conn)');
+    expect(capIdx).toBeGreaterThan(-1);
+    expect(addIdx).toBeGreaterThan(-1);
+    expect(capIdx).toBeLessThan(addIdx);
+  });
+
+  it('responds 503 when the cap is reached instead of adding the connection', () => {
+    expect(sse).toMatch(/connections\.size >= max/);
+    expect(sse).toContain('503');
+    expect(sse).toContain('SSE connection limit reached');
+  });
+
+  it('broadcast deletes dead connections instead of skipping them', () => {
+    // The old pattern was: if (conn.res.writableEnded) continue;
+    // The fixed pattern must delete before continuing.
+    expect(sse).toContain('connections.delete(conn)');
+    // Deletion must appear in the broadcast function (before listTasks usage).
+    const broadcastBlock = sse.slice(
+      sse.indexOf('function broadcast('),
+      sse.indexOf('taskEvents.on('),
+    );
+    expect(broadcastBlock).toContain('connections.delete(conn)');
+    expect(broadcastBlock).not.toMatch(/writableEnded\) continue;/);
+  });
+
+  it('R5-A: rejects negative MCP_MAX_SSE_CONNECTIONS and falls back to 500', () => {
+    // The old `|| 500` guard fires only for falsy values; -1 is truthy and slips through.
+    // The fixed guard must use Number.isInteger + rawMax > 0 so negatives are caught.
+    expect(sse).toContain('Number.isInteger(rawMax) && rawMax > 0');
+    // The literal fallback 500 must still be present.
+    expect(sse).toContain(': 500');
+    // The old unguarded form must NOT appear.
+    expect(sse).not.toMatch(
+      /parseInt\(process\.env\.MCP_MAX_SSE_CONNECTIONS[^,]*,\s*10\)\s*\|\|\s*500/,
+    );
+  });
+});
+
+describe('R5-D — task-manager evicts a terminal task before the oldest working task', () => {
+  const mgr = renderTemplate('task-manager.ts', {});
+
+  it('renders parseable TypeScript', () => {
+    assertParses(mgr, 'task-manager.ts (R5-D)');
+  });
+
+  it('prefers evicting a terminal task (completed/failed/cancelled) over the oldest entry', () => {
+    // Must use .find() to locate a terminal entry first.
+    expect(mgr).toContain(
+      "t.status === 'completed' || t.status === 'failed' || t.status === 'cancelled'",
+    );
+    // Nullish-coalesce to oldest is the fallback, not the primary path.
+    const evictBlock = mgr.slice(
+      mgr.indexOf('tasks.size >= MAX_TASKS'),
+      mgr.indexOf('const task: Task ='),
+    );
+    expect(evictBlock).toContain('terminalKey');
+    // The terminal search must appear before the fallback to oldest.
+    const terminalIdx = evictBlock.indexOf('.find(');
+    const fallbackIdx = evictBlock.indexOf('tasks.keys().next().value');
+    expect(terminalIdx).toBeGreaterThan(-1);
+    expect(fallbackIdx).toBeGreaterThan(terminalIdx);
+  });
+
+  it('still deletes the oldest entry when no terminal task exists (fallback preserved)', () => {
+    // The fallback via ?? tasks.keys().next().value must remain.
+    expect(mgr).toContain('tasks.keys().next().value');
+    // Guard: only delete if the key is not undefined.
+    expect(mgr).toContain('terminalKey !== undefined');
+  });
+});
+
+describe('R7-C — node config.ts uses posInt guard for numeric env vars', () => {
+  const config = renderTemplate('config.ts', {
+    authSchemes: [{ type: 'http-bearer', envVarName: 'BEARER_TOKEN', schemeName: 'b' }],
+  });
+
+  it('renders parseable TypeScript', () => {
+    assertParses(config, 'config.ts (R7-C)');
+  });
+
+  it('declares posInt helper with positive-integer predicate', () => {
+    expect(config).toContain('const posInt = (v: string | undefined, d: number): number =>');
+    expect(config).toContain('Number.isInteger(n) && n > 0 ? n : d');
+  });
+
+  it('uses nonNegInt for MAX_RETRIES and REQUEST_INTERVAL_MS', () => {
+    expect(config).toContain('maxRetries: nonNegInt(process.env.MAX_RETRIES, 3)');
+    expect(config).toContain('requestIntervalMs: nonNegInt(process.env.REQUEST_INTERVAL_MS, 100)');
+  });
+
+  it('no longer uses bare parseInt for MAX_RETRIES or REQUEST_INTERVAL_MS', () => {
+    expect(config).not.toContain('parseInt(process.env.MAX_RETRIES');
+    expect(config).not.toContain('parseInt(process.env.REQUEST_INTERVAL_MS');
+  });
+});
+
+describe('R7-C — worker config.ts uses posInt guard for numeric env vars', () => {
+  const config = renderWorkerTemplate('config.ts', {
+    authSchemes: [{ type: 'http-bearer', envVarName: 'BEARER_TOKEN', schemeName: 'b' }],
+  });
+
+  it('renders parseable TypeScript', () => {
+    assertParses(config, 'worker config.ts (R7-C)');
+  });
+
+  it('declares posInt helper with positive-integer predicate', () => {
+    expect(config).toContain('const posInt = (v: string | undefined, d: number): number =>');
+    expect(config).toContain('Number.isInteger(n) && n > 0 ? n : d');
+  });
+
+  it('uses nonNegInt for MAX_RETRIES and REQUEST_INTERVAL_MS (reads from env binding)', () => {
+    expect(config).toContain('maxRetries: nonNegInt(env.MAX_RETRIES, 3)');
+    expect(config).toContain('requestIntervalMs: nonNegInt(env.REQUEST_INTERVAL_MS, 100)');
+  });
+
+  it('no longer uses bare parseInt for MAX_RETRIES or REQUEST_INTERVAL_MS', () => {
+    expect(config).not.toContain('parseInt(env.MAX_RETRIES');
+    expect(config).not.toContain('parseInt(env.REQUEST_INTERVAL_MS');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A4-M3 — nonNegInt honours zero; negative / NaN still fall back
+// ---------------------------------------------------------------------------
+
+describe('A4-M3 — node config.ts: nonNegInt honours zero for MAX_RETRIES and REQUEST_INTERVAL_MS', () => {
+  const config = renderTemplate('config.ts', {
+    authSchemes: [],
+  });
+
+  it('renders parseable TypeScript', () => {
+    assertParses(config, 'config.ts (A4-M3)');
+  });
+
+  it('declares nonNegInt helper with non-negative predicate (n >= 0)', () => {
+    expect(config).toContain('const nonNegInt = (v: string | undefined, d: number): number =>');
+    expect(config).toContain('Number.isInteger(n) && n >= 0 ? n : d');
+  });
+
+  it('uses nonNegInt (not posInt) for MAX_RETRIES', () => {
+    expect(config).toContain('maxRetries: nonNegInt(process.env.MAX_RETRIES, 3)');
+    expect(config).not.toContain('maxRetries: posInt(process.env.MAX_RETRIES');
+  });
+
+  it('uses nonNegInt (not posInt) for REQUEST_INTERVAL_MS', () => {
+    expect(config).toContain('requestIntervalMs: nonNegInt(process.env.REQUEST_INTERVAL_MS, 100)');
+    expect(config).not.toContain('requestIntervalMs: posInt(process.env.REQUEST_INTERVAL_MS');
+  });
+});
+
+describe('A4-M3 — worker config.ts: nonNegInt honours zero for MAX_RETRIES and REQUEST_INTERVAL_MS', () => {
+  const config = renderWorkerTemplate('config.ts', {
+    authSchemes: [],
+  });
+
+  it('renders parseable TypeScript', () => {
+    assertParses(config, 'worker config.ts (A4-M3)');
+  });
+
+  it('declares nonNegInt helper with non-negative predicate (n >= 0)', () => {
+    expect(config).toContain('const nonNegInt = (v: string | undefined, d: number): number =>');
+    expect(config).toContain('Number.isInteger(n) && n >= 0 ? n : d');
+  });
+
+  it('uses nonNegInt (not posInt) for MAX_RETRIES', () => {
+    expect(config).toContain('maxRetries: nonNegInt(env.MAX_RETRIES, 3)');
+    expect(config).not.toContain('maxRetries: posInt(env.MAX_RETRIES');
+  });
+
+  it('uses nonNegInt (not posInt) for REQUEST_INTERVAL_MS', () => {
+    expect(config).toContain('requestIntervalMs: nonNegInt(env.REQUEST_INTERVAL_MS, 100)');
+    expect(config).not.toContain('requestIntervalMs: posInt(env.REQUEST_INTERVAL_MS');
   });
 });

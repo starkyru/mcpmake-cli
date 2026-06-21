@@ -422,7 +422,10 @@ function successSchema(op: AnyOperation): Record<string, unknown> | undefined {
   return schema && typeof schema === 'object' ? (schema as Record<string, unknown>) : undefined;
 }
 
-function hasProperty(schema: Record<string, unknown>, prop: string): boolean {
+const HAS_PROPERTY_MAX_DEPTH = 20;
+
+function hasProperty(schema: Record<string, unknown>, prop: string, depth = 0): boolean {
+  if (depth > HAS_PROPERTY_MAX_DEPTH) return false;
   const props = schema.properties as Record<string, unknown> | undefined;
   if (props && typeof props === 'object' && prop in props) return true;
   // Dereferenced specs (e.g. Stripe-style list envelopes) often compose the
@@ -432,7 +435,8 @@ function hasProperty(schema: Record<string, unknown>, prop: string): boolean {
     if (
       Array.isArray(members) &&
       members.some(
-        (m) => m && typeof m === 'object' && hasProperty(m as Record<string, unknown>, prop),
+        (m) =>
+          m && typeof m === 'object' && hasProperty(m as Record<string, unknown>, prop, depth + 1),
       )
     ) {
       return true;

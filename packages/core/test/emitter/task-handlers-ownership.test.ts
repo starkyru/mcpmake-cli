@@ -82,4 +82,17 @@ describe('L-taskown — task-handlers ownership hardening', () => {
     expect(src).toMatch(/single shared bearer token/i);
     expect(src).toMatch(/sessions/i);
   });
+
+  it('R4-E: limit param uses a guarded parse that rejects NaN/zero/over-max and defaults to 50', () => {
+    // Must NOT use the old unguarded `parseInt(limitParam, 10)` pattern alone.
+    expect(src).not.toMatch(/const limit = limitParam \? parseInt\(limitParam, 10\) : 50/);
+    // Must use Number.isInteger guard.
+    expect(src).toContain('Number.isInteger(rawLimit)');
+    // Upper-bound cap must be present.
+    expect(src).toContain('rawLimit <= 1000');
+    // Default of 50 is retained.
+    expect(src).toContain(': 50');
+    // The guarded value is passed to listTasks.
+    expect(src).toMatch(/listTasks\(statusParam[^,]*, limit\)/);
+  });
 });

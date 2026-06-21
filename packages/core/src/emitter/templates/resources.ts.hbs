@@ -1,4 +1,5 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { executeRequest } from './http.js';
 import type { AppConfig } from './config.js';
 
@@ -7,12 +8,12 @@ export function registerAllResources(server: McpServer, config: AppConfig): void
 {{#if isTemplate}}
   server.resource(
     '{{name}}',
-    '{{uri}}',
+    new ResourceTemplate('{{uri}}', { list: undefined }),
     {
       description: `{{{description}}}`,
       mimeType: 'application/json',
     },
-    async (uri) => {
+    async (uri, variables) => {
 {{{urlBody}}}
       const response = await executeRequest({
         method: 'get',

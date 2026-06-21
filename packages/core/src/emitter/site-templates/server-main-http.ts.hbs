@@ -74,6 +74,10 @@ let isReady = false;
 
 if (process.env.TRANSPORT === 'http') {
   const port = parseInt(process.env.PORT ?? '3000', 10);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    log('error', 'Invalid PORT value, must be 1-65535', { PORT: process.env.PORT });
+    process.exit(1);
+  }
   const allowedOrigin = process.env.ALLOWED_ORIGIN;
 
   const httpServer = http.createServer(async (req, res) => {
@@ -159,8 +163,10 @@ if (process.env.TRANSPORT === 'http') {
   const shutdown = async () => {
     log('info', 'Shutting down...');
     await closeBrowser();
-    httpServer.close();
-    setTimeout(() => process.exit(0), 5000);
+    // Exit as soon as the server finishes draining; the timer is only a
+    // forced-exit backstop and is unref'd so it never holds the loop open.
+    httpServer.close(() => process.exit(0));
+    setTimeout(() => process.exit(0), 5000).unref();
   };
 
   process.on('SIGTERM', shutdown);
@@ -172,8 +178,11 @@ if (process.env.TRANSPORT === 'http') {
   await server.connect(transport);
   isReady = true;
 
-  process.on('SIGTERM', async () => {
+  const shutdown = async () => {
     await closeBrowser();
     process.exit(0);
-  });
+  };
+
+  process.on('SIGTERM', shutdown);
+  process.on('SIGINT', shutdown);
 }

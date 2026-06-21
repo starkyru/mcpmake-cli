@@ -87,4 +87,23 @@ describe('har-dedup', () => {
     const result = deduplicateEntries(entries);
     expect(result).toHaveLength(2);
   });
+
+  it('isPaginationVariant uses only the url — allEntries and current params removed (R3-6)', () => {
+    // Regression: the old signature accepted (url, allEntries, current) but both
+    // extra params were unused. Confirm deduplication works correctly now that the
+    // call site passes only the url.
+    const t0 = '2024-01-01T00:00:00.000Z';
+    const t10 = '2024-01-01T00:00:10.000Z';
+    const t20 = '2024-01-01T00:00:20.000Z';
+    const t30 = '2024-01-01T00:00:30.000Z';
+    const entries = [
+      normalizeEntry(makeEntry('https://api.test.com/items?cursor=a', 'GET', t0)),
+      normalizeEntry(makeEntry('https://api.test.com/items?cursor=b', 'GET', t10)),
+      normalizeEntry(makeEntry('https://api.test.com/items?cursor=c', 'GET', t20)),
+      normalizeEntry(makeEntry('https://api.test.com/items?cursor=d', 'GET', t30)),
+    ];
+    const result = deduplicateEntries(entries);
+    // First 3 are kept (seen.count < 3 threshold), 4th is dropped.
+    expect(result.length).toBeLessThan(entries.length);
+  });
 });

@@ -268,6 +268,14 @@ describe('Feature 4: idempotency key + default headers', () => {
     expect(out).toContain('...config.defaultHeaders,');
   });
 
+  it('http executor caps Retry-After at 60 s and guards against NaN (HTTP-date form)', () => {
+    const out = renderTemplate('http-executor.ts', manifest());
+    // Delay is bounded: Math.min(retryAfterMs, 60_000) prevents DoS from huge values.
+    expect(out).toContain('Math.min(retryAfterMs, 60_000)');
+    // NaN guard: only honor the header when the parsed value is a finite number.
+    expect(out).toContain('Number.isFinite(retryAfterMs)');
+  });
+
   it('config parses MCP_DEFAULT_HEADERS into defaultHeaders', () => {
     const out = renderTemplate('config.ts', manifest());
     expect(out).toContain('function loadDefaultHeaders()');

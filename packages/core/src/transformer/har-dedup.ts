@@ -29,7 +29,7 @@ export function deduplicateEntries(entries: NormalizedEntry[]): NormalizedEntry[
       }
 
       // Skip excessive pagination: keep at most 3 examples per endpoint
-      if (isPaginationVariant(url, entries, entry) && seen.count >= 3) {
+      if (isPaginationVariant(url) && seen.count >= 3) {
         seen.lastTime = timestamp;
         seen.count++;
         continue;
@@ -79,11 +79,7 @@ function stripPaginationParams(url: string): string {
   }
 }
 
-function isPaginationVariant(
-  url: string,
-  allEntries: NormalizedEntry[],
-  current: NormalizedEntry,
-): boolean {
+function isPaginationVariant(url: string): boolean {
   try {
     const parsed = new URL(url);
     const paramKeys = [...parsed.searchParams.keys()].map((k) => k.toLowerCase());

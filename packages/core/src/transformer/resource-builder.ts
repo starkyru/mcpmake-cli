@@ -1,11 +1,25 @@
 import type { OperationDescriptor } from '../types/index.js';
 import type { ResourceDefinition, PromptDefinition } from '../types/index.js';
-import {
-  escapeTemplateLiteral,
-  escapeStringLiteral,
-  sanitizeIdentifier,
-} from '../utils/sanitize.js';
+import { escapeTemplateLiteral, escapeStringLiteral } from '../utils/sanitize.js';
 import { toToolName } from './naming.js';
+
+/**
+ * Produce an RFC 6570-safe URI-template variable name from an arbitrary path
+ * parameter wire name.
+ *
+ * RFC 6570 §2.3 allows `[A-Za-z0-9_]` (plus pct-encoded, but MCP SDK does
+ * not support them). Chars outside that set are REPLACED with `_` — not
+ * stripped — so that two distinct names (e.g. `user-id` and `userid`) do not
+ * silently collapse to the same key. A leading digit gets a `_` prefix to keep
+ * the result a valid JS identifier (the SDK uses the name as an object key).
+ * An empty input after replacement is guarded to `_param`.
+ */
+function uriTemplateVar(name: string): string {
+  let safe = name.replace(/[^A-Za-z0-9_]/g, '_');
+  if (!safe) return '_param';
+  if (/^[0-9]/.test(safe)) safe = `_${safe}`;
+  return safe;
+}
 
 /**
  * Generate MCP resources from GET operations.
@@ -14,6 +28,12 @@ import { toToolName } from './naming.js';
  */
 export function buildResources(operations: OperationDescriptor[]): ResourceDefinition[] {
   const resources: ResourceDefinition[] = [];
+  // R11-B: guard against duplicate resource names. Two operationIds that
+  // collapse to the same toToolName result would produce two
+  // `server.resource('X', 'api://X', …)` calls, which the MCP SDK rejects with
+  // "Resource X is already registered". Append _2, _3, … until unique; keep the
+  // uri in sync with the final name so name and URI stay consistent.
+  const claimedNames = new Set<string>();
 
   for (const op of operations) {
     // Operations dropped from the tool surface (x-mcp-emit: skip) must not leak
@@ -21,7 +41,17 @@ export function buildResources(operations: OperationDescriptor[]): ResourceDefin
     if (op.mcpExtensions?.emit === 'skip') continue;
     if (op.method !== 'get') continue;
 
-    const name = toToolName(op.operationId);
+    const baseName = toToolName(op.operationId);
+
+    // Deduplicate: if baseName is already claimed, try baseName_2, _3, …
+    let name = baseName;
+    if (claimedNames.has(name)) {
+      let n = 2;
+      while (claimedNames.has(`${baseName}_${n}`)) n++;
+      name = `${baseName}_${n}`;
+    }
+    claimedNames.add(name);
+
     const description = escapeTemplateLiteral(
       op.summary ?? `${op.method.toUpperCase()} ${op.path}`,
     );
@@ -37,28 +67,50 @@ export function buildResources(operations: OperationDescriptor[]): ResourceDefin
       });
     } else {
       // Template resource — detail endpoint with path params. Param names are
-      // emitted into the single-quoted `uri` literal, so sanitize them.
-      const pathParams = op.parameters.filter((p) => p.in === 'path').map((p) => p.name);
-      const uriTemplate = `api://${name}/${pathParams.map((p) => `{${sanitizeIdentifier(p)}}`).join('/')}`;
+      // emitted into the single-quoted `uri` literal using RFC-6570-safe var names.
+      //
+      // Build a per-param mapping in a single pass: rawWire (the literal `{name}`
+      // token in op.path) → safeVar (unique RFC-6570-safe identifier used in both
+      // the URI template and the variables[key] read in the handler).
+      //
+      // Dedup: two params whose safe names collide (e.g. `a.b` and `ab` both →
+      // `a_b`… wait, `ab` → `ab`; actual collision: `a-b` and `a_b` both →
+      // `a_b`) get a _2, _3, … suffix so the URI template never has duplicate
+      // variables, which would cause the MCP SDK to overwrite one slot silently.
+      const claimedVarNames = new Set<string>();
+      const pathParamPairs = op.parameters
+        .filter((p) => p.in === 'path')
+        .map((p) => {
+          const baseVar = uriTemplateVar(p.name);
+          let safeVar = baseVar;
+          if (claimedVarNames.has(safeVar)) {
+            let n = 2;
+            while (claimedVarNames.has(`${baseVar}_${n}`)) n++;
+            safeVar = `${baseVar}_${n}`;
+          }
+          claimedVarNames.add(safeVar);
+          return { rawWire: p.name, safeVar };
+        });
+
+      const uriTemplate = `api://${name}/${pathParamPairs.map(({ safeVar }) => `{${safeVar}}`).join('/')}`;
 
       // Pre-compute URL body to avoid Handlebars/curly-brace conflicts.
-      // Resource handler receives (uri: URL, extra) — extract params from uri.pathname.
+      // Resource handler receives (uri: URL, variables: Variables) — extract params
+      // from the SDK-provided variables map (keyed by the same safeVar names used
+      // in the URI template above, e.g. `{user_id}` → `variables['user_id']`).
       const urlLines: string[] = [];
-      urlLines.push(`      const pathParts = uri.pathname.split('/').filter(Boolean);`);
       // op.path is interpolated into a BACKTICK template literal here, so it must
       // be escaped for that sink: escapeStringLiteral leaves backticks and `${}`
       // live, allowing expression evaluation (D-C2). Use escapeTemplateLiteral.
       urlLines.push(`      let url = \`\${config.baseUrl}${escapeTemplateLiteral(op.path)}\`;`);
-      // Replace path params using positional extraction from the URI
-      const pathSegments = op.path.split('/').filter(Boolean);
-      for (let i = 0; i < pathSegments.length; i++) {
-        const seg = pathSegments[i];
-        if (seg.startsWith('{') && seg.endsWith('}')) {
-          const safe = sanitizeIdentifier(seg.slice(1, -1));
-          urlLines.push(
-            `      if (pathParts[${i}]) url = url.replace('${escapeStringLiteral(seg)}', encodeURIComponent(pathParts[${i}]));`,
-          );
-        }
+      for (const { rawWire, safeVar } of pathParamPairs) {
+        // rawWire is the literal token in op.path, e.g. `user-id` for `{user-id}`.
+        // escapeStringLiteral escapes it for a single-quoted JS string literal.
+        // safeVar is RFC-6570-safe ([A-Za-z0-9_] only), making it safe to embed
+        // directly as an object property key in a single-quoted string literal.
+        urlLines.push(
+          `      url = url.replace('{${escapeStringLiteral(rawWire)}}', encodeURIComponent(String(variables['${safeVar}'] ?? '')));`,
+        );
       }
 
       resources.push({
@@ -67,13 +119,30 @@ export function buildResources(operations: OperationDescriptor[]): ResourceDefin
         path: op.path,
         description,
         isTemplate: true,
-        templateParams: pathParams,
+        templateParams: pathParamPairs.map(({ rawWire }) => rawWire),
         urlBody: urlLines.join('\n'),
       });
     }
   }
 
   return resources;
+}
+
+// Mirror of bodyEncodingFor's supported set in tool-builder.ts — an op with an
+// unsupported request-body media type is skipped by buildAllTools, so it must
+// not be referenced in a workflow prompt (the tool is never registered).
+// Field path: op.requestBody?.contentType (RequestBodyDescriptor.contentType).
+function hasSupportedBody(op: OperationDescriptor): boolean {
+  const ct = op.requestBody?.contentType;
+  if (!ct) return true; // no body → always built
+  const base = ct.split(';', 1)[0].trim().toLowerCase();
+  return (
+    base === '' ||
+    base === 'application/json' ||
+    base.endsWith('+json') ||
+    base === 'application/x-www-form-urlencoded' ||
+    base === 'multipart/form-data'
+  );
 }
 
 /**
@@ -89,15 +158,40 @@ export function buildPrompts(operations: OperationDescriptor[]): PromptDefinitio
     else tagGroups.set(tag, [op]);
   }
 
+  // R11-C: guard against duplicate prompt names. Two tags that map to the same
+  // toToolName result (e.g. "Orders" and "orders" both → "orders") would produce
+  // two `server.prompt('orders_workflow', …)` calls → startup crash. Dedup with
+  // the same _2, _3, … counter approach as buildAllTools / buildResources.
+  const claimedPromptNames = new Set<string>();
+
   const prompts: PromptDefinition[] = [];
   for (const [tag, ops] of tagGroups) {
-    const toolList = ops
+    // R11-A: exclude operations whose request-body media type is unsupported by
+    // buildAllTools — those tools are never registered, so listing them in the
+    // workflow prompt would reference non-existent tools.
+    const registeredOps = ops.filter(hasSupportedBody);
+    // R12-B: if every op in the tag was filtered out, don't register an empty
+    // workflow prompt that references zero tools.
+    if (registeredOps.length === 0) continue;
+
+    const toolList = registeredOps
       .map((op) => `- ${toToolName(op.operationId)}: ${op.summary ?? op.path}`)
       .join('\\n');
+
+    // R11-C: derive a unique prompt name.
+    const baseName = `${toToolName(tag)}_workflow`;
+    let promptName = baseName;
+    if (claimedPromptNames.has(promptName)) {
+      let n = 2;
+      while (claimedPromptNames.has(`${baseName}_${n}`)) n++;
+      promptName = `${baseName}_${n}`;
+    }
+    claimedPromptNames.add(promptName);
+
     prompts.push({
       // `name` is emitted into a single-quoted literal; the tag is untrusted
       // spec input, so derive a slug-safe name from it.
-      name: `${toToolName(tag)}_workflow`,
+      name: promptName,
       description: escapeTemplateLiteral(`Work with ${tag} — available operations`),
       template: escapeTemplateLiteral(
         `You have the following ${tag} tools available:\\n${toolList}\\n\\nWhat would you like to do?`,

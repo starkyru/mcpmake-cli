@@ -17,6 +17,7 @@ import {
   printWorkerNextSteps,
 } from './target-support.js';
 import { apiKeyArg, applyApiKey, modelArg, providerArg } from '../api-key.js';
+import { parseIntFlag } from './website.js';
 import { logger } from '@mcpmake/core';
 import { fail } from '@mcpmake/core';
 import type { OpenAPIV3 } from 'openapi-types';
@@ -197,7 +198,9 @@ export async function importFromStainless(
       ...envVars,
     ],
     dynamicDiscovery: opts.dynamicDiscovery ?? false,
-    staticToolCount: opts.staticTools ? parseInt(opts.staticTools, 10) : undefined,
+    staticToolCount: opts.staticTools
+      ? parseIntFlag(opts.staticTools, 'static-tools', 0)
+      : undefined,
     target,
     environments,
     defaultEnvironment,

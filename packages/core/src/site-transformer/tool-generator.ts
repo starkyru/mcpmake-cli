@@ -19,7 +19,7 @@ import type {
 } from '../types/site.js';
 import { buildBrowserLifecycleTools } from './browser-tools.js';
 import { toToolName, toToolTitle, toFileName, toFunctionName } from '../transformer/naming.js';
-import { escapeTemplateLiteral } from '../utils/sanitize.js';
+import { escapeTemplateLiteral, escapeStringLiteral } from '../utils/sanitize.js';
 import { logger } from '../utils/logger.js';
 
 /**
@@ -269,7 +269,7 @@ function buildFormInputSchema(fields: FormFieldDescriptor[]): string {
     // the SAME stable inputKey the handler reads.
     const key = field.inputKey ?? sanitizeFieldName(field.name);
     fieldLines.push(
-      `  ${JSON.stringify(key)}: ${zodType}${required}.describe('${escapeString(desc)}'),`,
+      `  ${JSON.stringify(key)}: ${zodType}${required}.describe('${escapeStringLiteral(desc)}'),`,
     );
   }
 
@@ -287,14 +287,14 @@ function buildOptionEnum(field: FormFieldDescriptor): string | null {
     const values = field.optionPairs.map((o) => o.value);
     const unique = [...new Set(values)];
     if (unique.length > 0) {
-      const opts = unique.map((v) => `'${escapeString(v)}'`).join(', ');
+      const opts = unique.map((v) => `'${escapeStringLiteral(v)}'`).join(', ');
       return `z.enum([${opts}])`;
     }
   }
   // Fallback for older descriptors that only captured labels.
   if (field.options && field.options.length > 0) {
     const unique = [...new Set(field.options)];
-    const opts = unique.map((o) => `'${escapeString(o)}'`).join(', ');
+    const opts = unique.map((o) => `'${escapeStringLiteral(o)}'`).join(', ');
     return `z.enum([${opts}])`;
   }
   return null;
@@ -391,8 +391,4 @@ function assignInputKeys(fields: FormFieldDescriptor[]): FormFieldDescriptor[] {
     usedKeys.add(candidate);
     return { ...field, inputKey: candidate };
   });
-}
-
-function escapeString(str: string): string {
-  return str.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, ' ');
 }

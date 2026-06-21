@@ -31,18 +31,30 @@ export function applyClientCompat(tools: ToolDefinition[], client: ClientMode): 
     }
   }
 
-  // Deduplicate after truncation
+  // Deduplicate after truncation — guarantee uniqueness even when two tools
+  // truncate to the same name AND share the same HTTP method.
   const nameCount = new Map<string, number>();
   for (const t of result) {
     nameCount.set(t.name, (nameCount.get(t.name) ?? 0) + 1);
   }
+  const claimedNames = new Set<string>(
+    result.filter((t) => (nameCount.get(t.name) ?? 0) === 1).map((t) => t.name),
+  );
   for (const tool of result) {
-    if ((nameCount.get(tool.name) ?? 0) > 1) {
-      // Append a hash suffix to make unique, staying within limit
-      const suffix = `_${tool.method}`;
-      const maxBase = limits.maxToolNameLength - suffix.length;
-      tool.name = tool.name.slice(0, maxBase) + suffix;
+    if ((nameCount.get(tool.name) ?? 0) <= 1) continue;
+    // Build a candidate: truncated base + method suffix, then increment counter
+    // until unique, all within the length limit.
+    const methodSuffix = `_${tool.method}`;
+    const maxBase = limits.maxToolNameLength - methodSuffix.length;
+    const base = tool.name.slice(0, maxBase) + methodSuffix;
+    let candidate = base;
+    for (let n = 2; claimedNames.has(candidate); n++) {
+      const counterSuffix = `_${n}`;
+      const cappedBase = base.slice(0, limits.maxToolNameLength - counterSuffix.length);
+      candidate = cappedBase + counterSuffix;
     }
+    claimedNames.add(candidate);
+    tool.name = candidate;
   }
 
   if (renamed.size > 0) {

@@ -19,6 +19,7 @@ export class RescanScheduler {
   private timer: ReturnType<typeof setInterval> | null = null;
   private callback: RescanCallback;
   private running = false;
+  private ticking = false;
 
   constructor(callback: RescanCallback) {
     this.callback = callback;
@@ -57,6 +58,7 @@ export class RescanScheduler {
     this.timer = setInterval(() => {
       void this.tick();
     }, 60_000);
+    this.timer.unref?.();
     logger.info('Rescan scheduler started');
   }
 
@@ -73,25 +75,34 @@ export class RescanScheduler {
 
   /** Visible for testing: run a single check cycle. */
   async tick(): Promise<void> {
-    const now = new Date();
-    for (const entry of this.schedules.values()) {
-      if (entry.nextRunAt <= now) {
-        try {
-          await this.callback(entry.slug, entry.partial);
-        } catch (err) {
-          logger.error(
-            `Rescan callback failed for "${entry.slug}": ${err instanceof Error ? err.message : String(err)}`,
-          );
-        }
-        // Advance to the next scheduled run
-        const next = computeNextRun(entry.cronExpr, now);
-        if (next) {
-          entry.nextRunAt = next;
-        } else {
-          // Invalid cron — remove the schedule
-          this.schedules.delete(entry.slug);
+    // Skip if a prior tick is still running: a crawl callback can take minutes,
+    // far longer than the 60s interval, and overlapping ticks would double-run a
+    // due slug and race on the `schedules` map.
+    if (this.ticking) return;
+    this.ticking = true;
+    try {
+      const now = new Date();
+      for (const entry of this.schedules.values()) {
+        if (entry.nextRunAt <= now) {
+          try {
+            await this.callback(entry.slug, entry.partial);
+          } catch (err) {
+            logger.error(
+              `Rescan callback failed for "${entry.slug}": ${err instanceof Error ? err.message : String(err)}`,
+            );
+          }
+          // Advance to the next scheduled run
+          const next = computeNextRun(entry.cronExpr, now);
+          if (next) {
+            entry.nextRunAt = next;
+          } else {
+            // Invalid cron — remove the schedule
+            this.schedules.delete(entry.slug);
+          }
         }
       }
+    } finally {
+      this.ticking = false;
     }
   }
 

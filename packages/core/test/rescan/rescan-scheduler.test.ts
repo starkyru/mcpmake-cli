@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { computeNextRun } from '../../src/rescan/rescan-scheduler.js';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { computeNextRun, RescanScheduler } from '../../src/rescan/rescan-scheduler.js';
 
 // All dates are constructed in UTC and compared against UTC getters so the
 // suite is timezone-independent. computeNextRun uses local-time getters, but
@@ -87,5 +87,26 @@ describe('computeNextRun — day-of-month vs day-of-week (M8)', () => {
     expect(next!.getDate()).toBe(21);
     expect(next!.getHours()).toBe(9);
     expect(next!.getMinutes()).toBe(30);
+  });
+});
+
+describe('RescanScheduler — interval unref (R2-B)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('calls unref() on the interval so the timer does not keep the process alive', () => {
+    const unref = vi.fn();
+    // Replace setInterval with a fake that returns an object exposing unref.
+    const fakeTimer = { unref } as unknown as ReturnType<typeof setInterval>;
+    const setIntervalSpy = vi.spyOn(globalThis, 'setInterval').mockReturnValue(fakeTimer);
+
+    const scheduler = new RescanScheduler(() => {});
+    scheduler.start();
+
+    expect(setIntervalSpy).toHaveBeenCalledOnce();
+    expect(unref).toHaveBeenCalledOnce();
+
+    scheduler.stop();
   });
 });

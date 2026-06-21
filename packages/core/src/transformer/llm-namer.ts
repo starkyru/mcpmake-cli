@@ -71,6 +71,9 @@ ${JSON.stringify(operationSummaries, null, 2)}`;
     });
     if (!parsed) return operations;
     const improvements = parsed.improvements;
+    if (!Array.isArray(improvements)) {
+      throw new Error('LLM returned unexpected improvements shape');
+    }
     const result = operations.map((op, i) => {
       const improvement = improvements.find((imp) => imp.index === i);
       if (!improvement) return op;

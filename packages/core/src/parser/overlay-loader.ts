@@ -114,9 +114,8 @@ function applyWildcardAction(
   const remainingSegments = segments.slice(wildcardIdx + 1);
 
   // Match keys against the wildcard pattern
-  const regex = wildcardToRegex(wildcardPattern);
   const matchedKeys = Object.keys(parent as Record<string, unknown>).filter((key) =>
-    regex.test(key),
+    wildcardMatch(wildcardPattern, key),
   );
 
   for (const key of matchedKeys) {
@@ -196,7 +195,18 @@ function navigateTo(obj: unknown, segments: string[]): unknown {
   return current;
 }
 
-function deepMerge(target: Record<string, unknown>, source: Record<string, unknown>): void {
+function deepMerge(
+  target: Record<string, unknown>,
+  source: Record<string, unknown>,
+  depth = 0,
+): void {
+  // A4-2: cap recursion depth to prevent stack-overflow DoS from deeply nested
+  // overlay `update` payloads. At the limit we leave the target subtree as-is.
+  if (depth > 50) {
+    logger.warn('Overlay: update nesting exceeds 50 levels — deeper fields not merged');
+    return;
+  }
+
   for (const [key, value] of Object.entries(source)) {
     // Skip prototype-pollution keys (`__proto__`, `constructor`, `prototype`).
     // Both YAML and JSON parse a literal `__proto__` as an own enumerable key,
@@ -210,17 +220,48 @@ function deepMerge(target: Record<string, unknown>, source: Record<string, unkno
       target[key] !== null &&
       !Array.isArray(target[key])
     ) {
-      deepMerge(target[key] as Record<string, unknown>, value as Record<string, unknown>);
+      deepMerge(
+        target[key] as Record<string, unknown>,
+        value as Record<string, unknown>,
+        depth + 1,
+      );
     } else {
       target[key] = value;
     }
   }
 }
 
-function wildcardToRegex(pattern: string): RegExp {
-  const escaped = pattern.replace(/[.*+?^${}()|[\]\\]/g, (match) => {
-    if (match === '*') return '.*';
-    return `\\${match}`;
-  });
-  return new RegExp(`^${escaped}$`);
+// A4-1: Match a spec key against a wildcard pattern where `*` matches any run
+// of characters (including `/`, since OpenAPI path keys like `/users/{id}`
+// legitimately contain separators). Implemented as a linear two-pointer glob
+// scan rather than a `.*` regex: an adversarial multi-`*` `--overlay` target
+// against a long non-matching key would make a `.*` regex backtrack
+// exponentially (ReDoS, freezing the event loop). This scan is O(n*m) with no
+// backtracking. All non-`*` characters match literally.
+function wildcardMatch(pattern: string, str: string): boolean {
+  let p = 0;
+  let s = 0;
+  let starP = -1;
+  let starS = -1;
+  while (s < str.length) {
+    if (p < pattern.length && pattern[p] === '*') {
+      // Record the star position and provisionally match zero characters.
+      starP = p;
+      starS = s;
+      p++;
+    } else if (p < pattern.length && pattern[p] === str[s]) {
+      p++;
+      s++;
+    } else if (starP !== -1) {
+      // Backtrack to the last `*` and let it consume one more character.
+      p = starP + 1;
+      starS++;
+      s = starS;
+    } else {
+      return false;
+    }
+  }
+  // Trailing `*`s in the pattern match the empty string.
+  while (p < pattern.length && pattern[p] === '*') p++;
+  return p === pattern.length;
 }

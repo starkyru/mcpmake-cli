@@ -35,10 +35,12 @@ const MAX_TASKS = 1000;
 export const taskEvents = new EventEmitter();
 
 export function createTask(toolName: string): Task {
-  // Evict oldest if at capacity
+  // Evict a terminal task first; only fall back to the oldest (by insertion order) if none exist.
   if (tasks.size >= MAX_TASKS) {
-    const oldest = tasks.keys().next().value;
-    if (oldest) tasks.delete(oldest);
+    const terminalKey = [...tasks.entries()].find(
+      ([, t]) => t.status === 'completed' || t.status === 'failed' || t.status === 'cancelled',
+    )?.[0] ?? tasks.keys().next().value;
+    if (terminalKey !== undefined) tasks.delete(terminalKey);
   }
 
   const task: Task = {

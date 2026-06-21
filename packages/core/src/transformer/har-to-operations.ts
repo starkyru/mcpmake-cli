@@ -131,9 +131,16 @@ export function clustersToOperations(clusters: EntryCluster[]): HarConversionRes
     if (bodyEntries.length > 0) {
       const mergedSchema = mergeRequestBodySchemas(bodyEntries);
       if (mergedSchema) {
+        // mergeRequestBodySchemas only processes JSON bodies (mimeType includes
+        // "json"), so the merged schema is always JSON-derived. Pick the content
+        // type from the first JSON body so the label matches the schema — using
+        // bodyEntries[0].mimeType would mislabel the schema as form-encoded if
+        // a non-JSON body happens to appear first in the cluster (R10-B).
+        const jsonEntry = bodyEntries.find((b) => b.mimeType.includes('json'));
+        const contentType = (jsonEntry ?? bodyEntries[0]).mimeType.split(';')[0].trim();
         requestBody = {
           required: true,
-          contentType: bodyEntries[0].mimeType.split(';')[0].trim(),
+          contentType,
           schema: mergedSchema,
         };
       }

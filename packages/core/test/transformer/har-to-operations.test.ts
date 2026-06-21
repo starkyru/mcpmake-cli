@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import type { Entry, QueryString } from 'har-format';
+import type { Entry, QueryString, PostData } from 'har-format';
 import { normalizeEntry } from '../../src/parser/har-normalizer.js';
 import { clusterEntries } from '../../src/transformer/har-clusterer.js';
 import { clustersToOperations } from '../../src/transformer/har-to-operations.js';
@@ -31,6 +31,16 @@ function makeEntry(url: string, queryString: QueryString[] = [], method = 'GET')
     },
     cache: {},
     timings: { send: 1, wait: 50, receive: 10 },
+  };
+}
+
+function makeEntryWithBody(url: string, postData: PostData, method = 'POST'): Entry {
+  return {
+    ...makeEntry(url, [], method),
+    request: {
+      ...makeEntry(url, [], method).request,
+      postData,
+    },
   };
 }
 
@@ -135,5 +145,65 @@ describe('har-to-operations query-string auth (M10)', () => {
     expect(queryNames).toContain('page');
     expect(queryNames).not.toContain('api_key');
     expect(JSON.stringify(result)).not.toContain(SECRET);
+  });
+});
+
+describe('har-to-operations request body contentType (R10-B)', () => {
+  it('uses application/json contentType when the first body is form but a JSON sibling exists', () => {
+    // Cluster with two entries for the same endpoint: first has a form body
+    // (application/x-www-form-urlencoded), second has a JSON body.
+    // mergeRequestBodySchemas only ever processes JSON bodies, so the merged
+    // schema is JSON-derived.  Before the fix, contentType was taken from
+    // bodyEntries[0].mimeType → "form", mislabeling the JSON schema.
+    const formEntry = makeEntryWithBody('https://api.example.com/v1/items', {
+      mimeType: 'application/x-www-form-urlencoded',
+      text: 'name=foo&value=bar',
+    });
+    const jsonEntry = makeEntryWithBody('https://api.example.com/v1/items', {
+      mimeType: 'application/json',
+      text: JSON.stringify({ name: 'foo', value: 'bar' }),
+    });
+
+    const result = convert([formEntry, jsonEntry]);
+    expect(result.operations).toHaveLength(1);
+    const op = result.operations[0];
+
+    // contentType must come from the JSON body, not the leading form body.
+    expect(op.requestBody?.contentType).toBe('application/json');
+    // Schema should be an object with the JSON-inferred properties.
+    expect(op.requestBody?.schema?.type).toBe('object');
+  });
+
+  it('uses the JSON body contentType when it appears after non-JSON bodies', () => {
+    const textEntry = makeEntryWithBody('https://api.example.com/v1/upload', {
+      mimeType: 'text/plain',
+      text: 'hello world',
+    });
+    const jsonEntry = makeEntryWithBody('https://api.example.com/v1/upload', {
+      mimeType: 'application/json',
+      text: JSON.stringify({ message: 'hello' }),
+    });
+
+    const result = convert([textEntry, jsonEntry]);
+    expect(result.operations).toHaveLength(1);
+    const op = result.operations[0];
+
+    expect(op.requestBody?.contentType).toBe('application/json');
+  });
+
+  it('falls back to bodyEntries[0] contentType when no JSON body is present', () => {
+    // When the cluster contains only non-JSON bodies, mergeRequestBodySchemas
+    // returns undefined and requestBody is not set at all.
+    const formEntry = makeEntryWithBody('https://api.example.com/v1/items', {
+      mimeType: 'application/x-www-form-urlencoded',
+      text: 'name=foo',
+    });
+
+    const result = convert([formEntry]);
+    expect(result.operations).toHaveLength(1);
+    const op = result.operations[0];
+
+    // No JSON body → mergeRequestBodySchemas returns undefined → no requestBody.
+    expect(op.requestBody).toBeUndefined();
   });
 });

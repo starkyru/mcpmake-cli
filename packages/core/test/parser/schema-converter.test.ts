@@ -175,6 +175,48 @@ describe('schema-converter', () => {
       });
     });
 
+    it('uses a unique body key when both "body" and "requestBody" params exist (R11-D)', () => {
+      // An operation whose parameter list already contains params named "body"
+      // AND "requestBody" must not produce a duplicate key in the emitted
+      // z.object({...}) literal. The body should fall through to "requestBody_2".
+      const op: OperationDescriptor = {
+        operationId: 'edgeCase',
+        method: 'post',
+        path: '/edge',
+        tags: [],
+        parameters: [
+          { name: 'body', in: 'query', required: false, schema: { type: 'string' } },
+          { name: 'requestBody', in: 'query', required: false, schema: { type: 'string' } },
+        ],
+        requestBody: {
+          required: true,
+          contentType: 'application/json',
+          schema: { type: 'object', properties: { x: { type: 'number' } } },
+        },
+        responses: [],
+        security: [],
+        deprecated: false,
+      };
+
+      const { code, mappings, bodyInputKey } = buildOperationInputSchema(op);
+
+      // The schema must contain exactly three distinct keys.
+      expect(code).toContain('"body":');
+      expect(code).toContain('"requestBody":');
+      expect(code).toContain('"requestBody_2":');
+
+      // bodyInputKey is the uniquified key emitted into the schema.
+      expect(bodyInputKey).toBe('requestBody_2');
+
+      // The two params keep their own keys in the mappings.
+      expect(mappings.map((m) => m.inputKey)).toEqual(['body', 'requestBody']);
+
+      // No duplicate key in the source string (each key appears exactly once).
+      expect((code.match(/"body":/g) ?? []).length).toBe(1);
+      expect((code.match(/"requestBody":/g) ?? []).length).toBe(1);
+      expect((code.match(/"requestBody_2":/g) ?? []).length).toBe(1);
+    });
+
     it('emits hyphenated / digit-leading param names as valid TS keys (D-H1)', () => {
       const op: OperationDescriptor = {
         operationId: 'list',

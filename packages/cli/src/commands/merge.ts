@@ -49,6 +49,27 @@ export default defineCommand({
   },
 });
 
+/**
+ * Merge two path-level parameter arrays, deduplicating by (name, in).
+ * On a tie the base entry wins (first occurrence in the seen set is kept).
+ * Exported so tests can exercise the real production logic directly.
+ */
+export function mergePathItemParameters(
+  baseParams: OpenAPIV3.ParameterObject[],
+  otherParams: OpenAPIV3.ParameterObject[],
+): OpenAPIV3.ParameterObject[] {
+  const seen = new Set<string>();
+  const result: OpenAPIV3.ParameterObject[] = [];
+  for (const p of [...baseParams, ...otherParams]) {
+    const key = `${p.name}\0${p.in}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      result.push(p);
+    }
+  }
+  return result;
+}
+
 function mergeSpecs(base: OpenAPIV3.Document, other: OpenAPIV3.Document): OpenAPIV3.Document {
   const merged: OpenAPIV3.Document = {
     openapi: base.openapi ?? '3.0.0',
@@ -79,8 +100,18 @@ function mergeSpecs(base: OpenAPIV3.Document, other: OpenAPIV3.Document): OpenAP
         }
       }
 
-      // No method conflicts — merge path items
-      merged.paths[path] = { ...baseItem, ...otherItem };
+      // No method conflicts — merge path items.
+      // Spread operations from both sides; then fix up path-level parameters so
+      // that baseItem.parameters is not silently overwritten by otherItem.parameters.
+      const mergedItem: OpenAPIV3.PathItemObject = { ...baseItem, ...otherItem };
+
+      if (baseItem.parameters || otherItem.parameters) {
+        const baseParams = (baseItem.parameters ?? []) as OpenAPIV3.ParameterObject[];
+        const otherParams = (otherItem.parameters ?? []) as OpenAPIV3.ParameterObject[];
+        mergedItem.parameters = mergePathItemParameters(baseParams, otherParams);
+      }
+
+      merged.paths[path] = mergedItem;
     } else {
       merged.paths[path] = pathItem;
     }

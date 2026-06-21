@@ -100,7 +100,7 @@ export async function goalDirectedCrawl(options: GoalCrawlOptions): Promise<Craw
       return route.continue();
     });
 
-    logger.info(`Goal-directed crawl: "${options.goal}"`);
+    logger.info(`Goal-directed crawl: "${safeGoal}"`);
     logger.info(`Starting at: ${options.url} (max ${maxSteps} steps)`);
 
     // Navigate to the start URL

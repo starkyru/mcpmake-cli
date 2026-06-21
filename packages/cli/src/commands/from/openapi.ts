@@ -15,6 +15,7 @@ import { applyClientCompat, type ClientMode } from '@mcpmake/core';
 import { emitProject, emitPythonProject } from '@mcpmake/core';
 import { printWorkerNextSteps } from './target-support.js';
 import { apiKeyArg, applyApiKey, modelArg, providerArg } from '../api-key.js';
+import { parseIntFlag } from './website.js';
 import { generateMcpb } from '@mcpmake/core';
 import { getProvider, getProviderNames } from '@mcpmake/core';
 import { logger } from '@mcpmake/core';
@@ -235,7 +236,9 @@ export default defineConfigurableCommand('openapi', {
     const prompts = args['no-prompts'] ? [] : buildPrompts(filtered);
 
     const dynamicDiscovery = args['dynamic-discovery'] ?? false;
-    const staticToolCount = args['static-tools'] ? parseInt(args['static-tools'], 10) : undefined;
+    const staticToolCount = args['static-tools']
+      ? parseIntFlag(args['static-tools'], 'static-tools', 0)
+      : undefined;
 
     const manifest = {
       serverName,

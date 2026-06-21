@@ -75,4 +75,18 @@ describe('semantic-analyzer (L-jsonparse: tolerates fenced/prose output)', () =>
     const out = await analyzeSemantics([makePage()]);
     expect(out[0].semanticName).toBeUndefined();
   });
+
+  it('(A4-11a) returns pages unchanged when pages is null instead of an array', async () => {
+    modelReturns(JSON.stringify({ pages: null }));
+    const { analyzeSemantics } = await import('../../src/analyzer/semantic-analyzer.js');
+    const out = await analyzeSemantics([makePage()]);
+    expect(out[0].semanticName).toBeUndefined();
+  });
+
+  it('(A4-11a) returns pages unchanged when result has no pages key', async () => {
+    modelReturns(JSON.stringify({ result: [] }));
+    const { analyzeSemantics } = await import('../../src/analyzer/semantic-analyzer.js');
+    const out = await analyzeSemantics([makePage()]);
+    expect(out[0].semanticName).toBeUndefined();
+  });
 });

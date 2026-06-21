@@ -134,6 +134,16 @@ describe('emitWorkerProject — Cloudflare Workers target', () => {
     expect(cfg).not.toContain('process.env');
   });
 
+  it('R4-C(a): handleToolCall wraps entry.handler in try/catch and returns a JSON-RPC error on throw', async () => {
+    const entry = await read('src/index.ts');
+    // The handler invocation must be inside a try block.
+    expect(entry).toMatch(/try \{[\s\S]*?entry\.handler\(/);
+    // A caught throw returns an err() call with code -32000, not a raw throw.
+    expect(entry).toContain("return err(id, -32000, 'Tool execution error')");
+    // The raw error is NOT forwarded to the client (no `e.message` / `err.message` in catch).
+    expect(entry).not.toMatch(/catch\s*\(\s*\w+\s*\)[\s\S]{0,60}\.message/);
+  });
+
   it('negotiates the initialize protocol version instead of blindly echoing it', async () => {
     const entry = await read('src/index.ts');
     // Preferred = current stable; a supported set is checked, not echoed.

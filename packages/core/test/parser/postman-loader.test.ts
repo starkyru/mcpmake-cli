@@ -117,4 +117,52 @@ describe('postman-loader', () => {
     const { entries } = await loadPostmanCollection(filePath);
     expect(entries).toHaveLength(2);
   });
+
+  // -------------------------------------------------------------------------
+  // A4-3: Unbounded recursion in flattenItems
+  // -------------------------------------------------------------------------
+  it('A4-3: throws a bounded error for collections nested deeper than 100 levels', async () => {
+    // Build a >100-deep folder chain programmatically.
+    type ItemNode = { name: string; item?: ItemNode[] };
+    let inner: ItemNode = { name: 'leaf', item: [{ name: 'req' }] };
+    for (let i = 101; i >= 0; i--) {
+      inner = { name: `folder-${i}`, item: [inner] };
+    }
+
+    const collection = {
+      info: { name: 'DeepNest', schema: '' },
+      item: [inner],
+    };
+
+    const filePath = resolve(tempDir, 'deep.json');
+    await writeFile(filePath, JSON.stringify(collection));
+
+    await expect(loadPostmanCollection(filePath)).rejects.toThrow(
+      'Postman collection nesting too deep (> 100 levels)',
+    );
+  });
+
+  it('A4-3: does not throw for collections nested exactly at the 100-level boundary', async () => {
+    // 100 levels of nesting is still allowed; only > 100 triggers the guard.
+    type ItemNode = { name: string; item?: ItemNode[]; request?: { method: string; url: string } };
+    let inner: ItemNode = {
+      name: 'leaf',
+      request: { method: 'GET', url: 'https://api.test.com/ok' },
+    };
+    for (let i = 99; i >= 0; i--) {
+      inner = { name: `folder-${i}`, item: [inner] };
+    }
+
+    const collection = {
+      info: { name: 'BoundaryNest', schema: '' },
+      item: [inner],
+    };
+
+    const filePath = resolve(tempDir, 'boundary.json');
+    await writeFile(filePath, JSON.stringify(collection));
+
+    const { entries } = await loadPostmanCollection(filePath);
+    expect(entries).toHaveLength(1);
+    expect(entries[0].request.url).toContain('api.test.com/ok');
+  });
 });

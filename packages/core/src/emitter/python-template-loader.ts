@@ -25,7 +25,7 @@ Handlebars.registerHelper('or', function (a: unknown, b: unknown) {
 
 Handlebars.registerHelper('pyDocstring', function (str: string) {
   if (!str) return '';
-  return str.replace(/"""/g, '\\"\\"\\"').replace(/\\/g, '\\\\');
+  return str.replace(/\\/g, '\\\\').replace(/"""/g, '\\"\\"\\"');
 });
 
 // Escape a value for embedding in a double-quoted Python string literal.

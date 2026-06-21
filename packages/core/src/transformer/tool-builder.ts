@@ -11,6 +11,7 @@ import {
   jsonSchemaToOutputZodCode,
 } from '../parser/schema-converter.js';
 import { toToolName, toToolTitle, toFileName, toFunctionName } from './naming.js';
+import { logger } from '../utils/logger.js';
 import {
   escapeTemplateLiteral,
   escapeStringLiteral,
@@ -36,7 +37,7 @@ function bodyEncodingFor(contentType: string): 'json' | 'form' | 'multipart' {
 }
 
 export function buildToolDefinition(op: OperationDescriptor): ToolDefinition {
-  const { code: inputSchemaCode, mappings } = buildOperationInputSchema(op);
+  const { code: inputSchemaCode, mappings, bodyInputKey } = buildOperationInputSchema(op);
 
   const descParts: string[] = [];
   if (op.summary) descParts.push(op.summary);
@@ -76,15 +77,6 @@ export function buildToolDefinition(op: OperationDescriptor): ToolDefinition {
   // literal sink (D-C1). bodyEncodingFor rejects unsupported families (D-H3).
   const rawContentType = sanitizeMediaType(op.requestBody?.contentType ?? 'application/json');
   const bodyEncoding = op.requestBody ? bodyEncodingFor(rawContentType) : undefined;
-
-  // The request body is exposed under `body`, unless a parameter already claimed
-  // that input key, in which case the schema falls back to `requestBody`.
-  const inputKeys = new Set(mappings.map((m) => m.inputKey));
-  const bodyInputKey = op.requestBody
-    ? inputKeys.has('body')
-      ? 'requestBody'
-      : 'body'
-    : undefined;
 
   return {
     name: mcpName ? sanitizeIdentifier(mcpName) : toToolName(op.operationId),
@@ -205,10 +197,17 @@ function generateBuildUrlBody(pathTemplate: string, mappings: ParamMapping[]): s
 
   // Path params: replace the `{wireName}` token in the URL with the value the
   // agent supplied under inputKey (D-H1 — read by inputKey, send under wireName).
+  // The replace TARGET must match the token as it appears in the sanitized URL
+  // string (produced by sanitizePathTemplate, which keeps [a-zA-Z0-9/{}._-]
+  // globally — inside braces the effective keep-set is [a-zA-Z0-9._-]).  Apply
+  // the same in-brace strip to wireName so the target always matches the token
+  // even for names with spaces, '@', ':', ';', etc. (R17-A).  Names with only
+  // kept chars (e.g. `user.id`, `petId`) are unaffected — tokenName === wireName
+  // for those (preserves R16-A fix for dots/dashes).
   for (const m of mappings.filter((p) => p.in === 'path')) {
-    const safeWire = sanitizeIdentifier(m.wireName);
+    const tokenName = m.wireName.replace(/[^a-zA-Z0-9._\-]/g, '');
     lines.push(
-      `  url = url.replace('${escapeStringLiteral(`{${safeWire}}`)}', encodeURIComponent(String(params[${JSON.stringify(m.inputKey)}])));`,
+      `  url = url.replace('${escapeStringLiteral(`{${tokenName}}`)}', encodeURIComponent(String(params[${JSON.stringify(m.inputKey)}])));`,
     );
   }
 
@@ -233,7 +232,23 @@ function generateBuildUrlBody(pathTemplate: string, mappings: ParamMapping[]): s
 export function buildAllTools(operations: OperationDescriptor[]): ToolDefinition[] {
   // Filter out operations marked with x-mcp-emit: skip
   const filtered = operations.filter((op) => op.mcpExtensions?.emit !== 'skip');
-  const tools = filtered.map(buildToolDefinition);
+
+  // Build each tool individually so that one operation with an unsupported body
+  // media type (e.g. application/xml, text/plain) does not abort the entire run.
+  // bodyEncodingFor intentionally throws for unsupported content types (D-H3);
+  // we catch that error here, warn with the operation identity, and skip only
+  // the affected operation — all others proceed normally.
+  const tools: ToolDefinition[] = [];
+  for (const op of filtered) {
+    try {
+      tools.push(buildToolDefinition(op));
+    } catch (err) {
+      const label = op.operationId || `${op.method} ${op.path}`;
+      logger.warn(
+        `Skipping operation "${label}": ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
 
   // First pass: disambiguate name collisions by appending the HTTP method. This
   // keeps the common case (distinct operationIds → distinct names) stable.
@@ -256,7 +271,20 @@ export function buildAllTools(operations: OperationDescriptor[]): ToolDefinition
   // output file (M14). Append an incrementing `_2`, `_3`, … suffix to each later
   // collision so every tool name — and therefore its file name — is globally
   // unique. Names that did not collide are left untouched.
-  const usedNames = new Set<string>();
+  //
+  // Pre-seed the four dynamic-discovery meta-tool names (R16-C). In hybrid mode
+  // (staticToolCount > 0 + dynamicDiscovery), both the static tools and these
+  // meta-tools are registered on the same MCP server. An operation whose slug
+  // collides with one of them would cause a duplicate server.registerTool() call
+  // and a startup crash. Seeding here ensures such an operation gets a `_2` suffix
+  // before it reaches the template. Seeding unconditionally is harmless: when
+  // dynamic discovery is off the reserved names simply never appear as tool names.
+  const usedNames = new Set<string>([
+    'list_tools',
+    'get_tool_schema',
+    'execute_tool',
+    'search_tools',
+  ]);
   const usedFileNames = new Set<string>();
   for (const tool of tools) {
     if (!usedNames.has(tool.name) && !usedFileNames.has(tool.fileName)) {

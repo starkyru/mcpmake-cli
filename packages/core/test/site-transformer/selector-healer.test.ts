@@ -73,4 +73,34 @@ describe('selector-healer (L-jsonparse: tolerates fenced/prose output)', () => {
     const { healBrokenSelector } = await import('../../src/site-transformer/selector-healer.js');
     expect(await healBrokenSelector('tree', broken, 'x')).toBeNull();
   });
+
+  it('(A4-11b) strips control chars from humanLabel before returning', async () => {
+    const withCtrl = JSON.stringify({
+      primary: 'button.login',
+      fallbacks: [],
+      strategy: 'css-path',
+      confidence: 0.9,
+      humanLabel: 'Login\x00button\x1f',
+    });
+    modelReturns(withCtrl);
+    const { healBrokenSelector } = await import('../../src/site-transformer/selector-healer.js');
+    const result = await healBrokenSelector('tree', broken, 'login button');
+    expect(result).not.toBeNull();
+    // Control chars replaced with space and trimmed.
+    expect(result?.humanLabel).toBe('Login button');
+  });
+
+  it('(A4-11b) rejects a humanLabel that exceeds 200 characters', async () => {
+    const longLabel = JSON.stringify({
+      primary: 'button.login',
+      fallbacks: [],
+      strategy: 'css-path',
+      confidence: 0.9,
+      humanLabel: 'x'.repeat(201),
+    });
+    modelReturns(longLabel);
+    const { healBrokenSelector } = await import('../../src/site-transformer/selector-healer.js');
+    const result = await healBrokenSelector('tree', broken, 'login button');
+    expect(result).toBeNull();
+  });
 });

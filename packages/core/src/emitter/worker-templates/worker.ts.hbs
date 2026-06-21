@@ -216,8 +216,12 @@ async function handleToolCall(
   if (!parsed.success) {
     return err(id, -32602, `Invalid arguments for ${name}: ${parsed.error.message}`);
   }
-  const result = await entry.handler(parsed.data as Record<string, unknown>, config);
-  return ok(id, result);
+  try {
+    const result = await entry.handler(parsed.data as Record<string, unknown>, config);
+    return ok(id, result);
+  } catch {
+    return err(id, -32000, 'Tool execution error');
+  }
 }
 
 /* Map `items` through `fn` with at most `limit` in flight at once, preserving

@@ -5,8 +5,7 @@ import json
 import httpx
 from urllib.parse import quote
 from dotenv import load_dotenv
-from mcp.server import Server
-from mcp.server.stdio import stdio_server
+from mcp.server.fastmcp import FastMCP
 from mcp.types import TextContent
 
 load_dotenv()
@@ -37,12 +36,20 @@ API_KEY = os.environ.get("{{envVarName}}", "")
 {{/if}}
 {{/each}}
 
-server = Server("{{serverName}}")
+server = FastMCP("{{serverName}}")
 
 # Hard per-request deadline (seconds) and response-size cap (bytes). A stalled or
 # runaway upstream otherwise keeps tool calls alive indefinitely or exhausts memory.
-_REQUEST_TIMEOUT_S = float(os.environ.get("MCP_REQUEST_TIMEOUT_MS", "30000")) / 1000.0
-_MAX_RESPONSE_BYTES = int(os.environ.get("MCP_MAX_RESPONSE_BYTES", str(10 * 1024 * 1024)))
+try:
+    _timeout_ms = float(os.environ.get("MCP_REQUEST_TIMEOUT_MS", "30000"))
+    _REQUEST_TIMEOUT_S = _timeout_ms / 1000.0 if _timeout_ms > 0 else 30.0
+except (ValueError, TypeError):
+    _REQUEST_TIMEOUT_S = 30.0
+try:
+    _max_bytes = int(os.environ.get("MCP_MAX_RESPONSE_BYTES", str(10 * 1024 * 1024)))
+    _MAX_RESPONSE_BYTES = _max_bytes if _max_bytes > 0 else 10 * 1024 * 1024
+except (ValueError, TypeError):
+    _MAX_RESPONSE_BYTES = 10 * 1024 * 1024
 client = httpx.AsyncClient(timeout=_REQUEST_TIMEOUT_S)
 
 
@@ -85,7 +92,7 @@ def _auth_query_params() -> dict[str, str]:
 
 
 {{#each tools}}
-@server.tool()
+@server.tool(name="{{pyStr name}}")
 async def {{functionName}}({{#each pyPathParams}}{{pyName}}: str, {{/each}}{{#each pyQueryParams}}{{pyName}}: str = "", {{/each}}{{#each pyHeaderParams}}{{pyName}}: str = "", {{/each}}{{#each pyCookieParams}}{{pyName}}: str = "", {{/each}}{{#if hasRequestBody}}body: dict | None = None{{/if}}) -> list[TextContent]:
     """{{pyDocstring description}}"""
     url = BASE_URL + "{{pyStr pathTemplate}}"
@@ -124,11 +131,11 @@ async def {{functionName}}({{#each pyPathParams}}{{pyName}}: str, {{/each}}{{#ea
     {{/if}}
     {{/if}}
     try:
-        resp = await client.request(
+        async with client.stream(
             "{{method}}",
             url,
             headers={{#if (or pyHeaderParams.length pyCookieParams.length)}}req_headers{{else}}_headers(){{/if}},
-            {{#if (or queryParams.length @root.hasQueryApiKey)}}
+            {{#if (or pyQueryParams.length @root.hasQueryApiKey)}}
             params=params,
             {{/if}}
             {{#if hasRequestBody}}
@@ -142,26 +149,34 @@ async def {{functionName}}({{#each pyPathParams}}{{pyName}}: str, {{/each}}{{#ea
             {{/if}}
             {{/if}}
             {{/if}}
-        )
-        # Cap the buffered response so a runaway upstream cannot exhaust memory.
-        if len(resp.content) > _MAX_RESPONSE_BYTES:
-            return [TextContent(type="text", text=f"Error: response exceeded {_MAX_RESPONSE_BYTES}-byte cap")]
-        # Never echo upstream 4xx/5xx bodies to the MCP caller — they can leak
-        # internal/upstream detail. Surface only the status code + generic reason.
-        if resp.status_code >= 400:
-            return [TextContent(type="text", text=f"Error: upstream returned {resp.status_code} {resp.reason_phrase}".rstrip())]
-        data = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else resp.text
-        return [TextContent(type="text", text=json.dumps(data, indent=2) if isinstance(data, (dict, list)) else str(data))]
+        ) as resp:
+            # Never echo upstream 4xx/5xx bodies to the MCP caller — they can leak
+            # internal/upstream detail. Surface only the status code + generic reason.
+            if resp.status_code >= 400:
+                return [TextContent(type="text", text=f"Error: upstream returned {resp.status_code} {resp.reason_phrase}".rstrip())]
+            # Read with a hard cap so a runaway upstream cannot exhaust memory.
+            # Streaming means we abort mid-transfer — the full body is never buffered.
+            chunks: list[bytes] = []
+            total = 0
+            async for chunk in resp.aiter_bytes():
+                total += len(chunk)
+                if total > _MAX_RESPONSE_BYTES:
+                    return [TextContent(type="text", text=f"Error: response exceeded {_MAX_RESPONSE_BYTES}-byte cap")]
+                chunks.append(chunk)
+            raw = b"".join(chunks)
+            content_type = resp.headers.get("content-type", "")
+            if content_type.startswith("application/json"):
+                try:
+                    data = json.loads(raw)
+                except ValueError:
+                    data = raw.decode("utf-8", "replace")
+            else:
+                data = raw.decode("utf-8", "replace")
+            return [TextContent(type="text", text=json.dumps(data, indent=2) if isinstance(data, (dict, list)) else str(data))]
     except Exception as e:
         return [TextContent(type="text", text=f"Error: {e}")]
 
 
 {{/each}}
-async def main():
-    async with stdio_server() as (read_stream, write_stream):
-        await server.run(read_stream, write_stream, server.create_initialization_options())
-
-
 if __name__ == "__main__":
-    import asyncio
-    asyncio.run(main())
+    server.run()

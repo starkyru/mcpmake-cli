@@ -46,7 +46,8 @@ function isSwagger2(doc: Record<string, unknown>): boolean {
   return typeof doc.swagger === 'string' && doc.swagger.startsWith('2.');
 }
 
-interface Swagger2Doc {
+/** @internal Exported for unit tests only. */
+export interface Swagger2Doc {
   swagger: string;
   info: Record<string, unknown>;
   host?: string;
@@ -63,7 +64,56 @@ interface Swagger2Doc {
   externalDocs?: unknown;
 }
 
-function convertSwagger2ToOpenApi3(doc: Swagger2Doc): Record<string, unknown> {
+/**
+ * Resolves a Swagger 2.0 parameter `$ref` of the form `#/parameters/<NAME>`
+ * against the spec-level global parameters map.  Returns the resolved parameter
+ * object, or `null` if the entry is not a `$ref` (caller should treat it as
+ * already-inline) or if the reference cannot be resolved (warn + skip).
+ *
+ * Only `#/parameters/...` refs are handled here.  Schema refs
+ * (`#/definitions/...`) remain the responsibility of `convertSchemaRef`.
+ */
+function resolveParamRef(
+  param: Record<string, unknown>,
+  globalParameters: Record<string, unknown>,
+): Record<string, unknown> | null {
+  const ref = param.$ref;
+  if (typeof ref !== 'string') {
+    // Not a $ref – caller should use the param as-is.
+    return null;
+  }
+
+  const prefix = '#/parameters/';
+  if (!ref.startsWith(prefix)) {
+    // A $ref to something other than a top-level parameter (e.g. a path-level
+    // parameter defined elsewhere).  We can't resolve it here; skip with a warn.
+    logger.warn(`Swagger 2.0 converter: unsupported $ref in parameters array: "${ref}" — skipping`);
+    return null;
+  }
+
+  // JSON Pointer (RFC 6901) requires ~1→/ and ~0→~ un-escaping AFTER percent-decoding.
+  // decodeURIComponent throws URIError on malformed escapes (e.g. "%ZZ"); treat
+  // those the same as an unresolvable ref: warn and skip.
+  let name: string;
+  try {
+    name = decodeURIComponent(ref.slice(prefix.length)).replace(/~1/g, '/').replace(/~0/g, '~');
+  } catch {
+    logger.warn(`Swagger 2.0 converter: malformed percent-encoding in $ref "${ref}" — skipping`);
+    return null;
+  }
+  const resolved = globalParameters[name] as Record<string, unknown> | undefined;
+  if (!resolved) {
+    logger.warn(
+      `Swagger 2.0 converter: parameter $ref "${ref}" not found in global parameters — skipping`,
+    );
+    return null;
+  }
+
+  return resolved;
+}
+
+/** @internal Exported for unit tests only. */
+export function convertSwagger2ToOpenApi3(doc: Swagger2Doc): Record<string, unknown> {
   logger.warn('Converting Swagger 2.0 to OpenAPI 3.0');
 
   const scheme = doc.schemes?.[0] ?? 'https';
@@ -73,6 +123,10 @@ function convertSwagger2ToOpenApi3(doc: Swagger2Doc): Record<string, unknown> {
 
   const globalConsumes = doc.consumes ?? ['application/json'];
   const globalProduces = doc.produces ?? ['application/json'];
+
+  // Capture the raw global parameters map so that $ref resolution inside
+  // operations and path items can inline them before classification.
+  const globalParameters: Record<string, unknown> = doc.parameters ?? {};
 
   const components: Record<string, unknown> = {};
 
@@ -99,6 +153,7 @@ function convertSwagger2ToOpenApi3(doc: Swagger2Doc): Record<string, unknown> {
         pathItem as Record<string, unknown>,
         globalConsumes,
         globalProduces,
+        globalParameters,
       );
     }
   }
@@ -130,19 +185,35 @@ function convertPathItem(
   pathItem: Record<string, unknown>,
   globalConsumes: string[],
   globalProduces: string[],
+  globalParameters: Record<string, unknown>,
 ): Record<string, unknown> {
   const methods = ['get', 'post', 'put', 'patch', 'delete', 'head', 'options'];
   const result: Record<string, unknown> = {};
 
-  // Preserve path-level parameters
+  // Preserve path-level parameters, resolving any $ref entries first.
   if (pathItem.parameters) {
-    result.parameters = convertParameters(pathItem.parameters as unknown[]);
+    const rawPathParams = pathItem.parameters as Record<string, unknown>[];
+    const resolvedPathParams = rawPathParams.reduce<Record<string, unknown>[]>((acc, p) => {
+      const resolved = resolveParamRef(p, globalParameters);
+      if (resolved !== null) {
+        // Was a $ref — use the resolved object.
+        acc.push(resolved);
+      } else if (p.$ref === undefined) {
+        // Ordinary inline param.
+        acc.push(p);
+      }
+      // If p.$ref is set but resolveParamRef returned null, it already warned; skip.
+      return acc;
+    }, []);
+    if (resolvedPathParams.length > 0) {
+      result.parameters = convertParameters(resolvedPathParams);
+    }
   }
 
   for (const method of methods) {
     const operation = pathItem[method] as Record<string, unknown> | undefined;
     if (!operation) continue;
-    result[method] = convertOperation(operation, globalConsumes, globalProduces);
+    result[method] = convertOperation(operation, globalConsumes, globalProduces, globalParameters);
   }
 
   return result;
@@ -152,6 +223,7 @@ function convertOperation(
   operation: Record<string, unknown>,
   globalConsumes: string[],
   globalProduces: string[],
+  globalParameters: Record<string, unknown>,
 ): Record<string, unknown> {
   const consumes = (operation.consumes as string[]) ?? globalConsumes;
   const produces = (operation.produces as string[]) ?? globalProduces;
@@ -172,13 +244,22 @@ function convertOperation(
     }
   }
 
-  // Separate body/formData params from regular params
-  const params = (operation.parameters ?? []) as Record<string, unknown>[];
+  // Separate body/formData params from regular params.
+  // Before classifying, resolve any $ref entries against the global parameters map.
+  const rawParams = (operation.parameters ?? []) as Record<string, unknown>[];
   const regularParams: Record<string, unknown>[] = [];
   let bodyParam: Record<string, unknown> | undefined;
   const formDataParams: Record<string, unknown>[] = [];
 
-  for (const p of params) {
+  for (const raw of rawParams) {
+    // Inline any $ref to a global parameter before checking `.in`.
+    const resolved = resolveParamRef(raw, globalParameters);
+    if (resolved === null && raw.$ref !== undefined) {
+      // resolveParamRef already warned; skip this unresolvable ref.
+      continue;
+    }
+    const p = resolved ?? raw;
+
     if (p.in === 'body') {
       bodyParam = p;
     } else if (p.in === 'formData') {

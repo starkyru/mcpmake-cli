@@ -102,6 +102,13 @@ export interface InputSchemaResult {
    * (D-H1) and header/cookie/query params are no longer silently dropped (D-H2).
    */
   mappings: ParamMapping[];
+  /**
+   * The input key under which the request body is emitted in the schema, or
+   * undefined if there is no request body. Consumers (e.g. tool-builder) must
+   * use this value rather than re-deriving it so the two stay in lock-step when
+   * both `body` and `requestBody` are already taken by named parameters.
+   */
+  bodyInputKey: string | undefined;
 }
 
 export function buildOperationInputSchema(op: OperationDescriptor): InputSchemaResult {
@@ -145,12 +152,22 @@ export function buildOperationInputSchema(op: OperationDescriptor): InputSchemaR
     fields.push(`  ${JSON.stringify(inputKey)}: ${field}`);
   }
 
+  let bodyInputKey: string | undefined;
   if (op.requestBody) {
+    // Choose a body key that does not collide with any parameter key already
+    // in seenKeys. Start with `body`, fall back to `requestBody`, then append
+    // numeric suffixes (`requestBody_2`, `requestBody_3`, …) until unique —
+    // mirroring the convention used by uniqueKey() above for param collisions.
     let bodyName = 'body';
     if (seenKeys.has(bodyName)) {
       bodyName = 'requestBody';
     }
+    let n = 2;
+    while (seenKeys.has(bodyName)) {
+      bodyName = `requestBody_${n++}`;
+    }
     seenKeys.add(bodyName);
+    bodyInputKey = bodyName;
 
     const bodyZod = jsonSchemaToZodCode(op.requestBody.schema);
     let field = bodyZod;
@@ -164,5 +181,5 @@ export function buildOperationInputSchema(op: OperationDescriptor): InputSchemaR
   }
 
   const code = fields.length === 0 ? 'z.object({})' : `z.object({\n${fields.join(',\n')},\n})`;
-  return { code, mappings };
+  return { code, mappings, bodyInputKey };
 }

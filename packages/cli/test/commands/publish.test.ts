@@ -1,5 +1,49 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { confirmPush } from '../../src/commands/publish.js';
+import { mkdtemp, rm, writeFile, mkdir } from 'node:fs/promises';
+import { resolve, join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { confirmPush, detectTransport } from '../../src/commands/publish.js';
+
+describe('detectTransport (A4-6) — reads src/index.ts, not a duplicate path', () => {
+  let tmp: string;
+
+  afterEach(async () => {
+    if (tmp) await rm(tmp, { recursive: true, force: true });
+  });
+
+  it('returns "stdio" when src/index.ts has no HTTP transport markers', async () => {
+    tmp = await mkdtemp(resolve(tmpdir(), 'mcpmake-pub-'));
+    await mkdir(join(tmp, 'src'), { recursive: true });
+    await writeFile(join(tmp, 'src', 'index.ts'), '// stdio server\nserver.connect(transport);');
+    expect(await detectTransport(tmp)).toBe('stdio');
+  });
+
+  it('returns "http" when src/index.ts contains StreamableHTTPServerTransport', async () => {
+    tmp = await mkdtemp(resolve(tmpdir(), 'mcpmake-pub-'));
+    await mkdir(join(tmp, 'src'), { recursive: true });
+    await writeFile(
+      join(tmp, 'src', 'index.ts'),
+      '// http server\nnew StreamableHTTPServerTransport({ sessionIdGenerator });',
+    );
+    expect(await detectTransport(tmp)).toBe('http');
+  });
+
+  it('returns "http" when src/index.ts contains SSEServerTransport', async () => {
+    tmp = await mkdtemp(resolve(tmpdir(), 'mcpmake-pub-'));
+    await mkdir(join(tmp, 'src'), { recursive: true });
+    await writeFile(
+      join(tmp, 'src', 'index.ts'),
+      'const t = new SSEServerTransport("/message", res);',
+    );
+    expect(await detectTransport(tmp)).toBe('http');
+  });
+
+  it('returns "stdio" when src/index.ts does not exist (no false positives)', async () => {
+    tmp = await mkdtemp(resolve(tmpdir(), 'mcpmake-pub-'));
+    // No src/ directory at all
+    expect(await detectTransport(tmp)).toBe('stdio');
+  });
+});
 
 describe('L-publishpush — publish --push requires confirmation', () => {
   const origStdin = process.stdin.isTTY;

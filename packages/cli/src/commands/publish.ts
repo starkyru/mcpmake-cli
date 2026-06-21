@@ -156,26 +156,31 @@ export default defineCommand({
 });
 
 /**
- * Detect whether the project uses stdio or HTTP transport by inspecting
- * the main server entry file.
+ * Detect whether the project uses stdio or HTTP transport by inspecting the
+ * main server entry file.
+ *
+ * For both targets the emitter writes a single entry point: `src/index.ts`.
+ * HTTP projects render `server-main-http.ts` into that file, which contains
+ * `StreamableHTTPServerTransport` (or `SSEServerTransport`); stdio projects
+ * render `server-main.ts`, which contains neither.
+ *
+ * Inspected file: src/index.ts
+ *
+ * Exported for unit testing.
  */
-async function detectTransport(projectDir: string): Promise<string> {
-  const stdioEntry = resolve(projectDir, 'src/index.ts');
-  const httpEntry = resolve(projectDir, 'src/index.ts');
-
-  for (const entry of [stdioEntry, httpEntry]) {
-    if (await pathExists(entry)) {
-      try {
-        const content = await readFile(entry, 'utf-8');
-        if (
-          content.includes('SSEServerTransport') ||
-          content.includes('StreamableHTTPServerTransport')
-        ) {
-          return 'http';
-        }
-      } catch {
-        // ignore read errors
+export async function detectTransport(projectDir: string): Promise<string> {
+  const entry = resolve(projectDir, 'src/index.ts');
+  if (await pathExists(entry)) {
+    try {
+      const content = await readFile(entry, 'utf-8');
+      if (
+        content.includes('SSEServerTransport') ||
+        content.includes('StreamableHTTPServerTransport')
+      ) {
+        return 'http';
       }
+    } catch {
+      // ignore read errors
     }
   }
 

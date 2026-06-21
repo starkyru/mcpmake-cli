@@ -81,8 +81,15 @@ export default defineCommand({
     const verificationUri = start.body.verification_uri as string;
     const verificationUriComplete =
       (start.body.verification_uri_complete as string) || verificationUri;
-    let pollMs = Math.max(2, Number(start.body.interval) || 5) * 1000;
-    const deadline = Date.now() + (Number(start.body.expires_in) || 600) * 1000;
+    const rawInterval = Number(start.body.interval);
+    const pollMs0 = Number.isFinite(rawInterval) && rawInterval > 0 ? rawInterval : 5;
+    let pollMs = Math.min(Math.max(2, pollMs0), 60) * 1000;
+    const rawExpires = Number(start.body.expires_in);
+    const expiresIn = Math.min(
+      Number.isFinite(rawExpires) && rawExpires > 0 ? rawExpires : 600,
+      3600,
+    );
+    const deadline = Date.now() + expiresIn * 1000;
 
     logger.info('');
     logger.info('To authorize this device, open:');
@@ -92,8 +99,24 @@ export default defineCommand({
     logger.info(`and enter the code:   ${userCode}`);
     logger.info('');
     if (!args['no-browser']) {
-      logger.info('Opening your browser…');
-      openBrowser(verificationUriComplete);
+      // Only auto-open http(s) URLs. A malicious --server could return a
+      // file:// or javascript: URI in verification_uri_complete; skip the
+      // auto-open and let the user open the printed URL manually instead.
+      let browserUrlOk = false;
+      try {
+        const { protocol } = new URL(verificationUriComplete);
+        browserUrlOk = protocol === 'http:' || protocol === 'https:';
+      } catch {
+        // not a valid URL — skip auto-open
+      }
+      if (browserUrlOk) {
+        logger.info('Opening your browser…');
+        openBrowser(verificationUriComplete);
+      } else {
+        logger.info(
+          'Could not auto-open browser (unexpected URL scheme). Open the link above manually.',
+        );
+      }
     }
     logger.info('Waiting for approval (Ctrl-C to cancel)…');
 
@@ -111,7 +134,7 @@ export default defineCommand({
       const err = res.body.error;
       if (err === 'authorization_pending' || res.status === 0) continue;
       if (err === 'slow_down') {
-        pollMs += 5000;
+        pollMs = Math.min(pollMs + 5000, 60_000);
         continue;
       }
       if (err === 'access_denied') return await fail('Login was denied in the browser.');

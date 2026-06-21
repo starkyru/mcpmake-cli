@@ -11,18 +11,23 @@ export interface AppConfig {
   browser: BrowserConfig;
 }
 
+const posInt = (v: string | undefined, d: number): number => {
+  const n = parseInt(v ?? '', 10);
+  return Number.isInteger(n) && n > 0 ? n : d;
+};
+
 export function loadConfig(): AppConfig {
   return {
     baseUrl: process.env.BASE_URL ?? '{{{baseUrl}}}',
     browser: {
       headless: process.env.HEADLESS !== 'false',
-      idleTimeoutMs: parseInt(process.env.IDLE_TIMEOUT_MS ?? '{{browserConfig.idleTimeoutMs}}', 10),
+      idleTimeoutMs: posInt(process.env.IDLE_TIMEOUT_MS, {{browserConfig.idleTimeoutMs}}),
       viewport: {
-        width: parseInt(process.env.VIEWPORT_WIDTH ?? '{{browserConfig.viewport.width}}', 10),
-        height: parseInt(process.env.VIEWPORT_HEIGHT ?? '{{browserConfig.viewport.height}}', 10),
+        width: posInt(process.env.VIEWPORT_WIDTH, {{browserConfig.viewport.width}}),
+        height: posInt(process.env.VIEWPORT_HEIGHT, {{browserConfig.viewport.height}}),
       },
       userAgent: process.env.USER_AGENT || undefined,
-      maxSessions: parseInt(process.env.MAX_SESSIONS ?? '{{browserConfig.maxSessions}}', 10) || 10,
+      maxSessions: posInt(process.env.MAX_SESSIONS, {{browserConfig.maxSessions}}),
     },
   };
 }

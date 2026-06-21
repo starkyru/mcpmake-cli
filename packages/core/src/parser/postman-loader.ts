@@ -66,10 +66,21 @@ export async function loadPostmanCollection(filePath: string): Promise<{
   return { entries, collectionName: collection.info.name };
 }
 
-function flattenItems(items: PostmanItem[], entries: Entry[], vars: Map<string, string>): void {
+function flattenItems(
+  items: PostmanItem[],
+  entries: Entry[],
+  vars: Map<string, string>,
+  depth = 0,
+): void {
+  // A4-3: cap folder nesting to prevent stack-overflow DoS from adversarially
+  // crafted deeply nested Postman collections.
+  if (depth > 100) {
+    throw new Error('Postman collection nesting too deep (> 100 levels)');
+  }
+
   for (const item of items) {
     if (item.item) {
-      flattenItems(item.item, entries, vars);
+      flattenItems(item.item, entries, vars, depth + 1);
     }
     if (item.request) {
       const entry = convertToHarEntry(item, vars);

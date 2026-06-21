@@ -384,6 +384,68 @@ describe('naming helpers', () => {
   });
 });
 
+describe('translateStainless — hasProperty depth cap (R3-5)', () => {
+  it('does not stack-overflow on a deeply-nested allOf chain (depth > 20)', () => {
+    // Build a schema with 30 levels of allOf nesting — deeper than the 20-level cap.
+    // Without the cap, hasProperty recurses until the call stack is exhausted.
+    function makeNestedSchema(depth: number): Record<string, unknown> {
+      if (depth === 0) return { type: 'object', properties: { data: { type: 'object' } } };
+      return { allOf: [makeNestedSchema(depth - 1)] };
+    }
+    const deepSchema = makeNestedSchema(30);
+
+    const api = {
+      openapi: '3.0.0',
+      info: { title: 'x', version: '1.0.0' },
+      servers: [{ url: 'https://x' }],
+      paths: {
+        '/deep': {
+          post: {
+            operationId: 'deep',
+            responses: {
+              '200': {
+                description: 'ok',
+                content: { 'application/json': { schema: deepSchema } },
+              },
+            },
+          },
+        },
+      },
+    } as unknown as OpenAPIV3.Document;
+
+    // Must not throw RangeError: Maximum call stack size exceeded
+    expect(() => translateStainless({ settings: { unwrap_response: true } }, api)).not.toThrow();
+  });
+
+  it('still finds the property within the 20-level depth limit', () => {
+    // 10 levels deep — within the cap, so the data property must be found.
+    function makeNestedSchema(depth: number): Record<string, unknown> {
+      if (depth === 0) return { type: 'object', properties: { data: { type: 'object' } } };
+      return { allOf: [makeNestedSchema(depth - 1)] };
+    }
+    const api = {
+      openapi: '3.0.0',
+      info: { title: 'x', version: '1.0.0' },
+      servers: [{ url: 'https://x' }],
+      paths: {
+        '/shallow': {
+          post: {
+            operationId: 'shallow',
+            responses: {
+              '200': {
+                description: 'ok',
+                content: { 'application/json': { schema: makeNestedSchema(10) } },
+              },
+            },
+          },
+        },
+      },
+    } as unknown as OpenAPIV3.Document;
+    const t = translateStainless({ settings: { unwrap_response: true } }, api);
+    expect(t.unwrapped).toContain('POST /shallow');
+  });
+});
+
 describe('parseStainlessConfig / resolveSpecPath', () => {
   it('parses YAML', () => {
     const cfg = parseStainlessConfig(

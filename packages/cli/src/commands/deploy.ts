@@ -86,19 +86,29 @@ export default defineConfigurableCommand('deploy', {
     const boundary = `----mcpmake${Date.now()}${Math.random().toString(36).slice(2)}`;
     const parts: Buffer[] = [];
 
-    // Add name field if provided
+    // Add name field if provided.
+    // Strip CR/LF from args.name so it cannot inject extra MIME part headers.
     if (args.name) {
+      const safeName = args.name.replace(/[\r\n]/g, '');
       parts.push(
         Buffer.from(
-          `--${boundary}\r\nContent-Disposition: form-data; name="name"\r\n\r\n${args.name}\r\n`,
+          `--${boundary}\r\nContent-Disposition: form-data; name="name"\r\n\r\n${safeName}\r\n`,
         ),
       );
     }
 
-    // Add spec file
+    // Add spec file.
+    // Strip CR/LF, then escape backslash (first) and double-quote (second) in
+    // the filename so it cannot break out of the quoted filename="..." attribute
+    // or inject extra MIME part headers. Backslash must be escaped before quote
+    // so the quote-escape's own backslash is never re-doubled.
+    const safeFileName = fileName
+      .replace(/[\r\n]/g, '')
+      .replace(/\\/g, '\\\\')
+      .replace(/"/g, '\\"');
     parts.push(
       Buffer.from(
-        `--${boundary}\r\nContent-Disposition: form-data; name="spec"; filename="${fileName}"\r\nContent-Type: application/octet-stream\r\n\r\n`,
+        `--${boundary}\r\nContent-Disposition: form-data; name="spec"; filename="${safeFileName}"\r\nContent-Type: application/octet-stream\r\n\r\n`,
       ),
     );
     parts.push(specData);

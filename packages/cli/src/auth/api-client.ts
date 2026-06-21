@@ -116,9 +116,16 @@ export function request(method: string, url: URL, opts: RequestOptions = {}): Pr
       fn();
     };
 
+    // Strip surrounding brackets from IPv6 literals (e.g. "[::1]" → "::1").
+    // url.hostname preserves the brackets as required by the URL spec, but
+    // Node's http.request({ hostname }) treats them as part of the hostname
+    // string and attempts to DNS-resolve "[::1]" literally — resulting in
+    // ENOTFOUND.  isLoopbackHost() and error messages keep the original form.
+    const nodeHostname = url.hostname.replace(/^\[|\]$/g, '');
+
     const req = transport.request(
       {
-        hostname: url.hostname,
+        hostname: nodeHostname,
         port: url.port,
         path: url.pathname + url.search,
         method,

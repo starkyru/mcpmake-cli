@@ -37,7 +37,7 @@ function stopHeartbeatIfEmpty(): void {
 function broadcast(eventName: string, data: unknown, taskId: string): void {
   const payload = `event: ${eventName}\ndata: ${JSON.stringify(data)}\n\n`;
   for (const conn of connections) {
-    if (conn.res.writableEnded) continue;
+    if (conn.res.writableEnded) { connections.delete(conn); continue; }
     if (conn.taskIdFilter && conn.taskIdFilter !== taskId) continue;
     conn.res.write(payload);
   }
@@ -82,6 +82,14 @@ export function handleTaskSse(
   }
 
   const taskIdFilter = url.searchParams.get('taskId') ?? null;
+
+  const rawMax = parseInt(process.env.MCP_MAX_SSE_CONNECTIONS ?? '', 10);
+  const maxConnections = Number.isInteger(rawMax) && rawMax > 0 ? rawMax : 500;
+  if (connections.size >= maxConnections) {
+    res.writeHead(503, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'SSE connection limit reached' }));
+    return true;
+  }
 
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',

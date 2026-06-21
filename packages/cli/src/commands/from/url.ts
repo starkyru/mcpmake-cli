@@ -17,6 +17,7 @@ import {
   printWorkerNextSteps,
 } from './target-support.js';
 import { apiKeyArg, applyApiKey, modelArg, providerArg } from '../api-key.js';
+import { parseIntFlag } from './website.js';
 import { logger } from '@mcpmake/core';
 import { fail } from '@mcpmake/core';
 import { confirmOperations } from '@mcpmake/core';
@@ -119,7 +120,7 @@ export default defineCommand({
   async run({ args }) {
     applyApiKey(args);
 
-    const timeoutMs = parseInt(args.timeout ?? '300', 10) * 1000;
+    const timeoutMs = parseIntFlag(args.timeout, 'timeout', 300) * 1000;
 
     // Record browser session
     const { entries, baseUrl } = await recordBrowserSession({

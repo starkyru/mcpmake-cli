@@ -17,7 +17,10 @@ registerAllTools(server, config);
 const transport = new StdioServerTransport();
 await server.connect(transport);
 
-process.on('SIGTERM', async () => {
+const shutdown = async () => {
   await closeBrowser();
   process.exit(0);
-});
+};
+
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);

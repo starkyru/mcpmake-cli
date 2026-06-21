@@ -321,157 +321,164 @@ if (transportMode === 'http') {
   }
 
   const httpServer = http.createServer(async (req, res) => {
-    const url = new URL(req.url ?? '/', `http://localhost:${port}`);
-    const method = req.method ?? 'GET';
+    try {
+      const url = new URL(req.url ?? '/', `http://localhost:${port}`);
+      const method = req.method ?? 'GET';
 
-    /* ── Authentication ─────────────────────────────────────────────
-     * Every endpoint except /health, /ready{{#if hasOAuth}}, and the public
-     * OAuth metadata{{/if}} requires a valid bearer token. With MCP_AUTH_TOKEN
-     * unset the server fails closed (401) unless MCP_ALLOW_UNAUTHENTICATED=true.
-     * This is the in-container line of defense; the hosting backend also
-     * validates before proxying. */
-    const isPublicPath =
-      url.pathname === '/health' ||
-      url.pathname === '/ready'{{#if hasOAuth}} ||
-      url.pathname === '/.well-known/oauth-authorization-server'{{/if}};
-    if (!isPublicPath && !isAuthorized(req, authToken)) {
-      log('error', 'Unauthorized request rejected', { path: url.pathname });
-      res.writeHead(401, {
-        'Content-Type': 'application/json',
-        'WWW-Authenticate': 'Bearer',
-      });
-      res.end(JSON.stringify({ error: 'Unauthorized: missing or invalid bearer token' }));
-      return;
-    }
+      /* ── Authentication ─────────────────────────────────────────────
+       * Every endpoint except /health, /ready{{#if hasOAuth}}, and the public
+       * OAuth metadata{{/if}} requires a valid bearer token. With MCP_AUTH_TOKEN
+       * unset the server fails closed (401) unless MCP_ALLOW_UNAUTHENTICATED=true.
+       * This is the in-container line of defense; the hosting backend also
+       * validates before proxying. */
+      const isPublicPath =
+        url.pathname === '/health' ||
+        url.pathname === '/ready'{{#if hasOAuth}} ||
+        url.pathname === '/.well-known/oauth-authorization-server'{{/if}};
+      if (!isPublicPath && !isAuthorized(req, authToken)) {
+        log('error', 'Unauthorized request rejected', { path: url.pathname });
+        res.writeHead(401, {
+          'Content-Type': 'application/json',
+          'WWW-Authenticate': 'Bearer',
+        });
+        res.end(JSON.stringify({ error: 'Unauthorized: missing or invalid bearer token' }));
+        return;
+      }
 
-    /* ── Routing-header observability (SEP-2243, additive) ─────────── */
-    const mcpMethod = req.headers['mcp-method'];
-    const mcpName = req.headers['mcp-name'];
-    if (mcpMethod || mcpName) {
-      log('info', 'mcp-meta-headers', { mcpMethod, mcpName, path: url.pathname });
-    }
+      /* ── Routing-header observability (SEP-2243, additive) ─────────── */
+      const mcpMethod = req.headers['mcp-method'];
+      const mcpName = req.headers['mcp-name'];
+      if (mcpMethod || mcpName) {
+        log('info', 'mcp-meta-headers', { mcpMethod, mcpName, path: url.pathname });
+      }
 
 {{#if hasOAuth}}
-    /* ── OAuth Authorization Server Metadata (RFC 8414) ─────────────
-     * Public discovery endpoint (the 2026-07-28 auth changes clarify
-     * .well-known discovery; DCR is retained, not replaced). */
-    if (url.pathname === '/.well-known/oauth-authorization-server') {
-      if (method !== 'GET') {
-        res.writeHead(405, { Allow: 'GET' });
-        res.end();
+      /* ── OAuth Authorization Server Metadata (RFC 8414) ─────────────
+       * Public discovery endpoint (the 2026-07-28 auth changes clarify
+       * .well-known discovery; DCR is retained, not replaced). */
+      if (url.pathname === '/.well-known/oauth-authorization-server') {
+        if (method !== 'GET') {
+          res.writeHead(405, { Allow: 'GET' });
+          res.end();
+          return;
+        }
+        const authorizationUrl = config.oauth2AuthorizationUrl;
+        const tokenUrl = config.oauth2TokenUrl;
+        if (!authorizationUrl || !tokenUrl) {
+          sendJson(res, 503, { error: 'OAuth is not configured' });
+          return;
+        }
+        const proto = req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http';
+        const issuer = allowedOrigin ?? `${proto}://${req.headers.host ?? 'localhost'}`;
+        sendJson(
+          res,
+          200,
+          getAuthServerMetadata(
+            {
+              clientId: config.oauth2ClientId ?? '',
+              clientSecret: config.oauth2ClientSecret,
+              authorizationUrl,
+              tokenUrl,
+              scopes: config.oauth2Scopes,
+              redirectUri: config.oauth2RedirectUri ?? '',
+            },
+            issuer,
+          ),
+        );
         return;
       }
-      const authorizationUrl = config.oauth2AuthorizationUrl;
-      const tokenUrl = config.oauth2TokenUrl;
-      if (!authorizationUrl || !tokenUrl) {
-        sendJson(res, 503, { error: 'OAuth is not configured' });
-        return;
-      }
-      const proto = req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http';
-      const issuer = allowedOrigin ?? `${proto}://${req.headers.host ?? 'localhost'}`;
-      sendJson(
-        res,
-        200,
-        getAuthServerMetadata(
-          {
-            clientId: config.oauth2ClientId ?? '',
-            clientSecret: config.oauth2ClientSecret,
-            authorizationUrl,
-            tokenUrl,
-            scopes: config.oauth2Scopes,
-            redirectUri: config.oauth2RedirectUri ?? '',
-          },
-          issuer,
-        ),
-      );
-      return;
-    }
 
 {{/if}}
 {{#if hasAsyncTools}}
-    /* ── Task management REST routes (retained during the grace period) ── */
-    if (handleTaskSse(req, res, url)) return;
-    if (handleTaskRoutes(req, res, url)) return;
+      /* ── Task management REST routes (retained during the grace period) ── */
+      if (handleTaskSse(req, res, url)) return;
+      if (handleTaskRoutes(req, res, url)) return;
 
 {{/if}}
-    if (url.pathname === '/mcp') {
-      /* Origin validation (DNS-rebinding protection per MCP spec) */
-      const origin = req.headers.origin;
-      if (allowedOrigin) {
-        if (origin && origin !== allowedOrigin) {
-          log('error', 'Origin rejected', { origin, allowedOrigin });
-          res.writeHead(403, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'Forbidden: invalid origin' }));
-          return;
-        }
-      } else if (origin) {
-        /* No allowlist configured but Origin header present — reject cross-origin requests */
-        log('error', 'Cross-origin request rejected (ALLOWED_ORIGIN not set)', { origin });
-        res.writeHead(403, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Forbidden: ALLOWED_ORIGIN not configured' }));
-        return;
-      }
-
-      /* POST carries a JSON-RPC body: peek for server/discover + tasks/* and
-       * forward the parsed body to the transport. GET/DELETE (SSE stream /
-       * session teardown) pass straight through. */
-      if (method === 'POST') {
-        const raw = await readBody(req);
-        if (raw === null) {
-          rpcError(res, null, -32600, 'Request body too large');
-          return;
-        }
-        if (raw.length === 0) {
-          rpcError(res, null, -32600, 'Empty request body');
-          return;
-        }
-        let parsed: unknown;
-        try {
-          parsed = JSON.parse(raw.toString('utf-8'));
-        } catch {
-          rpcError(res, null, -32700, 'Parse error');
-          return;
-        }
-
-        /* Intercept single-object JSON-RPC extension methods the SDK doesn't
-         * dispatch yet. Batches are forwarded untouched. */
-        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-          const rpcMethod = (parsed as { method?: unknown }).method;
-          const rpcId = (parsed as { id?: unknown }).id;
-          if (rpcMethod === 'server/discover') {
-            sendJson(res, 200, buildDiscoverResult(rpcId));
+      if (url.pathname === '/mcp') {
+        /* Origin validation (DNS-rebinding protection per MCP spec) */
+        const origin = req.headers.origin;
+        if (allowedOrigin) {
+          if (origin && origin !== allowedOrigin) {
+            log('error', 'Origin rejected', { origin, allowedOrigin });
+            res.writeHead(403, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Forbidden: invalid origin' }));
             return;
           }
-{{#if hasAsyncTools}}
-          if (typeof rpcMethod === 'string' && rpcMethod.startsWith('tasks/')) {
-            const handled = handleTaskRpc(rpcMethod, (parsed as { params?: unknown }).params, rpcId);
-            if (handled) {
-              sendJson(res, 200, handled);
-              return;
-            }
-          }
-{{/if}}
+        } else if (origin) {
+          /* No allowlist configured but Origin header present — reject cross-origin requests */
+          log('error', 'Cross-origin request rejected (ALLOWED_ORIGIN not set)', { origin });
+          res.writeHead(403, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Forbidden: ALLOWED_ORIGIN not configured' }));
+          return;
         }
 
-        await dispatchToTransport(req, res, parsed);
-        return;
-      }
+        /* POST carries a JSON-RPC body: peek for server/discover + tasks/* and
+         * forward the parsed body to the transport. GET/DELETE (SSE stream /
+         * session teardown) pass straight through. */
+        if (method === 'POST') {
+          const raw = await readBody(req);
+          if (raw === null) {
+            rpcError(res, null, -32600, 'Request body too large');
+            return;
+          }
+          if (raw.length === 0) {
+            rpcError(res, null, -32600, 'Empty request body');
+            return;
+          }
+          let parsed: unknown;
+          try {
+            parsed = JSON.parse(raw.toString('utf-8'));
+          } catch {
+            rpcError(res, null, -32700, 'Parse error');
+            return;
+          }
 
-      await dispatchToTransport(req, res);
-    } else if (url.pathname === '/health') {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ status: 'ok' }));
-    } else if (url.pathname === '/ready') {
-      if (isReady) {
+          /* Intercept single-object JSON-RPC extension methods the SDK doesn't
+           * dispatch yet. Batches are forwarded untouched. */
+          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            const rpcMethod = (parsed as { method?: unknown }).method;
+            const rpcId = (parsed as { id?: unknown }).id;
+            if (rpcMethod === 'server/discover') {
+              sendJson(res, 200, buildDiscoverResult(rpcId));
+              return;
+            }
+{{#if hasAsyncTools}}
+            if (typeof rpcMethod === 'string' && rpcMethod.startsWith('tasks/')) {
+              const handled = handleTaskRpc(rpcMethod, (parsed as { params?: unknown }).params, rpcId);
+              if (handled) {
+                sendJson(res, 200, handled);
+                return;
+              }
+            }
+{{/if}}
+          }
+
+          await dispatchToTransport(req, res, parsed);
+          return;
+        }
+
+        await dispatchToTransport(req, res);
+      } else if (url.pathname === '/health') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ status: 'ready' }));
+        res.end(JSON.stringify({ status: 'ok' }));
+      } else if (url.pathname === '/ready') {
+        if (isReady) {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ status: 'ready' }));
+        } else {
+          res.writeHead(503, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ status: 'not ready' }));
+        }
       } else {
-        res.writeHead(503, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ status: 'not ready' }));
+        res.writeHead(404);
+        res.end('Not found');
       }
-    } else {
-      res.writeHead(404);
-      res.end('Not found');
+    } catch (e) {
+      log('error', 'Unhandled error in request handler', { err: String(e) });
+      if (!res.headersSent) {
+        sendJson(res, 500, { error: 'Internal server error' });
+      }
     }
   });
 
@@ -489,8 +496,8 @@ if (transportMode === 'http') {
 
   /* ── Graceful shutdown ─────────────────────────────────────────────── */
 
-  process.on('SIGTERM', () => {
-    log('info', 'SIGTERM received, shutting down');
+  const shutdown = (signal: string) => {
+    log('info', `${signal} received, shutting down`);
     isReady = false;
     clearInterval(reaper);
 
@@ -514,7 +521,10 @@ if (transportMode === 'http') {
       log('error', 'Shutdown timed out after 5 s, forcing exit');
       process.exit(1);
     }, 5000).unref();
-  });
+  };
+
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
 } else {
   const server = createMcpServer(config);
   const transport = new StdioServerTransport();

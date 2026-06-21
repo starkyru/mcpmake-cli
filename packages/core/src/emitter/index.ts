@@ -396,7 +396,27 @@ function getSiteToolTemplate(tool: SiteToolDefinition): string {
  * f-string, removing the brace-expression evaluation / breakout vectors.
  */
 function toPythonToolView(tool: ToolDefinition): Record<string, unknown> {
-  const used = new Set<string>();
+  // Pre-seed with names that are either hardcoded args in server.py.hbs
+  // ("body") or local variables used inside the tool body ("url", "params",
+  // "req_headers", "resp", "raw", "data", "content_type", "client", "chunks",
+  // "total", "headers").  A param that maps to any of these gets a _1/_2/…
+  // suffix via uniquePyName so the emitted signature cannot have duplicate args
+  // and cannot shadow a body-local variable.
+  const used = new Set<string>([
+    'body',
+    'url',
+    'params',
+    'req_headers',
+    'resp',
+    'raw',
+    'data',
+    'content_type',
+    'client',
+    'chunks',
+    'chunk',
+    'total',
+    'headers',
+  ]);
   const uniquePyName = (apiName: string): string => {
     let base = sanitizePyIdentifier(apiName);
     let candidate = base;

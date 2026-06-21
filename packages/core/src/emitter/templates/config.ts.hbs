@@ -97,6 +97,17 @@ function resolveOAuthScopes(): string[] {
 
 {{/if}}
 {{/each}}
+const posInt = (v: string | undefined, d: number): number => {
+  const n = parseInt(v ?? '', 10);
+  return Number.isInteger(n) && n > 0 ? n : d;
+};
+
+/** Like posInt but accepts 0 — useful where 0 is a meaningful "disable" value. */
+const nonNegInt = (v: string | undefined, d: number): number => {
+  const n = parseInt(v ?? '', 10);
+  return Number.isInteger(n) && n >= 0 ? n : d;
+};
+
 export function loadConfig(): AppConfig {
   return {
     baseUrl: resolveBaseUrl(),
@@ -124,8 +135,8 @@ export function loadConfig(): AppConfig {
     oauth2Scopes: resolveOAuthScopes(),
 {{/if}}
 {{/each}}
-    maxRetries: parseInt(process.env.MAX_RETRIES ?? '3', 10),
-    requestIntervalMs: parseInt(process.env.REQUEST_INTERVAL_MS ?? '100', 10),
+    maxRetries: nonNegInt(process.env.MAX_RETRIES, 3),
+    requestIntervalMs: nonNegInt(process.env.REQUEST_INTERVAL_MS, 100),
     defaultHeaders: loadDefaultHeaders(),
   };
 }

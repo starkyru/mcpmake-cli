@@ -59,7 +59,10 @@ export default defineCommand({
       if (!(await pathExists(toolFile))) {
         logger.error(`Missing tool file: src/tools/${tool.fileName}.ts (${tool.name})`);
         missingCount++;
-      } else if (!toolIndex.includes(tool.fileName)) {
+      } else if (!toolIndex.includes(`'./${tool.fileName}.js'`)) {
+        // Match the exact import literal the index emits (`from './<fileName>.js'`)
+        // — a bare substring check false-passes when one fileName is a prefix of
+        // another (e.g. `get` masked by `get-users.js`), hiding a real drift.
         logger.warn(`Tool file exists but not registered: ${tool.fileName}`);
         missingCount++;
       }

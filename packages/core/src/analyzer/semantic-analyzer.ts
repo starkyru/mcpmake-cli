@@ -157,6 +157,9 @@ ${JSON.stringify(summaries, null, 2)}`;
     }
 
     const result: SemanticResult = JSON.parse(json);
+    if (!Array.isArray(result?.pages)) {
+      throw new Error('unexpected semantic result shape');
+    }
 
     // Apply inferred names back to the page descriptors
     const enriched = pages.map((page, pageIndex) => {

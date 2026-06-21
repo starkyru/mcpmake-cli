@@ -33,6 +33,25 @@ const workerData = {
   serverVersion: '1.0.0',
 };
 
+describe('R4-C(b) — HTTP listener outer try/catch guards against process crash', () => {
+  const src = renderTemplate('server-main-http.ts', httpData);
+
+  it('renders parseable TypeScript with the outer guard in place', () => {
+    assertParses(src, 'server-main-http-outer-guard');
+  });
+
+  it('wraps the listener body in a top-level try/catch that logs and sends 500', () => {
+    // The outer try must appear immediately inside the async listener.
+    expect(src).toMatch(/createServer\(async \(req, res\) => \{\s*try \{/);
+    // On error: log via the structured logger.
+    expect(src).toContain("log('error', 'Unhandled error in request handler'");
+    // Guard against double-send: only write if no headers yet.
+    expect(src).toContain('if (!res.headersSent)');
+    // 500 response uses the file's sendJson helper.
+    expect(src).toMatch(/sendJson\(res, 500,/);
+  });
+});
+
 describe('D-H7 — stateful HTTP session lifecycle bounds', () => {
   const src = renderTemplate('server-main-http.ts', httpData);
 
@@ -61,6 +80,37 @@ describe('D-H7 — stateful HTTP session lifecycle bounds', () => {
   it('clears the reaper and closes every session on shutdown', () => {
     expect(src).toMatch(/clearInterval\(reaper\)/);
     expect(src).toContain('sessions.clear()');
+  });
+});
+
+describe('R7-A — HTTP server handles both SIGTERM and SIGINT via a shared shutdown handler', () => {
+  const src = renderTemplate('server-main-http.ts', httpData);
+
+  it('renders parseable TypeScript', () => {
+    assertParses(src, 'server-main-http-sigint');
+  });
+
+  it('declares a named shutdown const that accepts a signal name', () => {
+    // R8-C: the handler takes (signal: string) so the log message names the actual signal.
+    expect(src).toMatch(/const shutdown = \(signal: string\) =>/);
+  });
+
+  it('registers signal-specific lambdas that pass the signal name through', () => {
+    // R8-C: each registration passes its own signal string so the log is accurate.
+    expect(src).toContain("process.on('SIGTERM', () => shutdown('SIGTERM'))");
+    expect(src).toContain("process.on('SIGINT', () => shutdown('SIGINT'))");
+  });
+
+  it('shutdown log message uses the interpolated signal name', () => {
+    expect(src).toMatch(/\$\{signal\} received, shutting down/);
+  });
+
+  it('shutdown handler clears the reaper interval', () => {
+    expect(src).toMatch(/clearInterval\(reaper\)/);
+  });
+
+  it('shutdown handler arms a forced-exit backstop that does not keep the loop alive', () => {
+    expect(src).toMatch(/setTimeout\(.*5000\)\.unref\(\)/s);
   });
 });
 

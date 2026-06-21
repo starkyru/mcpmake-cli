@@ -271,11 +271,14 @@ function resetIdleTimer(): void {
         telemetry.sessionEnded(id, 'idle');
       }
     }
-    // Close browser if no sessions
+    // Close browser if no sessions. `void` so a rejected closeBrowser()
+    // (e.g. Playwright throwing during browser.close()) can't become an
+    // unhandled promise rejection in this sync interval callback.
     if (sessions.size === 0) {
-      closeBrowser();
+      void closeBrowser();
     }
   }, 30_000); // Check every 30 seconds
+  idleTimer.unref?.();
 }
 
 function clearIdleTimer(): void {

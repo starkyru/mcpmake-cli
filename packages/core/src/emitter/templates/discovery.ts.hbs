@@ -12,6 +12,13 @@ import { applyJqFilter } from './response-filter.js';
 import type { AppConfig } from './config.js';
 import catalogData from './tool-catalog.json' with { type: 'json' };
 
+interface CatalogParamMapping {
+  /** The key the agent supplies in the tool input. */
+  inputKey: string;
+  /** The original API parameter name sent upstream. */
+  wireName: string;
+}
+
 interface CatalogEntry {
   name: string;
   title: string;
@@ -19,10 +26,15 @@ interface CatalogEntry {
   method: string;
   path: string;
   inputSchema: Record<string, unknown>;
-  pathParams: string[];
-  queryParams: string[];
+  /** Path parameters with inputKey (agent-facing) and wireName (upstream API). */
+  pathParams: CatalogParamMapping[];
+  /** Query parameters with inputKey (agent-facing) and wireName (upstream API). */
+  queryParams: CatalogParamMapping[];
   hasRequestBody: boolean;
   requestBodyContentType: string;
+  /** The MCP input key for the request body (`body`, `requestBody`, etc.).
+   *  Only present when `hasRequestBody` is true. */
+  bodyInputKey?: string;
 }
 
 const catalog: CatalogEntry[] = catalogData as CatalogEntry[];
@@ -157,29 +169,31 @@ export function registerDiscoveryTools(server: McpServer, config: AppConfig): vo
       }
 
       try {
-        // Build URL from path template
+        // Build URL from path template — read args by inputKey, substitute wireName
+        // into the URL template. Handles parameter name collisions (R14-A).
         let url = config.baseUrl + tool.path;
-        for (const param of tool.pathParams) {
-          if (args[param] !== undefined) {
-            url = url.replace(`{${param}}`, encodeURIComponent(String(args[param])));
+        for (const p of tool.pathParams) {
+          if (args[p.inputKey] !== undefined) {
+            url = url.replace(`{${p.wireName}}`, encodeURIComponent(String(args[p.inputKey])));
           }
         }
 
-        // Add query params
+        // Add query params — read args by inputKey, send upstream under wireName (R14-A).
         const queryParams = new URLSearchParams();
-        for (const param of tool.queryParams) {
-          if (args[param] !== undefined) {
-            queryParams.set(param, String(args[param]));
+        for (const p of tool.queryParams) {
+          if (args[p.inputKey] !== undefined) {
+            queryParams.set(p.wireName, String(args[p.inputKey]));
           }
         }
         const qs = queryParams.toString();
         if (qs) url += `?${qs}`;
 
+        const bodyKey = tool.bodyInputKey ?? 'body';
         const response = await executeRequest({
           method: tool.method,
           url,
-          ...(tool.hasRequestBody && args.body
-            ? { body: args.body, contentType: tool.requestBodyContentType }
+          ...(tool.hasRequestBody && args[bodyKey] !== undefined
+            ? { body: args[bodyKey], contentType: tool.requestBodyContentType }
             : {}),
           headers: {},
           config,

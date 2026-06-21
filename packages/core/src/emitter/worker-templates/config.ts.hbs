@@ -29,6 +29,17 @@ export interface AppConfig {
 
 type EnvLike = Record<string, string | undefined>;
 
+const posInt = (v: string | undefined, d: number): number => {
+  const n = parseInt(v ?? '', 10);
+  return Number.isInteger(n) && n > 0 ? n : d;
+};
+
+/** Like posInt but accepts 0 — useful where 0 is a meaningful "disable" value. */
+const nonNegInt = (v: string | undefined, d: number): number => {
+  const n = parseInt(v ?? '', 10);
+  return Number.isInteger(n) && n >= 0 ? n : d;
+};
+
 /**
  * Resolve the upstream base URL with optional named environments.
  * `MCP_ENVIRONMENTS` is a JSON object mapping name → base URL; `API_ENVIRONMENT`
@@ -85,8 +96,8 @@ export function loadConfig(env: EnvLike): AppConfig {
     basicPassword: env.BASIC_PASSWORD,
 {{/if}}
 {{/each}}
-    maxRetries: parseInt(env.MAX_RETRIES ?? '3', 10),
-    requestIntervalMs: parseInt(env.REQUEST_INTERVAL_MS ?? '100', 10),
+    maxRetries: nonNegInt(env.MAX_RETRIES, 3),
+    requestIntervalMs: nonNegInt(env.REQUEST_INTERVAL_MS, 100),
     defaultHeaders: loadDefaultHeaders(env),
   };
 }

@@ -159,3 +159,126 @@ describe('deploy command credential exposure (M6)', () => {
     expect(warnings.join('\n')).not.toMatch(/unencrypted channel/i);
   });
 });
+
+describe('deploy command multipart MIME injection guards (A4-8)', () => {
+  let tmp: string;
+  let specPath: string;
+  let capturedBody: string;
+  let backend: { url: string; close: () => Promise<void> };
+  let logSpies: ReturnType<typeof vi.spyOn>[];
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+
+  /** Backend that captures the raw request body for assertion. */
+  async function startCapturingBackend(): Promise<{ url: string; close: () => Promise<void> }> {
+    const server = http.createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on('data', (c) => chunks.push(c));
+      req.on('end', () => {
+        capturedBody = Buffer.concat(chunks).toString('binary');
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            slug: 'demo',
+            endpoint: 'http://example/mcp',
+            bearerToken: 'tok_test',
+            status: 'ok',
+            toolCount: 0,
+            claudeDesktopConfig: {},
+          }),
+        );
+      });
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const port = (server.address() as AddressInfo).port;
+    return {
+      url: `http://127.0.0.1:${port}`,
+      close: () => new Promise<void>((r) => server.close(() => r())),
+    };
+  }
+
+  beforeEach(async () => {
+    tmp = await mkdtemp(resolve(tmpdir(), 'mcpmake-deploy-mime-'));
+    specPath = resolve(tmp, 'spec.json');
+    await writeFile(specPath, JSON.stringify({ openapi: '3.0.0' }));
+    capturedBody = '';
+    logSpies = (['info', 'success', 'log', 'error', 'warn'] as const).map((m) =>
+      vi.spyOn(logger, m).mockImplementation(() => {}),
+    );
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    backend = await startCapturingBackend();
+  });
+
+  afterEach(async () => {
+    logSpies.forEach((s) => s.mockRestore());
+    warnSpy.mockRestore();
+    await backend.close();
+    await rm(tmp, { recursive: true, force: true });
+  });
+
+  it('strips CR and LF from --name before embedding in MIME headers', async () => {
+    await deployCommand.run!({
+      args: {
+        spec: specPath,
+        server: backend.url,
+        name: 'evil\r\nContent-Disposition: form-data; name="injected"',
+        token: undefined,
+        insecure: false,
+        'show-token': false,
+      },
+      rawArgs: [],
+    } as never);
+
+    // The injected CRLF must not appear in the multipart body
+    expect(capturedBody).not.toContain('\r\nContent-Disposition: form-data; name="injected"');
+    // The original name value (minus the CRLF) should still be present
+    expect(capturedBody).toContain('evil');
+  });
+
+  it('strips CR and LF from the filename and escapes double-quotes', async () => {
+    // Rename spec file to contain a double-quote and newline in the name
+    const maliciousPath = resolve(tmp, 'bad"name.json');
+    await writeFile(maliciousPath, JSON.stringify({ openapi: '3.0.0' }));
+
+    await deployCommand.run!({
+      args: {
+        spec: maliciousPath,
+        server: backend.url,
+        token: undefined,
+        insecure: false,
+        'show-token': false,
+      },
+      rawArgs: [],
+    } as never);
+
+    // The filename attribute must not contain an unescaped double-quote
+    // (which would close the filename="..." early).
+    const filenameAttr = capturedBody.match(/filename="([^"\\]|\\.)*"/)?.[0] ?? '';
+    expect(filenameAttr).toBeTruthy();
+    // A raw " in the original name must be escaped as \"
+    expect(capturedBody).toContain('\\"name.json');
+  });
+
+  it('escapes backslashes in the filename before escaping double-quotes (R2-D)', async () => {
+    // A filename with a backslash immediately before a quote: foo\"bar.json
+    // Without escaping backslash first: foo\"bar → foo\\"bar (the backslash
+    // itself is not doubled, breaking the MIME quoted-string).
+    // With correct order (backslash first, then quote): foo\\\"bar.json
+    const backslashPath = resolve(tmp, 'foo\\"bar.json');
+    await writeFile(backslashPath, JSON.stringify({ openapi: '3.0.0' }));
+
+    await deployCommand.run!({
+      args: {
+        spec: backslashPath,
+        server: backend.url,
+        token: undefined,
+        insecure: false,
+        'show-token': false,
+      },
+      rawArgs: [],
+    } as never);
+
+    // The literal backslash must be doubled before the escaped quote appears.
+    // Expected escaped sequence inside filename="...": foo\\\"bar.json
+    expect(capturedBody).toContain('foo\\\\\\"bar.json');
+  });
+});

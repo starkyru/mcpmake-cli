@@ -1,5 +1,17 @@
 import type { ToolDefinition } from '../types/index.js';
 
+/**
+ * Maps the MCP input key (what the agent supplies) to the wire parameter name
+ * (what the upstream API expects). Stored on each CatalogEntry path/query param
+ * so execute_tool reads `args[inputKey]` but sends under `wireName` (R14-A).
+ */
+export interface CatalogParamMapping {
+  /** The key the agent supplies in the tool input. */
+  inputKey: string;
+  /** The original API parameter name sent upstream. */
+  wireName: string;
+}
+
 export interface CatalogEntry {
   name: string;
   title: string;
@@ -7,10 +19,15 @@ export interface CatalogEntry {
   method: string;
   path: string;
   inputSchema: Record<string, unknown>;
-  pathParams: string[];
-  queryParams: string[];
+  /** Path parameters, each carrying both the MCP inputKey and the upstream wireName. */
+  pathParams: CatalogParamMapping[];
+  /** Query parameters, each carrying both the MCP inputKey and the upstream wireName. */
+  queryParams: CatalogParamMapping[];
   hasRequestBody: boolean;
   requestBodyContentType: string;
+  /** The MCP input key under which the request body is passed (e.g. `body`,
+   *  `requestBody`, `requestBody_2`). Only set when `hasRequestBody` is true. */
+  bodyInputKey?: string;
 }
 
 /**
@@ -18,18 +35,39 @@ export interface CatalogEntry {
  * Used by dynamic discovery mode to avoid registering all tools upfront.
  */
 export function buildCatalog(tools: ToolDefinition[]): CatalogEntry[] {
-  return tools.map((tool) => ({
-    name: tool.name,
-    title: tool.title,
-    description: tool.description,
-    method: tool.method,
-    path: tool.pathTemplate,
-    inputSchema: parseInputSchema(tool.inputSchemaCode),
-    pathParams: tool.pathParams,
-    queryParams: tool.queryParams,
-    hasRequestBody: tool.hasRequestBody,
-    requestBodyContentType: tool.requestBodyContentType,
-  }));
+  return tools.map((tool) => {
+    // Derive path/query param mappings from paramMappings (which carries the
+    // correct inputKey↔wireName pairing after collision disambiguation). Fall
+    // back to the legacy string arrays for tools built without paramMappings so
+    // that older caller code is not broken (the common case has inputKey===wireName).
+    const pathParams: CatalogParamMapping[] = tool.paramMappings
+      ? tool.paramMappings
+          .filter((m) => m.in === 'path')
+          .map((m) => ({ inputKey: m.inputKey, wireName: m.wireName }))
+      : tool.pathParams.map((name) => ({ inputKey: name, wireName: name }));
+
+    const queryParams: CatalogParamMapping[] = tool.paramMappings
+      ? tool.paramMappings
+          .filter((m) => m.in === 'query')
+          .map((m) => ({ inputKey: m.inputKey, wireName: m.wireName }))
+      : tool.queryParams.map((name) => ({ inputKey: name, wireName: name }));
+
+    return {
+      name: tool.name,
+      title: tool.title,
+      description: tool.description,
+      method: tool.method,
+      path: tool.pathTemplate,
+      inputSchema: parseInputSchema(tool.inputSchemaCode),
+      pathParams,
+      queryParams,
+      hasRequestBody: tool.hasRequestBody,
+      requestBodyContentType: tool.requestBodyContentType,
+      ...(tool.hasRequestBody && tool.bodyInputKey !== undefined
+        ? { bodyInputKey: tool.bodyInputKey }
+        : {}),
+    };
+  });
 }
 
 /**

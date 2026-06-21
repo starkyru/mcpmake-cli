@@ -86,8 +86,7 @@ async function clientCredentialsGrant(config: OAuthConfig): Promise<TokenRespons
   });
 
   if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`OAuth client credentials failed (${response.status}): ${body}`);
+    throw new Error(`OAuth client credentials failed (${response.status})`);
   }
 
   return response.json() as Promise<TokenResponse>;
