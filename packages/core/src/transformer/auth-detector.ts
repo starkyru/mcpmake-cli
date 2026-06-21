@@ -173,15 +173,30 @@ export function detectAuthSchemes(
   // Deferred fidelity gap: specs that require DISTINCT key values per scheme
   // (e.g. X-App-Id + X-App-Key) will share the first scheme's env var — full
   // multi-value support is a future feature.
+  //
+  // Similarly, mark only the FIRST apiKey scheme per location type as the one
+  // that emits the per-location interface property (`apiKeyQueryName?: string`).
+  // Two same-location schemes (e.g. two `in: query` schemes) would otherwise
+  // produce a second `apiKeyQueryName?: string` in the AppConfig interface →
+  // TS2300 "Duplicate identifier" in the generated server. The object-literal
+  // assignments in loadConfig() are legal TS (last-wins), but we also guard
+  // those for cleanliness so only the first scheme's assignment appears.
   let firstApiKeySeen = false;
+  let firstQueryApiKeySeen = false;
   const annotatedSchemes = authSchemes.map((s) => {
     if (s.type !== 'apiKey') return s;
     const emitApiKeyValue = !firstApiKeySeen;
     firstApiKeySeen = true;
-    // The extra `emitApiKeyValue` property is not part of the AuthScheme type
-    // but IS present at runtime for Handlebars template consumption. The cast
-    // is safe: the receiver (template engine) reads JS objects, not TS types.
-    return { ...s, emitApiKeyValue } as AuthScheme;
+    const emitApiKeyQueryName = s.in === 'query' ? !firstQueryApiKeySeen : undefined;
+    if (s.in === 'query') firstQueryApiKeySeen = true;
+    // The extra annotation properties are not part of the AuthScheme type but
+    // ARE present at runtime for Handlebars template consumption. The cast is
+    // safe: the receiver (template engine) reads JS objects, not TS types.
+    return {
+      ...s,
+      emitApiKeyValue,
+      ...(emitApiKeyQueryName !== undefined && { emitApiKeyQueryName }),
+    } as AuthScheme;
   });
 
   return { authSchemes: annotatedSchemes, envVars: uniqueEnvVars, oauthFlows };

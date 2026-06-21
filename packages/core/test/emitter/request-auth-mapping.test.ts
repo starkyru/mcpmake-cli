@@ -380,3 +380,153 @@ describe('R23-C — dual apiKey config dedup (node + worker templates)', () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// R24-A — two same-location apiKey schemes must not produce duplicate
+// per-location interface fields (apiKeyQueryName / apiKeyHeaderName).
+// TS2300 is invisible to transpileModule (strips types), so we assert the
+// structural invariant: count occurrences of the property strings directly.
+// ---------------------------------------------------------------------------
+describe('R24-A — per-location apiKey interface dedup (node + worker templates)', () => {
+  /** Two query-apiKey schemes — the previous TS2300 trigger. */
+  function twoQuerySchemes() {
+    const { authSchemes } = detectAuthSchemes({
+      TokenA: { type: 'apiKey', in: 'query', name: 'token' },
+      TokenB: { type: 'apiKey', in: 'query', name: 'api_key' },
+    });
+    return authSchemes;
+  }
+
+  /** A header + query pair — should produce one of each field, no dup. */
+  function headerPlusQuerySchemes() {
+    const { authSchemes } = detectAuthSchemes({
+      HeaderKey: { type: 'apiKey', in: 'header', name: 'X-API-Key' },
+      QueryKey: { type: 'apiKey', in: 'query', name: 'api_key' },
+    });
+    return authSchemes;
+  }
+
+  /** Single query scheme — the common case must be unaffected. */
+  function singleQueryScheme() {
+    const { authSchemes } = detectAuthSchemes({
+      QueryKey: { type: 'apiKey', in: 'query', name: 'api_key' },
+    });
+    return authSchemes;
+  }
+
+  // --- node template ---
+
+  it('node: two in:query schemes → exactly one apiKeyQueryName?: string', () => {
+    const config = renderTemplate('config.ts', { authSchemes: twoQuerySchemes() });
+    const matches = config.match(/apiKeyQueryName\?:\s*string/g) ?? [];
+    expect(matches).toHaveLength(1);
+    assertParses(config, 'node two-query config.ts');
+  });
+
+  it('node: two in:query schemes → exactly one apiKeyQueryName: assignment', () => {
+    const config = renderTemplate('config.ts', { authSchemes: twoQuerySchemes() });
+    const matches = config.match(/^\s+apiKeyQueryName:/gm) ?? [];
+    expect(matches).toHaveLength(1);
+  });
+
+  it('node: header+query pair → one apiKeyQueryName?: string (no header dup)', () => {
+    const config = renderTemplate('config.ts', { authSchemes: headerPlusQuerySchemes() });
+    const ifaceMatches = config.match(/apiKeyQueryName\?:\s*string/g) ?? [];
+    expect(ifaceMatches).toHaveLength(1);
+    // apiKey value emitted once (already guarded by R23-C).
+    expect((config.match(/apiKey\?:\s*string/g) ?? []).length).toBe(1);
+    assertParses(config, 'node header+query config.ts');
+  });
+
+  it('node: single in:query scheme → apiKeyQueryName?: string still present (flag absent = emit)', () => {
+    const config = renderTemplate('config.ts', { authSchemes: singleQueryScheme() });
+    expect(config).toContain('apiKeyQueryName?: string');
+    expect(config).toContain('apiKeyQueryName:');
+    assertParses(config, 'node single-query config.ts');
+  });
+
+  // --- worker template ---
+
+  it('worker: two in:query schemes → exactly one apiKeyQueryName?: string', () => {
+    const config = renderWorkerTemplate('config.ts', { authSchemes: twoQuerySchemes() });
+    const matches = config.match(/apiKeyQueryName\?:\s*string/g) ?? [];
+    expect(matches).toHaveLength(1);
+    assertParses(config, 'worker two-query config.ts');
+  });
+
+  it('worker: two in:query schemes → exactly one apiKeyQueryName: assignment', () => {
+    const config = renderWorkerTemplate('config.ts', { authSchemes: twoQuerySchemes() });
+    const matches = config.match(/^\s+apiKeyQueryName:/gm) ?? [];
+    expect(matches).toHaveLength(1);
+  });
+
+  it('worker: header+query pair → one apiKeyQueryName?: string (no header dup)', () => {
+    const config = renderWorkerTemplate('config.ts', { authSchemes: headerPlusQuerySchemes() });
+    const ifaceMatches = config.match(/apiKeyQueryName\?:\s*string/g) ?? [];
+    expect(ifaceMatches).toHaveLength(1);
+    expect((config.match(/apiKey\?:\s*string/g) ?? []).length).toBe(1);
+    assertParses(config, 'worker header+query config.ts');
+  });
+
+  it('worker: single in:query scheme → apiKeyQueryName?: string still present (flag absent = emit)', () => {
+    const config = renderWorkerTemplate('config.ts', { authSchemes: singleQueryScheme() });
+    expect(config).toContain('apiKeyQueryName?: string');
+    expect(config).toContain('apiKeyQueryName:');
+    assertParses(config, 'worker single-query config.ts');
+  });
+
+  // --- end-to-end with emitProject/emitWorkerProject ---
+
+  it('end-to-end node: two in:query schemes → parseable config.ts with exactly one apiKeyQueryName', async () => {
+    const authSchemes = twoQuerySchemes();
+    const tool = buildToolDefinition(makeOp());
+    return withTmp(async (dir) => {
+      await emitProject(
+        {
+          serverName: 'two-query-node',
+          serverVersion: '1.0.0',
+          baseUrl: 'https://api.example.com',
+          transport: 'stdio',
+          tools: [tool],
+          authSchemes,
+          envVars: [
+            { name: 'BASE_URL', description: 'base', required: false },
+            { name: 'API_KEY', description: 'api key', required: true },
+          ],
+        },
+        { outputDir: dir, force: true, dryRun: false },
+      );
+      const config = readFileSync(join(dir, 'src/config.ts'), 'utf-8');
+      expect((config.match(/apiKeyQueryName\?:\s*string/g) ?? []).length).toBe(1);
+      expect((config.match(/^\s+apiKeyQueryName:/gm) ?? []).length).toBe(1);
+      assertParses(config, 'e2e node two-query config.ts');
+    });
+  });
+
+  it('end-to-end worker: two in:query schemes → parseable config.ts with exactly one apiKeyQueryName', async () => {
+    const authSchemes = twoQuerySchemes();
+    const tool = buildToolDefinition(makeOp());
+    return withTmp(async (dir) => {
+      await emitWorkerProject(
+        {
+          serverName: 'two-query-worker',
+          serverVersion: '1.0.0',
+          baseUrl: 'https://api.example.com',
+          transport: 'http',
+          target: 'cloudflare',
+          tools: [tool],
+          authSchemes,
+          envVars: [
+            { name: 'BASE_URL', description: 'base', required: false },
+            { name: 'API_KEY', description: 'api key', required: true },
+          ],
+        },
+        { outputDir: dir, force: true, dryRun: false },
+      );
+      const config = readFileSync(join(dir, 'src/config.ts'), 'utf-8');
+      expect((config.match(/apiKeyQueryName\?:\s*string/g) ?? []).length).toBe(1);
+      expect((config.match(/^\s+apiKeyQueryName:/gm) ?? []).length).toBe(1);
+      assertParses(config, 'e2e worker two-query config.ts');
+    });
+  });
+});

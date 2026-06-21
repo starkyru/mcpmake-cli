@@ -11,8 +11,10 @@ export interface AppConfig {
   apiKey?: string;
 {{/unless}}
 {{#if (eq in "query")}}
+{{#unless (eq emitApiKeyQueryName false)}}
   /** Query-parameter name the API key is appended under (apiKey-in-query auth). */
   apiKeyQueryName?: string;
+{{/unless}}
 {{/if}}
 {{/if}}
 {{#if (eq type "http-bearer")}}
@@ -89,7 +91,9 @@ export function loadConfig(env: EnvLike): AppConfig {
     apiKey: env.{{envVarName}},
 {{/unless}}
 {{#if (eq in "query")}}
+{{#unless (eq emitApiKeyQueryName false)}}
     apiKeyQueryName: {{{json headerName}}},
+{{/unless}}
 {{/if}}
 {{/if}}
 {{#if (eq type "http-bearer")}}
