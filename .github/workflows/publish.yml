@@ -1,0 +1,94 @@
+name: Publish
+
+# On every push to main: patch-bump both packages in lockstep and publish them
+# to npm via Trusted Publishing (OIDC) — no NPM token.
+#
+# Prerequisites (configured on npmjs.com, already done by the maintainer):
+#   - A trusted-publisher entry for BOTH `@mcpmake/core` and `mcpmake`, each
+#     pointing at this repo + workflow filename `publish.yml`.
+#
+# Notes:
+#   - Trusted publishing needs npm >= 11.5.1; Node 22 ships npm 10.9.x, so we
+#     upgrade npm in-job.
+#   - The repo is PRIVATE, so npm provenance is not generated and `--provenance`
+#     is intentionally omitted (it errors on private repos). OIDC publish itself
+#     works fine on private repos.
+#   - NODE_AUTH_TOKEN is intentionally never set — npm auto-detects OIDC.
+
+on:
+  push:
+    branches: [main]
+
+# Never run two releases concurrently (would race on the version bump / push).
+concurrency:
+  group: publish-main
+  cancel-in-progress: false
+
+permissions:
+  contents: write # push the version-bump commit + tag back to main
+  id-token: write # mint the OIDC token for npm Trusted Publishing
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    # Don't publish off our own release commit. Three backstops against a loop:
+    #   1. the bump commit message carries `[skip ci]`,
+    #   2. pushes made with GITHUB_TOKEN never re-trigger workflows, and
+    #   3. this guard skips any `chore(release):` head commit.
+    if: ${{ !startsWith(github.event.head_commit.message, 'chore(release):') }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          registry-url: 'https://registry.npmjs.org'
+
+      # Trusted publishing requires npm >= 11.5.1; Node 22 bundles npm 10.9.x.
+      - name: Upgrade npm for OIDC trusted publishing
+        run: npm install -g npm@latest
+
+      - run: npm ci
+
+      # Verify gate — never publish a broken or vulnerable build.
+      - run: npm run format:check
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - run: npm audit --omit=dev --audit-level=high
+
+      - name: Bump patch version (both packages, lockstep)
+        id: bump
+        run: |
+          CURRENT="$(node -p "require('./packages/core/package.json').version")"
+          NEW="$(node -p "const v=require('./packages/core/package.json').version.split('.').map(Number); v[2]+=1; v.join('.')")"
+          echo "Bumping $CURRENT -> $NEW"
+          npm pkg set "version=$NEW"
+          npm pkg set "version=$NEW" --workspace @mcpmake/core
+          npm pkg set "version=$NEW" --workspace mcpmake
+          # Keep the cli's dependency on core pinned forward to the new version.
+          npm pkg set "dependencies.@mcpmake/core=^$NEW" --workspace mcpmake
+          npm install --package-lock-only
+          echo "version=$NEW" >> "$GITHUB_OUTPUT"
+
+      # Push BEFORE publishing so git never lags npm: if a publish later fails,
+      # the next run just bumps again (a skipped npm version is harmless),
+      # whereas the reverse could try to re-publish an existing version (409).
+      - name: Commit, tag, and push the release
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "chore(release): v${{ steps.bump.outputs.version }} [skip ci]"
+          git tag "v${{ steps.bump.outputs.version }}"
+          git push origin HEAD:main --follow-tags
+
+      # core first — the cli depends on it. OIDC is auto-detected; no token.
+      - name: Publish @mcpmake/core
+        run: npm publish --workspace @mcpmake/core --access public
+
+      - name: Publish mcpmake
+        run: npm publish --workspace mcpmake --access public
