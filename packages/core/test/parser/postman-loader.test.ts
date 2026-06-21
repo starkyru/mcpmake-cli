@@ -264,4 +264,116 @@ describe('postman-loader', () => {
     expect(entries).toHaveLength(1);
     expect(entries[0].request.url).toContain('localhost');
   });
+
+  // -------------------------------------------------------------------------
+  // R23-B: null/non-object elements inside Postman arrays must not crash
+  // -------------------------------------------------------------------------
+  it('R23-B: item: [null] at top level is skipped; valid sibling still loads', async () => {
+    const collection = {
+      info: { name: 'NullItem', schema: '' },
+      item: [
+        null,
+        { name: 'GoodRequest', request: { method: 'GET', url: 'https://api.test.com/ok' } },
+      ] as unknown[],
+    };
+
+    const filePath = resolve(tempDir, 'null-item.json');
+    await writeFile(filePath, JSON.stringify(collection));
+
+    const { entries } = await loadPostmanCollection(filePath);
+    expect(entries).toHaveLength(1);
+    expect(entries[0].request.url).toContain('api.test.com/ok');
+  });
+
+  it('R23-B: variable: [null] does not throw; remaining variables still resolve', async () => {
+    const collection = {
+      info: { name: 'NullVar', schema: '' },
+      item: [
+        {
+          name: 'VarRequest',
+          request: { method: 'GET', url: 'https://{{host}}/path' },
+        },
+      ],
+      variable: [null, { key: 'host', value: 'api.example.com' }] as unknown[],
+    };
+
+    const filePath = resolve(tempDir, 'null-var.json');
+    await writeFile(filePath, JSON.stringify(collection));
+
+    const { entries } = await loadPostmanCollection(filePath);
+    expect(entries).toHaveLength(1);
+    expect(entries[0].request.url).toContain('api.example.com');
+  });
+
+  it('R23-B: null element inside a nested folder item array is skipped; valid sibling inside the same folder loads', async () => {
+    const collection = {
+      info: { name: 'NullInFolder', schema: '' },
+      item: [
+        {
+          name: 'Folder',
+          item: [
+            null,
+            { name: 'Inner', request: { method: 'GET', url: 'https://api.test.com/inner' } },
+          ] as unknown[],
+        },
+      ],
+    };
+
+    const filePath = resolve(tempDir, 'null-in-folder.json');
+    await writeFile(filePath, JSON.stringify(collection));
+
+    const { entries } = await loadPostmanCollection(filePath);
+    expect(entries).toHaveLength(1);
+    expect(entries[0].request.url).toContain('api.test.com/inner');
+  });
+
+  it('R23-B: header: [null] does not throw; non-null headers are still mapped', async () => {
+    const collection = {
+      info: { name: 'NullHeader', schema: '' },
+      item: [
+        {
+          name: 'HeaderRequest',
+          request: {
+            method: 'GET',
+            url: 'https://api.test.com/ok',
+            header: [null, { key: 'X-Foo', value: 'bar' }] as unknown[],
+          },
+        },
+      ],
+    };
+
+    const filePath = resolve(tempDir, 'null-header.json');
+    await writeFile(filePath, JSON.stringify(collection));
+
+    const { entries } = await loadPostmanCollection(filePath);
+    expect(entries).toHaveLength(1);
+    expect(entries[0].request.headers.find((h) => h.name === 'X-Foo')?.value).toBe('bar');
+  });
+
+  it('R23-B: query: [null] in an object url does not throw; non-null query params are appended', async () => {
+    const collection = {
+      info: { name: 'NullQuery', schema: '' },
+      item: [
+        {
+          name: 'QueryRequest',
+          request: {
+            method: 'GET',
+            url: {
+              protocol: 'https',
+              host: ['api', 'test', 'com'],
+              path: ['items'],
+              query: [null, { key: 'page', value: '2' }] as unknown[],
+            },
+          },
+        },
+      ],
+    };
+
+    const filePath = resolve(tempDir, 'null-query.json');
+    await writeFile(filePath, JSON.stringify(collection));
+
+    const { entries } = await loadPostmanCollection(filePath);
+    expect(entries).toHaveLength(1);
+    expect(entries[0].request.url).toContain('page=2');
+  });
 });

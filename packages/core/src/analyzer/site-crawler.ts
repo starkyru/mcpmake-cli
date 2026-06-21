@@ -7,7 +7,8 @@ import { chromium } from 'playwright';
 import type { Browser, Page, Request, Response } from 'playwright';
 import type { Entry, Header } from 'har-format';
 import type { SiteDescriptor, PageDescriptor } from '../types/site.js';
-import { parsePage, isSameOrigin, navigationHopDecision } from './dom-parser.js';
+import { parsePage, isSameOrigin } from './dom-parser.js';
+import { makeNavigationHopRouteHandler } from './same-origin.js';
 import { captureViewportScreenshot } from './screenshot-capture.js';
 import { logger } from '../utils/logger.js';
 import { assertPublicUrl } from '../utils/ssrf-guard.js';
@@ -116,19 +117,7 @@ export async function crawlSite(options: CrawlOptions): Promise<CrawlResult> {
     // blocked at request time here — the post-goto landed-origin check below is
     // the backstop (we skip parsing a page that ended off-origin). The hosted
     // crawl additionally runs inside an egress-restricted network.
-    await page.route('**/*', (route) => {
-      const request = route.request();
-      const decision = navigationHopDecision(
-        request.isNavigationRequest(),
-        request.url(),
-        baseOrigin,
-      );
-      if (decision === 'abort') {
-        logger.warn(`Blocked cross-origin navigation hop (SSRF guard): ${request.url()}`);
-        return route.abort('blockedbyclient');
-      }
-      return route.continue();
-    });
+    await page.route('**/*', makeNavigationHopRouteHandler(baseOrigin));
 
     // Optionally capture network requests as HAR entries during crawl
     if (captureHar) {

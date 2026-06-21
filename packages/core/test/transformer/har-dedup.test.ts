@@ -54,6 +54,9 @@ describe('har-dedup', () => {
   });
 
   it('deduplicates pagination variants', () => {
+    // 5 page variants of the same endpoint, each spaced 10s apart (so none count
+    // as retries). stripPaginationParams collapses ?page=N to one signature; the
+    // pagination cap keeps at most the first 3, dropping pages 4 and 5.
     const entries = [
       normalizeEntry(
         makeEntry('https://api.test.com/items?page=1', 'GET', '2024-01-01T00:00:00.000Z'),
@@ -71,12 +74,14 @@ describe('har-dedup', () => {
         makeEntry('https://api.test.com/items?page=5', 'GET', '2024-01-01T00:00:40.000Z'),
       ),
     ];
-    // Add query strings
-    for (let i = 0; i < entries.length; i++) {
-      entries[i].entry.request.queryString = [{ name: 'page', value: String(i + 1) }];
-    }
     const result = deduplicateEntries(entries);
-    expect(result.length).toBeLessThan(entries.length);
+    // Deterministic: pages 1-3 kept, pages 4 and 5 dropped.
+    expect(result).toHaveLength(3);
+    expect(result.map((r) => r.entry.request.url)).toEqual([
+      'https://api.test.com/items?page=1',
+      'https://api.test.com/items?page=2',
+      'https://api.test.com/items?page=3',
+    ]);
   });
 
   it('keeps different endpoints', () => {
@@ -88,10 +93,10 @@ describe('har-dedup', () => {
     expect(result).toHaveLength(2);
   });
 
-  it('isPaginationVariant uses only the url — allEntries and current params removed (R3-6)', () => {
-    // Regression: the old signature accepted (url, allEntries, current) but both
-    // extra params were unused. Confirm deduplication works correctly now that the
-    // call site passes only the url.
+  it('caps pagination variants at 3 via isPaginationVariant(url) (R3-6)', () => {
+    // The pagination cap only fires when isPaginationVariant(url) is true, i.e. the
+    // url carries a recognized pagination param (here: cursor). With 4 cursor
+    // variants spaced 10s apart, the first 3 are kept and the 4th is dropped.
     const t0 = '2024-01-01T00:00:00.000Z';
     const t10 = '2024-01-01T00:00:10.000Z';
     const t20 = '2024-01-01T00:00:20.000Z';
@@ -103,7 +108,32 @@ describe('har-dedup', () => {
       normalizeEntry(makeEntry('https://api.test.com/items?cursor=d', 'GET', t30)),
     ];
     const result = deduplicateEntries(entries);
-    // First 3 are kept (seen.count < 3 threshold), 4th is dropped.
-    expect(result.length).toBeLessThan(entries.length);
+    // Deterministic: cursors a,b,c kept; cursor=d dropped by the pagination cap.
+    expect(result).toHaveLength(3);
+    expect(result.map((r) => r.entry.request.url)).toEqual([
+      'https://api.test.com/items?cursor=a',
+      'https://api.test.com/items?cursor=b',
+      'https://api.test.com/items?cursor=c',
+    ]);
+  });
+
+  it('does NOT cap when the url has no pagination param (isPaginationVariant=false)', () => {
+    // Companion to the cap test: ?sort=name is NOT a pagination param, so
+    // stripPaginationParams leaves it in the signature (all 4 still share one
+    // signature) but isPaginationVariant(url) is false — the cap branch never
+    // fires, so every spaced-out entry is kept. If isPaginationVariant were
+    // inverted/broken to return true here, the 4th entry would be dropped.
+    const t0 = '2024-01-01T00:00:00.000Z';
+    const t10 = '2024-01-01T00:00:10.000Z';
+    const t20 = '2024-01-01T00:00:20.000Z';
+    const t30 = '2024-01-01T00:00:30.000Z';
+    const entries = [
+      normalizeEntry(makeEntry('https://api.test.com/items?sort=name', 'GET', t0)),
+      normalizeEntry(makeEntry('https://api.test.com/items?sort=name', 'GET', t10)),
+      normalizeEntry(makeEntry('https://api.test.com/items?sort=name', 'GET', t20)),
+      normalizeEntry(makeEntry('https://api.test.com/items?sort=name', 'GET', t30)),
+    ];
+    const result = deduplicateEntries(entries);
+    expect(result).toHaveLength(4);
   });
 });

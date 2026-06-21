@@ -163,5 +163,26 @@ export function detectAuthSchemes(
     return true;
   });
 
-  return { authSchemes, envVars: uniqueEnvVars, oauthFlows };
+  // Mark only the FIRST apiKey scheme as the one that emits the shared
+  // `apiKey` value field in the config templates. Subsequent apiKey schemes
+  // (e.g. a second header or a query companion) still contribute their
+  // per-location metadata (headerName / apiKeyQueryName) — they just omit the
+  // duplicate `apiKey?: string` / `apiKey: process.env.X` lines that would
+  // otherwise produce TS2300 "Duplicate identifier" in the generated server.
+  // The shared value works for the common same-key-in-multiple-locations case.
+  // Deferred fidelity gap: specs that require DISTINCT key values per scheme
+  // (e.g. X-App-Id + X-App-Key) will share the first scheme's env var — full
+  // multi-value support is a future feature.
+  let firstApiKeySeen = false;
+  const annotatedSchemes = authSchemes.map((s) => {
+    if (s.type !== 'apiKey') return s;
+    const emitApiKeyValue = !firstApiKeySeen;
+    firstApiKeySeen = true;
+    // The extra `emitApiKeyValue` property is not part of the AuthScheme type
+    // but IS present at runtime for Handlebars template consumption. The cast
+    // is safe: the receiver (template engine) reads JS objects, not TS types.
+    return { ...s, emitApiKeyValue } as AuthScheme;
+  });
+
+  return { authSchemes: annotatedSchemes, envVars: uniqueEnvVars, oauthFlows };
 }

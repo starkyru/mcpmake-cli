@@ -289,7 +289,11 @@ export default defineConfigurableCommand('website', {
     const transport = args.transport === 'http' ? 'http' : 'stdio';
 
     const browserConfig: BrowserConfig = {
-      headless: args.headless ?? true,
+      // Informational: the generated server resolves its own runtime default via
+      // `HEADLESS !== 'false'` (config.ts.hbs), so this field is not emitted as the
+      // server default. Mirror the `--headless` flag (citty default false), matching
+      // the crawl-time usages above, instead of a dead `?? true` fallback.
+      headless: args.headless ?? false,
       idleTimeoutMs: timeoutMs,
       viewport: { width: 1280, height: 720 },
       maxSessions,

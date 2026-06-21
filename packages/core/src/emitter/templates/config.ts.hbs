@@ -2,7 +2,9 @@ export interface AppConfig {
   baseUrl: string;
 {{#each authSchemes}}
 {{#if (eq type "apiKey")}}
+{{#unless (eq emitApiKeyValue false)}}
   apiKey?: string;
+{{/unless}}
 {{#if (eq in "query")}}
   /** Query-parameter name the API key is appended under (apiKey-in-query auth). */
   apiKeyQueryName?: string;
@@ -113,7 +115,9 @@ export function loadConfig(): AppConfig {
     baseUrl: resolveBaseUrl(),
 {{#each authSchemes}}
 {{#if (eq type "apiKey")}}
+{{#unless (eq emitApiKeyValue false)}}
     apiKey: process.env.{{envVarName}},
+{{/unless}}
 {{#if (eq in "query")}}
     apiKeyQueryName: {{{json headerName}}},
 {{/if}}

@@ -6,7 +6,7 @@ import { renderTemplate } from './template-loader.js';
  * At/above this tool count, registering every tool upfront is a real token-cost
  * problem; the README recommends `--dynamic-discovery` (the #1 buyer concern).
  */
-const DISCOVERY_RECOMMEND_THRESHOLD = 50;
+export const DISCOVERY_RECOMMEND_THRESHOLD = 50;
 
 /**
  * Escape an arbitrary string for use as a single-line dotenv value in the

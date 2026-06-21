@@ -104,11 +104,16 @@ describe('website command BrowserConfig threading', () => {
     expect(manifest.browserConfig.idleTimeoutMs).toBe(120 * 1000);
   });
 
-  it('falls back to defaults (headless true, 300s) when flags are unset', async () => {
+  it('falls back to headless:false (CLI default) and 300s idle when flags are unset', async () => {
+    // Mirror what citty actually parses: `--headless` has `default: false`, so the
+    // real CLI never reaches run() with headless undefined. Pass false explicitly to
+    // assert the production-reachable manifest value (the old test asserted `true`,
+    // which only the dead `?? true` fallback could produce — unreachable in the CLI).
     await websiteCommand.run!({
       args: {
         url: 'https://example.com',
         output: '/tmp/does-not-matter',
+        headless: false,
         'dry-run': true,
         force: false,
       },
@@ -118,7 +123,7 @@ describe('website command BrowserConfig threading', () => {
     const manifest = emitCalls[0].manifest as {
       browserConfig: { headless: boolean; idleTimeoutMs: number };
     };
-    expect(manifest.browserConfig.headless).toBe(true);
+    expect(manifest.browserConfig.headless).toBe(false);
     expect(manifest.browserConfig.idleTimeoutMs).toBe(300 * 1000);
   });
 });

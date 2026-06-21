@@ -94,6 +94,90 @@ describe('collectLowConfidenceSelectors', () => {
   });
 });
 
+describe('collectLowConfidenceSelectors — malformed form elements', () => {
+  it('does not throw when a form is a bare {} object (missing selector/fields)', () => {
+    const site: SiteDescriptor = {
+      siteId: 'site_bad',
+      baseUrl: 'https://example.com',
+      analyzedAt: '2026-06-20T00:00:00.000Z',
+      version: 1,
+      crawlDepth: 1,
+      metadata: {},
+      pages: [
+        {
+          pageId: 'page_1',
+          url: 'https://example.com/',
+          analyzedAt: '2026-06-20T00:00:00.000Z',
+          forms: [{} as unknown as SiteDescriptor['pages'][0]['forms'][0]],
+          buttons: [],
+          links: [],
+        },
+      ],
+    };
+
+    expect(() => collectLowConfidenceSelectors(site)).not.toThrow();
+  });
+
+  it('skips the malformed form and returns zero results', () => {
+    const site: SiteDescriptor = {
+      siteId: 'site_bad',
+      baseUrl: 'https://example.com',
+      analyzedAt: '2026-06-20T00:00:00.000Z',
+      version: 1,
+      crawlDepth: 1,
+      metadata: {},
+      pages: [
+        {
+          pageId: 'page_1',
+          url: 'https://example.com/',
+          analyzedAt: '2026-06-20T00:00:00.000Z',
+          forms: [{} as unknown as SiteDescriptor['pages'][0]['forms'][0]],
+          buttons: [],
+          links: [],
+        },
+      ],
+    };
+
+    const lows = collectLowConfidenceSelectors(site);
+    expect(lows).toHaveLength(0);
+  });
+
+  it('still collects low-confidence selectors from well-formed forms alongside malformed ones', () => {
+    const site: SiteDescriptor = {
+      siteId: 'site_mixed',
+      baseUrl: 'https://example.com',
+      analyzedAt: '2026-06-20T00:00:00.000Z',
+      version: 1,
+      crawlDepth: 1,
+      metadata: {},
+      pages: [
+        {
+          pageId: 'page_1',
+          url: 'https://example.com/login',
+          analyzedAt: '2026-06-20T00:00:00.000Z',
+          forms: [
+            // malformed — no selector
+            {} as unknown as SiteDescriptor['pages'][0]['forms'][0],
+            // well-formed with a low-confidence selector
+            {
+              formId: 'form_good',
+              method: 'post',
+              selector: sel('form.brittle', 0.2),
+              fields: [],
+            } as unknown as SiteDescriptor['pages'][0]['forms'][0],
+          ],
+          buttons: [],
+          links: [],
+        },
+      ],
+    };
+
+    const lows = collectLowConfidenceSelectors(site);
+    expect(lows).toHaveLength(1);
+    expect(lows[0].selector.primary).toBe('form.brittle');
+  });
+});
+
 describe('summarizeRescan', () => {
   it('counts changes by type and element, and surfaces broken selectors', () => {
     const ts = '2026-06-18T00:00:00.000Z';

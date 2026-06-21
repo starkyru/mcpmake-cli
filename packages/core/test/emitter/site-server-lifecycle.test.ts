@@ -58,10 +58,26 @@ describe('D-H8: site HTTP server uses a per-request stateless factory', () => {
     // A factory replaces the single module-level `new McpServer(...)` instance.
     expect(out).toContain('function createMcpServer()');
     expect(out).toContain('const reqServer = createMcpServer();');
-    // The old shared-server connect-per-request anti-pattern is gone.
-    expect(out).not.toContain(
-      'await server.connect(transport);\n      await transport.handleRequest',
+
+    // The per-request server is what gets connected in the HTTP request handler —
+    // the request path connects `reqServer`, never a shared `server` reference.
+    expect(out).toContain('await reqServer.connect(transport);');
+    expect(out).toMatch(
+      /await\s+reqServer\.connect\(transport\);\s*await\s+transport\.handleRequest/,
     );
+
+    // The old shared-server connect-per-request anti-pattern is gone: the only
+    // bare `server.connect(...)` in this template is the single stdio else-branch,
+    // never inside the HTTP request handler. (Whitespace-tolerant unlike an exact
+    // two-line snippet match.) `new McpServer(` must appear exactly once — inside
+    // the factory — not as a shared module-level singleton plus a factory.
+    const newServerCount = (out.match(/new McpServer\(/g) ?? []).length;
+    expect(newServerCount).toBe(1);
+    // `server.connect` (the shared-global pattern) must not be used in the HTTP
+    // branch; only `reqServer.connect` is. The bare `server.connect` belongs to the
+    // stdio else-branch and lives after `} else {`.
+    const httpBranch = out.slice(0, out.indexOf('} else {'));
+    expect(httpBranch).not.toMatch(/(?<!req)\bserver\.connect\(transport\)/);
   });
 
   it('closes BOTH the per-request server and transport on response close', () => {
@@ -163,28 +179,69 @@ describe('R8-B — site HTTP/stdio server stdio else-branch handles both SIGTERM
   // The else-branch must use a shared shutdown const so Ctrl-C does not orphan Chromium.
   const out = renderSiteTemplate('server-main-http.ts', manifest);
 
+  // The template is `if (process.env.TRANSPORT === 'http') { ... } else { ... }`.
+  // `} else {` appears exactly once, so it cleanly partitions the rendered source
+  // into the http branch (before) and the stdio else branch (after). Every R8-B
+  // assertion targets the else branch specifically, so we slice it out here — a
+  // substring/count over the whole file would be satisfied by the http branch and
+  // could not detect a regression that drops lifecycle handling from the else branch.
+  const elseDelimiter = '} else {';
+  const delimiterCount = out.split(elseDelimiter).length - 1;
+
   it('renders to valid TypeScript', () => {
     assertParses(out, 'site-server-main-http-stdio-sigint');
   });
 
-  it('else-branch declares a named async shutdown handler that closes the browser', () => {
-    // The inline async () => { await closeBrowser(); } must be extracted into a const.
-    expect(out).toMatch(/const shutdown = async \(\) =>/);
-    expect(out).toContain('await closeBrowser()');
+  it('has exactly one if/else split so the branch slicing below is unambiguous', () => {
+    // Guards the slicing assumption: if a second `} else {` ever appears, the
+    // slices below would no longer correspond to the two transport branches.
+    expect(delimiterCount).toBe(1);
+  });
+
+  it('else-branch declares its own named async shutdown handler that closes the browser', () => {
+    // The inline async () => { await closeBrowser(); } must be extracted into a const
+    // *inside the else branch*. The http branch has its own shutdown const, so we must
+    // look only at the text after `} else {`.
+    const elseBranch = out.slice(out.indexOf(elseDelimiter) + elseDelimiter.length);
+    expect(elseBranch).toMatch(/const shutdown = async \(\) =>/);
+    expect(elseBranch).toContain('await closeBrowser()');
+    // The extracted handler must exit the process once the browser is closed.
+    expect(elseBranch).toContain('process.exit(0)');
   });
 
   it('else-branch registers the shared handler for both SIGTERM and SIGINT', () => {
-    // Both signals must go through the single extracted shutdown const.
-    expect(out).toContain("process.on('SIGTERM', shutdown)");
-    expect(out).toContain("process.on('SIGINT', shutdown)");
+    // Both signals must go through the single extracted shutdown const, and the
+    // registrations must live in the else branch (not just the http branch above).
+    const elseBranch = out.slice(out.indexOf(elseDelimiter) + elseDelimiter.length);
+    expect(elseBranch).toContain("process.on('SIGTERM', shutdown)");
+    expect(elseBranch).toContain("process.on('SIGINT', shutdown)");
   });
 
-  it('else-branch does not register signals with separate inline handlers', () => {
-    // The http-branch uses its own shutdown const; count only one declaration per signal in the else.
-    // The http branch and the else branch are mutually exclusive at runtime, but both appear in the
-    // source text — we verify both SIGINT registrations exist (one per branch).
-    const sigIntCount = (out.match(/process\.on\('SIGINT'/g) ?? []).length;
-    expect(sigIntCount).toBeGreaterThanOrEqual(2); // http branch + else branch
+  it('else-branch routes each signal through the single shutdown const, with no inline handlers', () => {
+    // The anti-pattern this guards is registering a signal with a fresh inline
+    // handler (e.g. process.on('SIGINT', () => ...)) or registering a signal twice.
+    // Within the else branch each signal must appear exactly once and bind `shutdown`.
+    const elseBranch = out.slice(out.indexOf(elseDelimiter) + elseDelimiter.length);
+
+    const sigTermRegs = elseBranch.match(/process\.on\('SIGTERM',[^)]*\)/g) ?? [];
+    const sigIntRegs = elseBranch.match(/process\.on\('SIGINT',[^)]*\)/g) ?? [];
+
+    expect(sigTermRegs).toEqual(["process.on('SIGTERM', shutdown)"]);
+    expect(sigIntRegs).toEqual(["process.on('SIGINT', shutdown)"]);
+
+    // And the else branch must not introduce an inline arrow/function directly in a
+    // process.on(...) call — every signal goes through the named const.
+    expect(elseBranch).not.toMatch(/process\.on\('SIG(TERM|INT)',\s*(async\s*)?\(/);
+  });
+
+  it('http-branch keeps its own shutdown handling independent of the else-branch', () => {
+    // Sanity check that the slicing is real: the http branch (before `} else {`)
+    // also has a shutdown const and both signal registrations, proving the else-branch
+    // assertions above are not accidentally reading the http branch's lifecycle code.
+    const httpBranch = out.slice(0, out.indexOf(elseDelimiter));
+    expect(httpBranch).toMatch(/const shutdown = async \(\) =>/);
+    expect(httpBranch).toContain("process.on('SIGTERM', shutdown)");
+    expect(httpBranch).toContain("process.on('SIGINT', shutdown)");
   });
 });
 

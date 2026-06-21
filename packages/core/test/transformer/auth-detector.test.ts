@@ -143,4 +143,52 @@ describe('auth-detector', () => {
     expect(oauthFlows).toHaveLength(1);
     expect(oauthFlows[0].flowType).toBe('clientCredentials');
   });
+
+  describe('R23-C — dual apiKey scheme dedup', () => {
+    it('marks only the first apiKey scheme with emitApiKeyValue:true', () => {
+      const schemes: Record<string, OpenAPIV3.SecuritySchemeObject> = {
+        HeaderKey: { type: 'apiKey', in: 'header', name: 'X-API-Key' },
+        QueryKey: { type: 'apiKey', in: 'query', name: 'api_key' },
+      };
+      const { authSchemes } = detectAuthSchemes(schemes);
+      expect(authSchemes).toHaveLength(2);
+      // Cast to access the runtime-injected template property.
+      const [first, second] = authSchemes as Array<Record<string, unknown>>;
+      expect(first['emitApiKeyValue']).toBe(true);
+      expect(second['emitApiKeyValue']).toBe(false);
+    });
+
+    it('both apiKey schemes retain their per-location metadata', () => {
+      const schemes: Record<string, OpenAPIV3.SecuritySchemeObject> = {
+        HeaderKey: { type: 'apiKey', in: 'header', name: 'X-API-Key' },
+        QueryKey: { type: 'apiKey', in: 'query', name: 'api_key' },
+      };
+      const { authSchemes } = detectAuthSchemes(schemes);
+      const header = authSchemes.find((s) => s.in === 'header');
+      const query = authSchemes.find((s) => s.in === 'query');
+      expect(header?.headerName).toBe('X-API-Key');
+      expect(query?.headerName).toBe('api_key');
+    });
+
+    it('emitApiKeyValue:true on sole apiKey scheme (regression guard)', () => {
+      const schemes: Record<string, OpenAPIV3.SecuritySchemeObject> = {
+        ApiKey: { type: 'apiKey', in: 'header', name: 'X-API-Key' },
+      };
+      const { authSchemes } = detectAuthSchemes(schemes);
+      expect(authSchemes).toHaveLength(1);
+      const [sole] = authSchemes as Array<Record<string, unknown>>;
+      expect(sole['emitApiKeyValue']).toBe(true);
+    });
+
+    it('deduplicates env vars for two apiKey schemes sharing the same name', () => {
+      const schemes: Record<string, OpenAPIV3.SecuritySchemeObject> = {
+        HeaderKey: { type: 'apiKey', in: 'header', name: 'X-API-Key' },
+        QueryKey: { type: 'apiKey', in: 'query', name: 'api_key' },
+      };
+      const { envVars } = detectAuthSchemes(schemes);
+      const apiKeyVars = envVars.filter((v) => v.name === 'API_KEY');
+      // Both schemes resolve to API_KEY — dedup must keep exactly one.
+      expect(apiKeyVars).toHaveLength(1);
+    });
+  });
 });

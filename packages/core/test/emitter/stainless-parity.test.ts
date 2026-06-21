@@ -68,39 +68,86 @@ describe('Feature 1: runtime tool filtering', () => {
     expect(out).toContain("if (isToolEnabled('delete_pet')) registerDeletePet(server, config);");
   });
 
-  it('allowlist wins then denylist removes (logic check)', () => {
-    // Mirror the generated isToolEnabled logic to assert the precedence rules.
-    const make = (allowRaw?: string, denyRaw?: string) => {
-      const parse = (raw?: string) => {
-        if (!raw) return undefined;
-        const names = raw
-          .split(',')
-          .map((s) => s.trim())
-          .filter(Boolean);
-        return names.length ? new Set(names) : undefined;
+  it('REAL generated isToolEnabled: allowlist gates, denylist removes after allow', async () => {
+    // Render the actual tool-index.ts.hbs, transpile TS → JS, and import the
+    // GENERATED isToolEnabled (no hand-copy of the logic). The module binds
+    // allow/deny from process.env at load time, so each scenario is a fresh
+    // import after setting the env — that exercises parseList + the precedence
+    // rules in the real source, not a mirror of them.
+    const dir = await mkdtemp(join(tmpdir(), 'mcpmake-toolfilter-'));
+    try {
+      const ts = renderTemplate('tool-index.ts', { tools: [] });
+      const { transform } = await import('esbuild');
+      const { code } = await transform(ts, { loader: 'ts', format: 'esm' });
+
+      const saved = { allow: process.env.MCP_TOOLS, deny: process.env.MCP_EXCLUDE_TOOLS };
+      let seq = 0;
+      const load = async (
+        allow: string | undefined,
+        deny: string | undefined,
+      ): Promise<(name: string) => boolean> => {
+        if (allow === undefined) delete process.env.MCP_TOOLS;
+        else process.env.MCP_TOOLS = allow;
+        if (deny === undefined) delete process.env.MCP_EXCLUDE_TOOLS;
+        else process.env.MCP_EXCLUDE_TOOLS = deny;
+        // The generated module binds allow/deny from process.env at load time,
+        // so each scenario needs a genuinely fresh module. Write to a unique
+        // path per scenario (query-string cache-busting is unreliable under the
+        // test runner's module cache) so process.env is re-read every time.
+        const file = join(dir, `tool-index-${seq++}.mjs`);
+        await writeFile(file, code, 'utf-8');
+        const mod = await import(pathToFileURL(file).href);
+        return mod.isToolEnabled as (name: string) => boolean;
       };
-      const allow = parse(allowRaw);
-      const deny = parse(denyRaw);
-      return (name: string) => {
-        if (allow && !allow.has(name)) return false;
-        if (deny && deny.has(name)) return false;
-        return true;
-      };
-    };
-    // No filters → everything enabled.
-    expect(make()('list_pets')).toBe(true);
-    // Allowlist.
-    const allowOnly = make('list_pets');
-    expect(allowOnly('list_pets')).toBe(true);
-    expect(allowOnly('delete_pet')).toBe(false);
-    // Denylist.
-    const denyOnly = make(undefined, 'delete_pet');
-    expect(denyOnly('list_pets')).toBe(true);
-    expect(denyOnly('delete_pet')).toBe(false);
-    // Deny applied after allow.
-    const both = make('list_pets,delete_pet', 'delete_pet');
-    expect(both('list_pets')).toBe(true);
-    expect(both('delete_pet')).toBe(false);
+
+      try {
+        // No filters → everything enabled.
+        const none = await load(undefined, undefined);
+        expect(none('list_pets')).toBe(true);
+        expect(none('delete_pet')).toBe(true);
+
+        // Allowlist: only listed names register, everything else is gated off.
+        const allowOnly = await load('list_pets', undefined);
+        expect(allowOnly('list_pets')).toBe(true);
+        expect(allowOnly('delete_pet')).toBe(false);
+
+        // Denylist: listed names never register, the rest stay enabled.
+        const denyOnly = await load(undefined, 'delete_pet');
+        expect(denyOnly('list_pets')).toBe(true);
+        expect(denyOnly('delete_pet')).toBe(false);
+
+        // Precedence: deny is applied AFTER allow. A name on BOTH lists is
+        // removed — proving deny wins over allow (the bug a flipped template
+        // would introduce: allow-after-deny would keep delete_pet enabled).
+        const both = await load('list_pets,delete_pet', 'delete_pet');
+        expect(both('list_pets')).toBe(true);
+        expect(both('delete_pet')).toBe(false);
+
+        // A name absent from a non-empty allowlist is rejected even if it is
+        // not on the denylist (allowlist is a strict membership gate).
+        const allowExcludesUnknown = await load('list_pets', 'something_else');
+        expect(allowExcludesUnknown('delete_pet')).toBe(false);
+
+        // parseList tolerance: surrounding whitespace and empty entries are
+        // trimmed/dropped, so a sloppy env value still matches by exact name.
+        const sloppy = await load('  list_pets , , delete_pet ', undefined);
+        expect(sloppy('list_pets')).toBe(true);
+        expect(sloppy('delete_pet')).toBe(true);
+        expect(sloppy('other')).toBe(false);
+
+        // A whitespace-only allowlist parses to undefined → treated as "no
+        // filter", so it must NOT gate everything off.
+        const blank = await load('   ', undefined);
+        expect(blank('list_pets')).toBe(true);
+      } finally {
+        if (saved.allow === undefined) delete process.env.MCP_TOOLS;
+        else process.env.MCP_TOOLS = saved.allow;
+        if (saved.deny === undefined) delete process.env.MCP_EXCLUDE_TOOLS;
+        else process.env.MCP_EXCLUDE_TOOLS = saved.deny;
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   it('Workers worker.ts filters tools/list, tools/call, and discover by env', () => {
@@ -226,26 +273,76 @@ describe('Feature 3: named environments', () => {
     expect(out).toContain('baseUrl: resolveBaseUrl(env),');
   });
 
-  it('resolver logic: selects a named env, falls back to BASE_URL otherwise', () => {
-    // Mirror the generated resolveBaseUrl logic.
-    const resolve = (mcpEnvs?: string, selected?: string, baseUrl = 'https://base') => {
-      if (mcpEnvs && selected) {
-        try {
-          const envs = JSON.parse(mcpEnvs);
-          const url = envs[selected];
-          if (typeof url === 'string' && url) return url.replace(/\/$/, '');
-        } catch {
-          /* fall through */
-        }
+  it('REAL generated resolveBaseUrl: named env selection + BASE_URL fallback', async () => {
+    // Render the actual config.ts.hbs, transpile, and import the GENERATED
+    // module. resolveBaseUrl is internal, but loadConfig() returns its result as
+    // `baseUrl`, so calling the exported loadConfig exercises the real resolver
+    // (JSON.parse, envs[selected], trailing-slash trim, the malformed-JSON
+    // catch, the unknown-name fallback) — no hand-copied mirror.
+    const dir = await mkdtemp(join(tmpdir(), 'mcpmake-resolver-'));
+    try {
+      const ts = renderTemplate('config.ts', manifest());
+      const { transform } = await import('esbuild');
+      const { code } = await transform(ts, { loader: 'ts', format: 'esm' });
+      const file = join(dir, 'config.mjs');
+      await writeFile(file, code, 'utf-8');
+      const { loadConfig } = (await import(pathToFileURL(file).href)) as {
+        loadConfig: () => { baseUrl: string };
+      };
+
+      const saved = {
+        envs: process.env.MCP_ENVIRONMENTS,
+        sel: process.env.API_ENVIRONMENT,
+        base: process.env.BASE_URL,
+      };
+      const resolved = (
+        mcpEnvs: string | undefined,
+        selected: string | undefined,
+        baseUrl: string | undefined,
+      ): string => {
+        if (mcpEnvs === undefined) delete process.env.MCP_ENVIRONMENTS;
+        else process.env.MCP_ENVIRONMENTS = mcpEnvs;
+        if (selected === undefined) delete process.env.API_ENVIRONMENT;
+        else process.env.API_ENVIRONMENT = selected;
+        if (baseUrl === undefined) delete process.env.BASE_URL;
+        else process.env.BASE_URL = baseUrl;
+        return loadConfig().baseUrl;
+      };
+
+      const envs = JSON.stringify({ production: 'https://prod', sandbox: 'https://sandbox/' });
+      try {
+        // Named env selected → its URL, trailing slash trimmed.
+        expect(resolved(envs, 'sandbox', 'https://base')).toBe('https://sandbox');
+        expect(resolved(envs, 'production', 'https://base')).toBe('https://prod');
+        // Unknown name → BASE_URL fallback (also trailing-slash trimmed).
+        expect(resolved(envs, 'unknown', 'https://base/')).toBe('https://base');
+        // No env map / no selection → BASE_URL.
+        expect(resolved(undefined, 'sandbox', 'https://base')).toBe('https://base');
+        expect(resolved(envs, undefined, 'https://base')).toBe('https://base');
+        // Malformed MCP_ENVIRONMENTS → the try/catch swallows it → BASE_URL.
+        expect(resolved('not json', 'sandbox', 'https://base')).toBe('https://base');
+        // Non-string mapped value (e.g. a number) → fall through to BASE_URL.
+        expect(resolved(JSON.stringify({ sandbox: 123 }), 'sandbox', 'https://base')).toBe(
+          'https://base',
+        );
+        // Empty-string mapped value → falsy, so fall through to BASE_URL.
+        expect(resolved(JSON.stringify({ sandbox: '' }), 'sandbox', 'https://base')).toBe(
+          'https://base',
+        );
+        // Missing BASE_URL with no usable env → requireEnv throws.
+        expect(() => resolved(undefined, undefined, undefined)).toThrow(/BASE_URL/);
+      } finally {
+        const restore = (k: string, v: string | undefined) => {
+          if (v === undefined) delete process.env[k];
+          else process.env[k] = v;
+        };
+        restore('MCP_ENVIRONMENTS', saved.envs);
+        restore('API_ENVIRONMENT', saved.sel);
+        restore('BASE_URL', saved.base);
       }
-      return baseUrl.replace(/\/$/, '');
-    };
-    const envs = JSON.stringify({ production: 'https://prod', sandbox: 'https://sandbox/' });
-    expect(resolve(envs, 'sandbox')).toBe('https://sandbox'); // trailing slash trimmed
-    expect(resolve(envs, 'production')).toBe('https://prod');
-    expect(resolve(envs, 'unknown')).toBe('https://base'); // unknown name → fallback
-    expect(resolve(undefined, 'sandbox')).toBe('https://base'); // no map → fallback
-    expect(resolve('not json', 'sandbox')).toBe('https://base'); // malformed → fallback
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -281,6 +378,57 @@ describe('Feature 4: idempotency key + default headers', () => {
     expect(out).toContain('function loadDefaultHeaders()');
     expect(out).toContain('process.env.MCP_DEFAULT_HEADERS');
     expect(out).toContain('defaultHeaders: loadDefaultHeaders(),');
+  });
+
+  it('REAL generated loadDefaultHeaders: parses JSON, drops non-strings, fails safe', async () => {
+    // Behavioral companion to the structural check above: exercise the GENERATED
+    // loadDefaultHeaders (via the exported loadConfig().defaultHeaders), so a
+    // regression in the parser — dropping the non-string filter or the
+    // malformed-JSON catch — would actually fail here.
+    const dir = await mkdtemp(join(tmpdir(), 'mcpmake-headers-'));
+    try {
+      const ts = renderTemplate('config.ts', manifest());
+      const { transform } = await import('esbuild');
+      const { code } = await transform(ts, { loader: 'ts', format: 'esm' });
+      const file = join(dir, 'config.mjs');
+      await writeFile(file, code, 'utf-8');
+      const { loadConfig } = (await import(pathToFileURL(file).href)) as {
+        loadConfig: () => { defaultHeaders: Record<string, string> };
+      };
+
+      const saved = { hdrs: process.env.MCP_DEFAULT_HEADERS, base: process.env.BASE_URL };
+      process.env.BASE_URL = 'https://base';
+      delete process.env.MCP_ENVIRONMENTS;
+      delete process.env.API_ENVIRONMENT;
+      const headersFor = (raw: string | undefined): Record<string, string> => {
+        if (raw === undefined) delete process.env.MCP_DEFAULT_HEADERS;
+        else process.env.MCP_DEFAULT_HEADERS = raw;
+        return loadConfig().defaultHeaders;
+      };
+
+      try {
+        // Unset → empty map (non-breaking default).
+        expect(headersFor(undefined)).toEqual({});
+        // Valid JSON object of string values → passed through verbatim.
+        expect(headersFor(JSON.stringify({ 'X-A': 'a', 'X-B': 'b' }))).toEqual({
+          'X-A': 'a',
+          'X-B': 'b',
+        });
+        // Non-string values are dropped; string siblings survive.
+        expect(
+          headersFor(JSON.stringify({ 'X-Str': 'ok', 'X-Num': 5, 'X-Obj': { k: 1 } })),
+        ).toEqual({ 'X-Str': 'ok' });
+        // Malformed JSON → caught → empty map (never throws).
+        expect(headersFor('not json')).toEqual({});
+      } finally {
+        if (saved.hdrs === undefined) delete process.env.MCP_DEFAULT_HEADERS;
+        else process.env.MCP_DEFAULT_HEADERS = saved.hdrs;
+        if (saved.base === undefined) delete process.env.BASE_URL;
+        else process.env.BASE_URL = saved.base;
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });
 

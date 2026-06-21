@@ -75,6 +75,22 @@ function makeRequest(url = 'https://example.com/api') {
   };
 }
 
+/**
+ * A minimal fake Playwright Response. `body()` resolves to a tiny readable JSON
+ * payload so the recorder takes its normal capture path and appends an entry —
+ * provided the request is still tracked in pendingRequests when it arrives.
+ */
+function makeResponse(request: unknown, url = 'https://example.com/api') {
+  return {
+    request: () => request,
+    url: () => url,
+    status: () => 200,
+    statusText: () => 'OK',
+    headers: () => ({ 'content-type': 'application/json', 'content-length': '2' }),
+    body: async () => Buffer.from('{}'),
+  };
+}
+
 async function tick(): Promise<void> {
   for (let i = 0; i < 10; i++) await Promise.resolve();
 }
@@ -89,7 +105,37 @@ describe('L-pending: recorder frees pending entries on terminal events', () => {
     delete process.env.MCPMAKE_ALLOW_PRIVATE_HOSTS;
   });
 
-  it("registers 'requestfailed'/'requestfinished' handlers and produces no entry for a request that never gets a response", async () => {
+  it('captures exactly one entry when a tracked request gets a readable response (positive baseline)', async () => {
+    // Anchors the discriminating tests below: the capture pipeline DOES produce
+    // an entry on the happy path, so a "0 entries" result elsewhere is a real
+    // signal that the response was dropped — not a dead/no-op pipeline.
+    const { recordBrowserSession } = await import('../../src/recorder/browser-recorder.js');
+
+    const sessionPromise = recordBrowserSession({ url: 'https://example.com', headless: true });
+    await tick();
+
+    const req = makeRequest('https://example.com/api/ok');
+    fakePage.emit('request', req);
+    fakePage.emit('response', makeResponse(req, 'https://example.com/api/ok'));
+
+    await tick();
+    fakePage.releaseGoto();
+
+    const result = await sessionPromise;
+    expect(result.entries.length).toBe(1);
+    expect(result.entries[0].request.url).toBe('https://example.com/api/ok');
+    expect(result.entries[0].response.status).toBe(200);
+  });
+
+  it("'requestfailed' frees the pending entry so a late response for it is dropped", async () => {
+    // Discriminating against onSettled becoming a no-op (the leak this guards):
+    // onResponse early-returns when the request is no longer in pendingRequests
+    // (`if (!pending) return;`). So if 'requestfailed' really deleted the entry,
+    // a subsequent 'response' for the SAME request must be IGNORED. If onSettled
+    // were gutted, the entry would still be tracked and this response would
+    // produce a captured entry — making this assertion fail. The positive
+    // baseline above proves a response on a still-tracked request DOES capture,
+    // so the 0 here is attributable to the cleanup, not a broken pipeline.
     const { recordBrowserSession } = await import('../../src/recorder/browser-recorder.js');
 
     const sessionPromise = recordBrowserSession({ url: 'https://example.com', headless: true });
@@ -99,20 +145,40 @@ describe('L-pending: recorder frees pending entries on terminal events', () => {
     expect(fakePage.listenerCount('requestfailed')).toBe(1);
     expect(fakePage.listenerCount('requestfinished')).toBe(1);
 
-    const failing = makeRequest('https://example.com/aborted');
-    fakePage.emit('request', failing);
-    // No 'response' ever fires for this request — it just fails.
-    fakePage.emit('requestfailed', failing);
-
-    const finishing = makeRequest('https://example.com/redirect');
-    fakePage.emit('request', finishing);
-    fakePage.emit('requestfinished', finishing);
+    const failed = makeRequest('https://example.com/aborted');
+    fakePage.emit('request', failed);
+    fakePage.emit('requestfailed', failed); // onSettled deletes it from pendingRequests
+    // A late/duplicate 'response' arrives for the now-untracked request; it must
+    // be dropped because the pending entry was already freed.
+    fakePage.emit('response', makeResponse(failed, 'https://example.com/aborted'));
 
     await tick();
     fakePage.releaseGoto();
 
     const result = await sessionPromise;
-    // Neither request produced a captured entry (no readable response).
+    expect(result.entries.length).toBe(0);
+  });
+
+  it("'requestfinished' frees the pending entry so a late response for it is dropped", async () => {
+    // Same discriminating shape as above, exercising the other terminal event.
+    // A redirect/finished request whose entry is freed must not be revived by a
+    // trailing 'response'.
+    const { recordBrowserSession } = await import('../../src/recorder/browser-recorder.js');
+
+    const sessionPromise = recordBrowserSession({ url: 'https://example.com', headless: true });
+    await tick();
+
+    expect(fakePage.listenerCount('requestfinished')).toBe(1);
+
+    const finished = makeRequest('https://example.com/redirect');
+    fakePage.emit('request', finished);
+    fakePage.emit('requestfinished', finished); // onSettled deletes it from pendingRequests
+    fakePage.emit('response', makeResponse(finished, 'https://example.com/redirect'));
+
+    await tick();
+    fakePage.releaseGoto();
+
+    const result = await sessionPromise;
     expect(result.entries.length).toBe(0);
   });
 

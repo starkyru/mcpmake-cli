@@ -6,6 +6,7 @@ import ts from 'typescript';
 import { buildToolDefinition } from '../../src/transformer/tool-builder.js';
 import { renderTemplate } from '../../src/emitter/template-loader.js';
 import { renderWorkerTemplate } from '../../src/emitter/worker-template-loader.js';
+import { detectAuthSchemes } from '../../src/transformer/auth-detector.js';
 import { emitProject, emitWorkerProject, emitPythonProject } from '../../src/emitter/index.js';
 import type {
   OperationDescriptor,
@@ -254,6 +255,128 @@ describe('D-H2 — python header / cookie request params', () => {
       expect(py).toContain('req_headers["X-Tenant-Id"] = X_Tenant_Id');
       expect(py).toContain('_cookie_parts.append("session-id=" + quote(str(session_id)');
       expect(py).toContain('req_headers["Cookie"]');
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// R23-C — dual apiKey scheme must not produce duplicate `apiKey` property
+// ---------------------------------------------------------------------------
+// transpileModule strips type information so TS2300 "Duplicate identifier" is
+// invisible to it. These tests assert the structural invariant directly: count
+// occurrences of the relevant property strings in the rendered output.
+describe('R23-C — dual apiKey config dedup (node + worker templates)', () => {
+  /**
+   * Return schemes already annotated with `emitApiKeyValue` by detectAuthSchemes
+   * so the template context mirrors what the real emitter pipeline produces.
+   */
+  function dualApiKeySchemes() {
+    const { authSchemes } = detectAuthSchemes({
+      HeaderKey: { type: 'apiKey', in: 'header', name: 'X-API-Key' },
+      QueryKey: { type: 'apiKey', in: 'query', name: 'api_key' },
+    });
+    return authSchemes;
+  }
+
+  it('node config.ts AppConfig has exactly one `apiKey?: string` line', () => {
+    const authSchemes = dualApiKeySchemes();
+    const config = renderTemplate('config.ts', { authSchemes });
+    const matches = config.match(/apiKey\?:\s*string/g) ?? [];
+    expect(matches).toHaveLength(1);
+  });
+
+  it('node config.ts loadConfig has exactly one `apiKey:` assignment', () => {
+    const authSchemes = dualApiKeySchemes();
+    const config = renderTemplate('config.ts', { authSchemes });
+    // Match `apiKey: process.env.` but NOT `apiKeyQueryName:` (different field).
+    const matches = config.match(/^\s+apiKey:\s+process\.env\./gm) ?? [];
+    expect(matches).toHaveLength(1);
+  });
+
+  it('node config.ts still carries apiKeyQueryName for the query scheme', () => {
+    const authSchemes = dualApiKeySchemes();
+    const config = renderTemplate('config.ts', { authSchemes });
+    expect(config).toContain('apiKeyQueryName?: string');
+    expect(config).toContain('apiKeyQueryName:');
+  });
+
+  it('worker config.ts AppConfig has exactly one `apiKey?: string` line', () => {
+    const authSchemes = dualApiKeySchemes();
+    const config = renderWorkerTemplate('config.ts', { authSchemes });
+    const matches = config.match(/apiKey\?:\s*string/g) ?? [];
+    expect(matches).toHaveLength(1);
+  });
+
+  it('worker config.ts loadConfig has exactly one `apiKey:` assignment', () => {
+    const authSchemes = dualApiKeySchemes();
+    const config = renderWorkerTemplate('config.ts', { authSchemes });
+    // Worker uses `env.API_KEY` rather than `process.env.API_KEY`.
+    const matches = config.match(/^\s+apiKey:\s+env\./gm) ?? [];
+    expect(matches).toHaveLength(1);
+  });
+
+  it('worker config.ts still carries apiKeyQueryName for the query scheme', () => {
+    const authSchemes = dualApiKeySchemes();
+    const config = renderWorkerTemplate('config.ts', { authSchemes });
+    expect(config).toContain('apiKeyQueryName?: string');
+    expect(config).toContain('apiKeyQueryName:');
+  });
+
+  it('end-to-end node emitProject with two apiKey schemes produces a parseable config.ts', async () => {
+    const authSchemes = dualApiKeySchemes();
+    const tool = buildToolDefinition(makeOp());
+    return withTmp(async (dir) => {
+      await emitProject(
+        {
+          serverName: 'dual-key-api',
+          serverVersion: '1.0.0',
+          baseUrl: 'https://api.example.com',
+          transport: 'stdio',
+          tools: [tool],
+          authSchemes,
+          envVars: [
+            { name: 'BASE_URL', description: 'base', required: false },
+            { name: 'API_KEY', description: 'api key', required: true },
+          ],
+        },
+        { outputDir: dir, force: true, dryRun: false },
+      );
+      const config = readFileSync(join(dir, 'src/config.ts'), 'utf-8');
+      // Structural: exactly one value field and one assignment.
+      expect((config.match(/apiKey\?:\s*string/g) ?? []).length).toBe(1);
+      expect((config.match(/^\s+apiKey:\s+process\.env\./gm) ?? []).length).toBe(1);
+      // Both location metadata fields present.
+      expect(config).toContain('apiKeyQueryName?: string');
+      // Must parse cleanly (transpileModule catches syntax errors).
+      assertParses(config, 'dual-apiKey node config.ts');
+    });
+  });
+
+  it('end-to-end worker emitWorkerProject with two apiKey schemes produces a parseable config.ts', async () => {
+    const authSchemes = dualApiKeySchemes();
+    const tool = buildToolDefinition(makeOp());
+    return withTmp(async (dir) => {
+      await emitWorkerProject(
+        {
+          serverName: 'dual-key-worker',
+          serverVersion: '1.0.0',
+          baseUrl: 'https://api.example.com',
+          transport: 'http',
+          target: 'cloudflare',
+          tools: [tool],
+          authSchemes,
+          envVars: [
+            { name: 'BASE_URL', description: 'base', required: false },
+            { name: 'API_KEY', description: 'api key', required: true },
+          ],
+        },
+        { outputDir: dir, force: true, dryRun: false },
+      );
+      const config = readFileSync(join(dir, 'src/config.ts'), 'utf-8');
+      expect((config.match(/apiKey\?:\s*string/g) ?? []).length).toBe(1);
+      expect((config.match(/^\s+apiKey:\s+env\./gm) ?? []).length).toBe(1);
+      expect(config).toContain('apiKeyQueryName?: string');
+      assertParses(config, 'dual-apiKey worker config.ts');
     });
   });
 });

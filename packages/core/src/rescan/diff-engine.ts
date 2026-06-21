@@ -124,6 +124,9 @@ function diffForms(
     // Check for field changes
     diffFormFields(oldForm, newForm, oldPage.pageId, changes, timestamp);
 
+    // Skip selector comparison for malformed form elements missing a selector.
+    if (!oldForm.selector || !newForm.selector) continue;
+
     // Check for broken selectors
     if (oldForm.selector.primary !== newForm.selector.primary) {
       if (newForm.selector.confidence < 0.5) {
@@ -282,17 +285,19 @@ function diffButtons(
       });
     }
 
-    checkBrokenSelector(
-      oldBtn.selector,
-      newBtn.selector,
-      oldBtn.semanticAction ?? id,
-      id,
-      'button',
-      oldPage.pageId,
-      changes,
-      brokenSelectors,
-      timestamp,
-    );
+    if (oldBtn.selector && newBtn.selector) {
+      checkBrokenSelector(
+        oldBtn.selector,
+        newBtn.selector,
+        oldBtn.semanticAction ?? id,
+        id,
+        'button',
+        oldPage.pageId,
+        changes,
+        brokenSelectors,
+        timestamp,
+      );
+    }
   }
 }
 
@@ -351,17 +356,19 @@ function diffLinks(
       });
     }
 
-    checkBrokenSelector(
-      oldLink.selector,
-      newLink.selector,
-      oldLink.semanticAction ?? id,
-      id,
-      'link',
-      oldPage.pageId,
-      changes,
-      brokenSelectors,
-      timestamp,
-    );
+    if (oldLink.selector && newLink.selector) {
+      checkBrokenSelector(
+        oldLink.selector,
+        newLink.selector,
+        oldLink.semanticAction ?? id,
+        id,
+        'link',
+        oldPage.pageId,
+        changes,
+        brokenSelectors,
+        timestamp,
+      );
+    }
   }
 }
 

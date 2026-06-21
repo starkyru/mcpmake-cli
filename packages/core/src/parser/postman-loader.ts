@@ -60,6 +60,8 @@ export async function loadPostmanCollection(filePath: string): Promise<{
   // Resolve variables
   const vars = new Map<string, string>();
   for (const v of collection.variable ?? []) {
+    // R23-B: null/non-object elements in the variable array must be skipped.
+    if (v === null || typeof v !== 'object') continue;
     vars.set(v.key, v.value);
   }
 
@@ -86,6 +88,9 @@ function flattenItems(
   }
 
   for (const item of items) {
+    // R23-B: null/non-object elements (e.g. `"item": [null]`) must be skipped
+    // rather than crashing on property access.
+    if (item === null || typeof item !== 'object') continue;
     if (item.item) {
       flattenItems(item.item, entries, vars, depth + 1);
     }
@@ -102,10 +107,13 @@ function convertToHarEntry(item: PostmanItem, vars: Map<string, string>): Entry 
   if (!url) return null;
 
   const method = req.method ?? 'GET';
-  const headers = (req.header ?? []).map((h) => ({
-    name: h.key,
-    value: resolveVars(h.value, vars),
-  }));
+  // R23-B: filter null/non-object elements before mapping to avoid null.key crashes.
+  const headers = (req.header ?? [])
+    .filter((h): h is NonNullable<typeof h> => h !== null && typeof h === 'object')
+    .map((h) => ({
+      name: h.key,
+      value: resolveVars(h.value, vars),
+    }));
 
   let parsedUrl: URL;
   try {
@@ -179,6 +187,8 @@ function resolveUrl(url: PostmanUrl | string, vars: Map<string, string>): string
     return null;
   }
   for (const q of url.query ?? []) {
+    // R23-B: null/non-object query elements are skipped.
+    if (q === null || typeof q !== 'object') continue;
     parsed.searchParams.set(q.key, resolveVars(q.value, vars));
   }
 

@@ -11,7 +11,8 @@ import { chromium } from 'playwright';
 import type { Browser } from 'playwright';
 import type { SiteDescriptor, PageDescriptor } from '../types/site.js';
 import type { CrawlResult } from './site-crawler.js';
-import { parsePage, isSameOrigin, navigationHopDecision } from './dom-parser.js';
+import { parsePage, isSameOrigin } from './dom-parser.js';
+import { makeNavigationHopRouteHandler } from './same-origin.js';
 import { captureViewportScreenshot } from './screenshot-capture.js';
 import { logger } from '../utils/logger.js';
 import { requireLlmProvider } from '../llm/index.js';
@@ -86,19 +87,7 @@ export async function goalDirectedCrawl(options: GoalCrawlOptions): Promise<Craw
     // the loop below is the backstop (we refuse to parse/return content from a
     // page that ended off-origin), and the hosted crawl additionally runs inside
     // an egress-restricted network. Full DNS-pinning is tracked separately.
-    await page.route('**/*', (route) => {
-      const request = route.request();
-      const decision = navigationHopDecision(
-        request.isNavigationRequest(),
-        request.url(),
-        baseOrigin,
-      );
-      if (decision === 'abort') {
-        logger.warn(`Blocked cross-origin navigation hop (SSRF guard): ${request.url()}`);
-        return route.abort('blockedbyclient');
-      }
-      return route.continue();
-    });
+    await page.route('**/*', makeNavigationHopRouteHandler(baseOrigin));
 
     logger.info(`Goal-directed crawl: "${safeGoal}"`);
     logger.info(`Starting at: ${options.url} (max ${maxSteps} steps)`);
