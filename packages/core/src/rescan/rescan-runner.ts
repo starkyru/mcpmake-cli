@@ -37,11 +37,11 @@ export function collectLowConfidenceSelectors(
   };
 
   for (const page of site.pages) {
-    for (const form of page.forms) {
+    for (const form of page.forms ?? []) {
       const formName = form.semanticName ?? form.formId;
       consider(form.selector, page.url, `form "${formName}"`);
       consider(form.submitButton, page.url, `submit button of form "${formName}"`);
-      for (const field of form.fields) {
+      for (const field of form.fields ?? []) {
         consider(
           field.selector,
           page.url,
@@ -49,14 +49,14 @@ export function collectLowConfidenceSelectors(
         );
       }
     }
-    for (const button of page.buttons) {
+    for (const button of page.buttons ?? []) {
       consider(
         button.selector,
         page.url,
         `button "${button.text ?? button.semanticAction ?? button.buttonId}"`,
       );
     }
-    for (const link of page.links) {
+    for (const link of page.links ?? []) {
       consider(link.selector, page.url, `link "${link.text ?? link.href}"`);
     }
   }

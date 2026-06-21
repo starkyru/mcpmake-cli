@@ -70,7 +70,10 @@ export function mergePathItemParameters(
   return result;
 }
 
-function mergeSpecs(base: OpenAPIV3.Document, other: OpenAPIV3.Document): OpenAPIV3.Document {
+export function mergeSpecs(
+  base: OpenAPIV3.Document,
+  other: OpenAPIV3.Document,
+): OpenAPIV3.Document {
   const merged: OpenAPIV3.Document = {
     openapi: base.openapi ?? '3.0.0',
     info: base.info,
@@ -90,8 +93,17 @@ function mergeSpecs(base: OpenAPIV3.Document, other: OpenAPIV3.Document): OpenAP
   for (const [path, pathItem] of Object.entries(otherPaths)) {
     if (basePaths[path]) {
       // Check for method-level conflicts
-      const baseItem = basePaths[path] as OpenAPIV3.PathItemObject;
-      const otherItem = pathItem as OpenAPIV3.PathItemObject;
+      const baseItem = basePaths[path] as OpenAPIV3.PathItemObject | null;
+      const otherItem = pathItem as OpenAPIV3.PathItemObject | null;
+
+      // Either path item may be null in a malformed but otherwise parseable spec.
+      // In that case keep whichever side is non-null (or drop the path if both are).
+      if (!baseItem || !otherItem) {
+        const kept = otherItem ?? baseItem;
+        if (kept) merged.paths[path] = kept;
+        continue;
+      }
+
       const methods = ['get', 'post', 'put', 'patch', 'delete', 'head', 'options'] as const;
 
       for (const method of methods) {

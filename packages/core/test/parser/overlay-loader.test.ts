@@ -161,6 +161,60 @@ describe('overlay-loader A4-2 deepMerge depth cap', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// R22-2: applyAction guard — action with no/invalid "target" is skipped, not fatal
+// ---------------------------------------------------------------------------
+describe('overlay-loader R22-2 missing/invalid target guard', () => {
+  it('does not throw when an action has no "target" field, and still applies valid siblings', async () => {
+    const overlay = writeOverlay(
+      JSON.stringify({
+        overlay: '1.0.0',
+        actions: [
+          // no target at all — should be silently skipped
+          { update: { 'x-bad': true } },
+          // empty-string target — should be silently skipped
+          { target: '', update: { 'x-also-bad': true } },
+          // whitespace-only target — should be silently skipped
+          { target: '   ', update: { 'x-ws-bad': true } },
+          // valid action that must still be applied
+          { target: '$.info', update: { version: 'patched' } },
+        ],
+      }),
+    );
+    const spec: Record<string, unknown> = { info: { title: 'API', version: '1.0.0' } };
+
+    await expect(applyOverlay(spec, overlay)).resolves.toBeUndefined();
+    // The valid action applied
+    expect((spec.info as Record<string, unknown>).version).toBe('patched');
+    // None of the bad actions leaked into the spec
+    expect((spec as Record<string, unknown>)['x-bad']).toBeUndefined();
+  });
+
+  it('emits a logger.warn for each skipped action with missing/invalid target', async () => {
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    try {
+      const overlay = writeOverlay(
+        JSON.stringify({
+          overlay: '1.0.0',
+          actions: [
+            { update: { 'x-no-target': true } },
+            { target: '', update: { 'x-empty': true } },
+          ],
+        }),
+      );
+      const spec: Record<string, unknown> = { info: {} };
+      await applyOverlay(spec, overlay);
+
+      const skippedWarns = warnSpy.mock.calls.filter(([msg]) =>
+        String(msg).includes('missing/invalid "target"'),
+      );
+      expect(skippedWarns.length).toBe(2);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+});
+
 describe('overlay-loader prototype-pollution guard', () => {
   it('does not pollute Object.prototype via __proto__ in an update body', async () => {
     const overlay = writeOverlay(

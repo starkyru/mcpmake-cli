@@ -54,6 +54,10 @@ function parseOverlay(content: string): OverlayDocument {
 }
 
 function applyAction(spec: Record<string, unknown>, action: OverlayAction): void {
+  if (typeof action.target !== 'string' || action.target.trim() === '') {
+    logger.warn('Overlay action missing/invalid "target" — skipping');
+    return;
+  }
   const segments = parseTarget(action.target);
   if (segments.length === 0) return;
 

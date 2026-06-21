@@ -86,8 +86,8 @@ function diffForms(
   brokenSelectors: RescanResult['brokenSelectors'],
   timestamp: string,
 ): void {
-  const oldFormsById = new Map(oldPage.forms.map((f) => [f.formId, f]));
-  const newFormsById = new Map(newPage.forms.map((f) => [f.formId, f]));
+  const oldFormsById = new Map((oldPage.forms ?? []).map((f) => [f.formId, f]));
+  const newFormsById = new Map((newPage.forms ?? []).map((f) => [f.formId, f]));
 
   for (const [id, form] of newFormsById) {
     if (!oldFormsById.has(id)) {
@@ -164,8 +164,8 @@ function diffFormFields(
   changes: SiteChangeEntry[],
   timestamp: string,
 ): void {
-  const oldFieldsByName = new Map(oldForm.fields.map((f) => [f.name, f]));
-  const newFieldsByName = new Map(newForm.fields.map((f) => [f.name, f]));
+  const oldFieldsByName = new Map((oldForm.fields ?? []).map((f) => [f.name, f]));
+  const newFieldsByName = new Map((newForm.fields ?? []).map((f) => [f.name, f]));
 
   for (const [name] of newFieldsByName) {
     if (!oldFieldsByName.has(name)) {
@@ -234,8 +234,8 @@ function diffButtons(
   brokenSelectors: RescanResult['brokenSelectors'],
   timestamp: string,
 ): void {
-  const oldById = new Map(oldPage.buttons.map((b) => [b.buttonId, b]));
-  const newById = new Map(newPage.buttons.map((b) => [b.buttonId, b]));
+  const oldById = new Map((oldPage.buttons ?? []).map((b) => [b.buttonId, b]));
+  const newById = new Map((newPage.buttons ?? []).map((b) => [b.buttonId, b]));
 
   for (const [id, btn] of newById) {
     if (!oldById.has(id)) {
@@ -303,8 +303,8 @@ function diffLinks(
   brokenSelectors: RescanResult['brokenSelectors'],
   timestamp: string,
 ): void {
-  const oldById = new Map(oldPage.links.map((l) => [l.linkId, l]));
-  const newById = new Map(newPage.links.map((l) => [l.linkId, l]));
+  const oldById = new Map((oldPage.links ?? []).map((l) => [l.linkId, l]));
+  const newById = new Map((newPage.links ?? []).map((l) => [l.linkId, l]));
 
   for (const [id, link] of newById) {
     if (!oldById.has(id)) {

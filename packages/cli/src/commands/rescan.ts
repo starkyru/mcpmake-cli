@@ -18,11 +18,31 @@ import { activeKeyVar, apiKeyArg, applyApiKey, modelArg, providerArg } from './a
 import type { SiteDescriptor, SiteRegenMetadata, SiteProjectManifest } from '@mcpmake/core';
 
 /**
+ * Return true when an individual page element has the minimum shape required
+ * for `diffSiteDescriptors` and `collectLowConfidenceSelectors` to operate
+ * safely: `url` and `pageId` must be strings (used as Map keys and in change
+ * entries), and `forms`, `buttons`, `links` must be arrays (all three are
+ * iterated with `.map()`/`for…of` without a null-guard in the consumers).
+ */
+function isValidPageShape(page: unknown): boolean {
+  if (typeof page !== 'object' || page === null) return false;
+  const p = page as Record<string, unknown>;
+  return (
+    typeof p['url'] === 'string' &&
+    typeof p['pageId'] === 'string' &&
+    Array.isArray(p['forms']) &&
+    Array.isArray(p['buttons']) &&
+    Array.isArray(p['links'])
+  );
+}
+
+/**
  * Return true when the parsed JSON value has the minimum shape required to use
- * a SiteDescriptor safely: `pages` must be an array (prevents the TypeError at
- * `.pages.length`), `version` must be a number (prevents `NaN` being written
- * into the regenerated snapshot), and `baseUrl` must be a string (prevents
- * passing `undefined` into the crawl engine).
+ * a SiteDescriptor safely: `pages` must be an array of valid page objects
+ * (prevents TypeErrors in diff-engine and rescan-runner), `version` must be a
+ * number (prevents `NaN` being written into the regenerated snapshot), and
+ * `baseUrl` must be a string (prevents passing `undefined` into the crawl
+ * engine).
  */
 export function isValidSiteDescriptorShape(
   value: unknown,
@@ -31,6 +51,7 @@ export function isValidSiteDescriptorShape(
   const v = value as Record<string, unknown>;
   return (
     Array.isArray(v['pages']) &&
+    (v['pages'] as unknown[]).every(isValidPageShape) &&
     typeof v['version'] === 'number' &&
     typeof v['baseUrl'] === 'string'
   );

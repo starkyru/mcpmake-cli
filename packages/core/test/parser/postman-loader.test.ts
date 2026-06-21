@@ -165,4 +165,103 @@ describe('postman-loader', () => {
     expect(entries).toHaveLength(1);
     expect(entries[0].request.url).toContain('api.test.com/ok');
   });
+
+  // -------------------------------------------------------------------------
+  // R22-3: non-array `item` field must not crash flattenItems
+  // -------------------------------------------------------------------------
+  it('R22-3: top-level item: {} (non-array object) returns empty entries without throwing', async () => {
+    const collection = {
+      info: { name: 'BadItem', schema: '' },
+      // TypeScript types say PostmanItem[], but untrusted JSON may send an object
+      item: {} as unknown,
+    };
+
+    const filePath = resolve(tempDir, 'bad-item.json');
+    await writeFile(filePath, JSON.stringify(collection));
+
+    const { entries, collectionName } = await loadPostmanCollection(filePath);
+    expect(collectionName).toBe('BadItem');
+    expect(entries).toHaveLength(0);
+  });
+
+  it('R22-3: nested item: {} inside a folder is skipped without crashing, sibling requests still load', async () => {
+    const collection = {
+      info: { name: 'NestedBadItem', schema: '' },
+      item: [
+        {
+          name: 'BadFolder',
+          // non-array nested item — flattenItems must guard the recursive call
+          item: {} as unknown,
+        },
+        {
+          name: 'GoodRequest',
+          request: { method: 'GET', url: 'https://api.test.com/good' },
+        },
+      ],
+    };
+
+    const filePath = resolve(tempDir, 'nested-bad-item.json');
+    await writeFile(filePath, JSON.stringify(collection));
+
+    const { entries } = await loadPostmanCollection(filePath);
+    expect(entries).toHaveLength(1);
+    expect(entries[0].request.url).toContain('api.test.com/good');
+  });
+
+  // -------------------------------------------------------------------------
+  // R22-4: object-url with empty host must not crash resolveUrl
+  // -------------------------------------------------------------------------
+  it('R22-4: object url with host: [] (empty array) skips that entry without throwing, valid sibling loads', async () => {
+    const collection = {
+      info: { name: 'EmptyHost', schema: '' },
+      item: [
+        {
+          name: 'BadHostItem',
+          request: {
+            method: 'GET',
+            // host: [] → joined string is "" → should be treated as localhost
+            // but protocol+path may still form a parseable URL; primary test is no crash
+            url: { protocol: 'not a valid protocol!!', host: [], path: ['api'] },
+          },
+        },
+        {
+          name: 'GoodItem',
+          request: {
+            method: 'GET',
+            url: 'https://api.test.com/users',
+          },
+        },
+      ],
+    };
+
+    const filePath = resolve(tempDir, 'empty-host.json');
+    await writeFile(filePath, JSON.stringify(collection));
+
+    // Must not throw — bad entry is skipped, good entry still loads
+    const { entries } = await loadPostmanCollection(filePath);
+    expect(entries.some((e) => e.request.url.includes('api.test.com/users'))).toBe(true);
+  });
+
+  it('R22-4: object url with host: [] falls back to localhost when protocol is valid', async () => {
+    const collection = {
+      info: { name: 'LocalhostFallback', schema: '' },
+      item: [
+        {
+          name: 'EmptyHostItem',
+          request: {
+            method: 'GET',
+            // host: [] with valid protocol — must use localhost fallback
+            url: { protocol: 'https', host: [], path: ['health'] },
+          },
+        },
+      ],
+    };
+
+    const filePath = resolve(tempDir, 'localhost-fallback.json');
+    await writeFile(filePath, JSON.stringify(collection));
+
+    const { entries } = await loadPostmanCollection(filePath);
+    expect(entries).toHaveLength(1);
+    expect(entries[0].request.url).toContain('localhost');
+  });
 });

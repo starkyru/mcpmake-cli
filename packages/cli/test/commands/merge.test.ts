@@ -7,7 +7,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { mergePathItemParameters } from '../../src/commands/merge.js';
+import { mergePathItemParameters, mergeSpecs } from '../../src/commands/merge.js';
 import type { OpenAPIV3 } from 'openapi-types';
 
 // ---------------------------------------------------------------------------
@@ -84,5 +84,74 @@ describe('mergeSpecs — path-level parameters (R13-B)', () => {
 
   it('handles both empty — returns empty', () => {
     expect(mergePathItemParameters([], [])).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// R22-5: null path-item guard in mergeSpecs
+// ---------------------------------------------------------------------------
+
+function makeMinimalSpec(
+  paths: Record<string, OpenAPIV3.PathItemObject | null>,
+): OpenAPIV3.Document {
+  return {
+    openapi: '3.0.0',
+    info: { title: 'Test', version: '1.0.0' },
+    paths: paths as OpenAPIV3.PathsObject,
+  };
+}
+
+describe('mergeSpecs — null path-item guard (R22-5)', () => {
+  it('does not throw when other spec has a null path item for a shared path; keeps base path item', () => {
+    const base = makeMinimalSpec({
+      '/x': { get: { responses: { '200': { description: 'ok' } } } },
+    });
+    const other = makeMinimalSpec({
+      '/x': null,
+    });
+
+    let merged: OpenAPIV3.Document;
+    expect(() => {
+      merged = mergeSpecs(base, other);
+    }).not.toThrow();
+
+    // null in other → keep base path item
+    expect(merged!.paths['/x']).toBeDefined();
+    const pathItem = merged!.paths['/x'] as OpenAPIV3.PathItemObject;
+    expect(pathItem.get).toBeDefined();
+  });
+
+  it('does not throw when base spec has a null path item for a shared path; keeps other path item', () => {
+    const base = makeMinimalSpec({ '/x': null });
+    const other = makeMinimalSpec({
+      '/x': { post: { responses: { '201': { description: 'created' } } } },
+    });
+
+    let merged: OpenAPIV3.Document;
+    expect(() => {
+      merged = mergeSpecs(base, other);
+    }).not.toThrow();
+
+    // null in base → keep other path item
+    const pathItem = merged!.paths['/x'] as OpenAPIV3.PathItemObject;
+    expect(pathItem.post).toBeDefined();
+  });
+
+  it('does not throw when both specs have a null path item for the same path', () => {
+    const base = makeMinimalSpec({ '/x': null });
+    const other = makeMinimalSpec({ '/x': null });
+
+    expect(() => mergeSpecs(base, other)).not.toThrow();
+  });
+
+  it('still throws on a real method conflict when both path items are non-null', () => {
+    const base = makeMinimalSpec({
+      '/x': { get: { responses: { '200': { description: 'ok' } } } },
+    });
+    const other = makeMinimalSpec({
+      '/x': { get: { responses: { '200': { description: 'also ok' } } } },
+    });
+
+    expect(() => mergeSpecs(base, other)).toThrow(/Path conflict/);
   });
 });

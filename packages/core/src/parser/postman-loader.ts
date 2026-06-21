@@ -53,6 +53,9 @@ export async function loadPostmanCollection(filePath: string): Promise<{
   if (!collection.info || !collection.item) {
     throw new Error('Invalid Postman collection: missing info or item fields');
   }
+  if (!Array.isArray(collection.item)) {
+    return { entries: [], collectionName: collection.info.name };
+  }
 
   // Resolve variables
   const vars = new Map<string, string>();
@@ -72,6 +75,10 @@ function flattenItems(
   vars: Map<string, string>,
   depth = 0,
 ): void {
+  // R22-3: a non-array `item` (e.g. `item: {}`) passes the truthy check in the
+  // caller but is not iterable. Treat it as an empty folder rather than crashing.
+  if (!Array.isArray(items)) return;
+
   // A4-3: cap folder nesting to prevent stack-overflow DoS from adversarially
   // crafted deeply nested Postman collections.
   if (depth > 100) {
@@ -156,11 +163,21 @@ function resolveUrl(url: PostmanUrl | string, vars: Map<string, string>): string
   if (url.raw) return resolveVars(url.raw, vars);
 
   const protocol = url.protocol ?? 'https';
-  const host = url.host?.join('.') ?? 'localhost';
+  // R22-4a: `[].join('.')` yields `""` which is not nullish, so `?? 'localhost'`
+  // would not fall back. Treat an empty/blank joined host as missing.
+  const h = url.host?.join('.');
+  const host = h && h.trim() ? h : 'localhost';
   const path = url.path?.join('/') ?? '';
   const base = `${protocol}://${host}/${path}`;
 
-  const parsed = new URL(resolveVars(base, vars));
+  // R22-4b: wrap in try/catch — a bad object url (invalid chars, etc.) returns
+  // null so this entry is skipped, matching the string-branch behaviour above.
+  let parsed: URL;
+  try {
+    parsed = new URL(resolveVars(base, vars));
+  } catch {
+    return null;
+  }
   for (const q of url.query ?? []) {
     parsed.searchParams.set(q.key, resolveVars(q.value, vars));
   }

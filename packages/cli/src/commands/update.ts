@@ -92,6 +92,11 @@ export default defineCommand({
     );
     const serverName = pkgJson.name;
 
+    if (typeof serverName !== 'string' || serverName.trim() === '') {
+      await fail(`package.json in ${projectDir} is missing a valid "name" field`);
+      return;
+    }
+
     // Regenerate the full project (force overwrite)
     await emitProject(
       {
