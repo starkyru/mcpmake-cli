@@ -75,14 +75,15 @@ Copy `.env.example` to `.env` and fill in:
 {{#each authEnvVars}}
 | `{{name}}` | {{description}} | {{#if required}}Yes{{else}}No{{/if}} |
 {{/each}}
-| `MAX_RETRIES` | Max retry attempts (default: 3) | No |
-| `REQUEST_INTERVAL_MS` | Min ms between requests (default: 100) | No |
+| `MAX_RETRIES` | Max retry attempts (default: 3; `0` disables retries) | No |
+| `REQUEST_INTERVAL_MS` | Min ms between requests (default: 100; `0` disables throttling) | No |
 | `MCP_ENVIRONMENTS` | JSON map of environment name → base URL (e.g. `{"production":"…","sandbox":"…"}`) | No |
 | `API_ENVIRONMENT` | Selects a named environment from `MCP_ENVIRONMENTS` (falls back to `BASE_URL`) | No |
 | `MCP_TOOLS` | Comma-separated allowlist of tool names to register | No |
 | `MCP_EXCLUDE_TOOLS` | Comma-separated denylist of tool names to skip | No |
 | `MCP_DEFAULT_HEADERS` | JSON object of headers added to every upstream request | No |
 | `MCP_IDEMPOTENCY_AUTO` | `true` to auto-generate an `Idempotency-Key` for mutating requests | No |
+| `MCP_MAX_SSE_CONNECTIONS` | Max concurrent task-streaming SSE connections (default: 500; HTTP transport only) | No |
 
 ### Named environments
 
