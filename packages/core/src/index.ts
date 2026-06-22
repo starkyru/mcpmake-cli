@@ -19,6 +19,8 @@ export type { EmitOptions } from './emitter/index.js';
 export { generateMcpb } from './emitter/mcpb-bundler.js';
 export { renderTemplate } from './emitter/template-loader.js';
 export { scaffoldSharedModules } from './emitter/project-scaffolder.js';
+export { normalizeTree, treeFingerprint } from './emitter/normalize-tree.js';
+export type { CodeUnit } from './emitter/code-writer.js';
 
 // ---------------------------------------------------------------------------
 // Parser (OpenAPI / HAR / Postman ingestion)

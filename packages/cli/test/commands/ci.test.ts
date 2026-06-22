@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { parse as parseYaml } from 'yaml';
 import { buildWorkflowYaml } from '../../src/commands/ci.js';
 
 describe('ci init: buildWorkflowYaml', () => {
@@ -80,5 +81,77 @@ describe('ci init: buildWorkflowYaml', () => {
     for (const ok of ['api-spec.yaml', 'specs/api.yaml', './mcp-server', 'my..spec.yaml']) {
       expect(() => buildWorkflowYaml({ ...base, spec: ok, output: ok })).not.toThrow();
     }
+  });
+
+  describe('--pr (maintenance PR) mode', () => {
+    const base = {
+      spec: 'api.yaml',
+      output: './server',
+      source: 'openapi' as const,
+      transport: 'stdio' as const,
+      version: 'latest',
+    };
+
+    it('emits write permissions + the create-pull-request step, and DROPS the fail gate', () => {
+      const y = buildWorkflowYaml({ ...base, openPr: true });
+
+      // Write scopes are granted (needed to push the branch + open the PR).
+      expect(y).toMatch(/permissions:\n {6}contents: write\n {6}pull-requests: write/);
+      // The PR action with the default branch + scoped add-paths.
+      expect(y).toContain('uses: peter-evans/create-pull-request@v6');
+      expect(y).toContain("branch: 'mcpmake/regenerate'");
+      expect(y).toContain('add-paths: "./server"');
+      // The drift gate (fail/exit 1) is replaced, not appended.
+      expect(y).not.toContain('exit 1');
+      expect(y).not.toContain('git status --porcelain');
+    });
+
+    it('honors a custom --pr-branch', () => {
+      const y = buildWorkflowYaml({ ...base, openPr: true, prBranch: 'bot/sync-server' });
+      expect(y).toContain("branch: 'bot/sync-server'");
+    });
+
+    it('default (no --pr) mode emits NO permissions and NO PR action', () => {
+      const y = buildWorkflowYaml(base);
+      expect(y).not.toContain('permissions:');
+      expect(y).not.toContain('create-pull-request');
+      // ...and keeps the drift gate.
+      expect(y).toContain('exit 1');
+    });
+
+    it('rejects an unsafe --pr-branch (injection, traversal, leading dash)', () => {
+      for (const bad of ['$(evil)', '../escape', '/abs', '-flag', 'a"; evil; "']) {
+        expect(() => buildWorkflowYaml({ ...base, openPr: true, prBranch: bad })).toThrow(/Unsafe/);
+      }
+    });
+
+    it('does not validate --pr-branch when --pr is off (branch is unused)', () => {
+      expect(() =>
+        buildWorkflowYaml({ ...base, openPr: false, prBranch: '$(evil)' }),
+      ).not.toThrow();
+    });
+
+    it('emits structurally valid YAML with the right job shape in BOTH modes', () => {
+      // Drift-gate mode: no job-level permissions, no PR step.
+      const gate = parseYaml(buildWorkflowYaml(base)) as Record<string, any>;
+      expect(gate.name).toBe('mcpmake');
+      expect(gate.jobs.sync['runs-on']).toBe('ubuntu-latest');
+      expect(gate.jobs.sync.permissions).toBeUndefined();
+      const gateUses = gate.jobs.sync.steps.map((s: any) => s.uses).filter(Boolean);
+      expect(gateUses).not.toContain('peter-evans/create-pull-request@v6');
+
+      // PR mode: job-scoped write permissions + the PR step present.
+      const pr = parseYaml(buildWorkflowYaml({ ...base, openPr: true })) as Record<string, any>;
+      expect(pr.jobs.sync.permissions).toEqual({
+        contents: 'write',
+        'pull-requests': 'write',
+      });
+      const prStep = pr.jobs.sync.steps.find(
+        (s: any) => s.uses === 'peter-evans/create-pull-request@v6',
+      );
+      expect(prStep).toBeDefined();
+      expect(prStep.with.branch).toBe('mcpmake/regenerate');
+      expect(prStep.with['add-paths']).toBe('./server');
+    });
   });
 });
