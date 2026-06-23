@@ -8,6 +8,7 @@ import { extractOperations } from '@mcpmake/core';
 import { detectAuthSchemes } from '@mcpmake/core';
 import { buildAllTools } from '@mcpmake/core';
 import { filterOperations } from '@mcpmake/core';
+import { confirmOperations } from '@mcpmake/core';
 import { improveToolNames } from '@mcpmake/core';
 import { resourceTreeNames } from '@mcpmake/core';
 import { buildResources, buildPrompts } from '@mcpmake/core';
@@ -75,6 +76,12 @@ export default defineConfigurableCommand('openapi', {
       type: 'string',
       alias: 'e',
       description: 'Exclude operations matching these patterns (comma-separated)',
+    },
+    interactive: {
+      type: 'boolean',
+      description:
+        'Curate: review the operations and select which to keep before generation (for large APIs)',
+      default: false,
     },
     'dry-run': {
       type: 'boolean',
@@ -205,7 +212,17 @@ export default defineConfigurableCommand('openapi', {
       logger.info(`${filtered.length} operations after filtering`);
     }
 
-    let tools = buildAllTools(filtered);
+    // Curate: for a large API, interactively select which operations to keep (after any
+    // --include/--exclude pre-filter). Same review flow as `from har`/`from url`.
+    let selected = filtered;
+    if (args.interactive) {
+      selected = await confirmOperations(filtered);
+      if (selected.length === 0) {
+        await fail('No operations selected — nothing to generate.');
+      }
+    }
+
+    let tools = buildAllTools(selected);
     if (args.client) {
       tools = applyClientCompat(tools, args.client as ClientMode);
     }
@@ -225,8 +242,8 @@ export default defineConfigurableCommand('openapi', {
     const transport =
       target === 'cloudflare' ? 'http' : args.transport === 'http' ? 'http' : 'stdio';
 
-    const resources = args['no-resources'] ? [] : buildResources(filtered);
-    const prompts = args['no-prompts'] ? [] : buildPrompts(filtered);
+    const resources = args['no-resources'] ? [] : buildResources(selected);
+    const prompts = args['no-prompts'] ? [] : buildPrompts(selected);
 
     const dynamicDiscovery = args['dynamic-discovery'] ?? false;
     const staticToolCount = args['static-tools']

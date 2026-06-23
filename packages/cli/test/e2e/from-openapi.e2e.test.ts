@@ -89,6 +89,35 @@ describe.skipIf(!E2E)('e2e: from openapi (petstore)', () => {
     });
   });
 
+  // Count per-tool files (one src/tools/<name>.ts per operation; index.ts is the registry).
+  const toolFiles = (out: string): string[] =>
+    listTree(out).filter((f) => /^src\/tools\/.+\.ts$/.test(f) && f !== 'src/tools/index.ts');
+
+  it('--interactive curates operations before generation (keep-all vs exclude-one)', async () => {
+    await withTempDir(async (dir) => {
+      // Keep all: pressing Enter (empty answer) keeps every operation → all 4 tools.
+      const outAll = join(dir, 'all');
+      const rAll = await runCli(['from', 'openapi', SPEC, '-o', outAll, '--interactive'], {
+        cwd: dir,
+        input: '\n',
+      });
+      expect(rAll.code, combined(rAll)).toBe(0);
+      // confirmOperations lists the operations for review.
+      expect(combined(rAll)).toContain('Detected 4 operations');
+      expect(toolFiles(outAll).length).toBe(4);
+
+      // Exclude operation #1 → it is dropped: 3 tools generated.
+      const outSel = join(dir, 'sel');
+      const rSel = await runCli(['from', 'openapi', SPEC, '-o', outSel, '--interactive'], {
+        cwd: dir,
+        input: '1\n',
+      });
+      expect(rSel.code, combined(rSel)).toBe(0);
+      expect(combined(rSel)).toContain('Proceeding with 3 operations');
+      expect(toolFiles(outSel).length).toBe(3);
+    });
+  });
+
   it('--dry-run previews files but writes nothing to disk', async () => {
     await withTempDir(async (dir) => {
       const out = join(dir, 'out');
