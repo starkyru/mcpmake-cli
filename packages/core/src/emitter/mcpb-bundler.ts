@@ -52,17 +52,112 @@ export async function assertZipAvailable(checker: ZipChecker = defaultZipChecker
   }
 }
 
+/**
+ * The .mcpb manifest, conformant to the official MCPB manifest schema (`manifest_version`
+ * "0.3"; https://github.com/anthropics/mcpb). NOT a custom shape — Claude Desktop / the MCPB
+ * loader validate the bundle against this schema, so the field names + nesting must match
+ * exactly (e.g. `author` is an object, `entry_point`/`type`/`mcp_config` live under `server`,
+ * and configurable env vars become `user_config`, not a flat `env_vars`).
+ */
+export interface McpbAuthor {
+  name: string;
+  email?: string;
+  url?: string;
+}
+
+export interface McpbUserConfigEntry {
+  type: 'string' | 'number' | 'boolean' | 'directory' | 'file';
+  title: string;
+  description?: string;
+  required?: boolean;
+  sensitive?: boolean;
+}
+
+export interface McpbServer {
+  type: 'node' | 'python' | 'binary';
+  entry_point: string;
+  mcp_config: {
+    command: string;
+    args: string[];
+    env?: Record<string, string>;
+  };
+}
+
 export interface McpbManifest {
-  schema_version: string;
+  manifest_version: string;
+  name: string;
+  display_name?: string;
+  version: string;
+  description: string;
+  author: McpbAuthor;
+  license?: string;
+  server: McpbServer;
+  tools?: { name: string; description?: string }[];
+  user_config?: Record<string, McpbUserConfigEntry>;
+}
+
+/** The MCPB manifest schema version this bundler targets. Bump on an MCPB manifest-spec update. */
+export const MCPB_MANIFEST_VERSION = '0.3';
+
+/** An env var name that names a secret → mark its user_config entry `sensitive`. */
+const SENSITIVE_ENV_RE = /KEY|TOKEN|SECRET|PASSWORD|PASS|CREDENTIAL|PRIVATE/i;
+
+/**
+ * Build a schema-conformant MCPB manifest from a project's metadata. PURE + exported so the
+ * shape is validated against the official schema in tests without building the whole zip.
+ * Configurable env vars become `user_config` entries AND are wired into `server.mcp_config.env`
+ * as `${user_config.<key>}` so the user-supplied values reach the server process.
+ */
+export function buildMcpbManifest(input: {
   name: string;
   version: string;
   description: string;
-  author: string;
-  license: string;
-  runtime: string;
-  entry_point: string;
+  author?: string | McpbAuthor;
+  license?: string;
+  entryPoint?: string;
   tools: { name: string; description: string }[];
-  env_vars: { name: string; description: string; required: boolean }[];
+  envVars: { name: string; description: string; required: boolean }[];
+}): McpbManifest {
+  const entry = input.entryPoint ?? 'server/dist/index.js';
+  const author: McpbAuthor =
+    typeof input.author === 'string'
+      ? { name: input.author.trim() || input.name }
+      : (input.author ?? { name: input.name });
+
+  const user_config: Record<string, McpbUserConfigEntry> = {};
+  const env: Record<string, string> = {};
+  for (const v of input.envVars) {
+    const key = v.name.toLowerCase();
+    user_config[key] = {
+      type: 'string',
+      title: v.name,
+      ...(v.description ? { description: v.description } : {}),
+      required: v.required,
+      sensitive: SENSITIVE_ENV_RE.test(v.name),
+    };
+    env[v.name] = `\${user_config.${key}}`;
+  }
+
+  return {
+    manifest_version: MCPB_MANIFEST_VERSION,
+    name: input.name,
+    version: input.version,
+    // `description` is required by the schema; never emit empty.
+    description: input.description.trim() || `MCP server for ${input.name}`,
+    author,
+    ...(input.license ? { license: input.license } : {}),
+    server: {
+      type: 'node',
+      entry_point: entry,
+      mcp_config: {
+        command: 'node',
+        args: [`\${__dirname}/${entry}`],
+        ...(Object.keys(env).length > 0 ? { env } : {}),
+      },
+    },
+    tools: input.tools,
+    ...(Object.keys(user_config).length > 0 ? { user_config } : {}),
+  };
 }
 
 /**
@@ -104,18 +199,18 @@ export async function generateMcpb(opts: {
   // Extract env vars from .env.example
   const envVars = await extractEnvVars(projectDir);
 
-  // Build the manifest
+  // Build a schema-conformant MCPB manifest, then apply any caller overrides on top.
   const manifest: McpbManifest = {
-    schema_version: '1.0',
-    name: opts.manifest?.name ?? projectName,
-    version: opts.manifest?.version ?? projectVersion,
-    description: opts.manifest?.description ?? projectDescription,
-    author: opts.manifest?.author ?? '',
-    license: opts.manifest?.license ?? 'proprietary',
-    runtime: opts.manifest?.runtime ?? 'node',
-    entry_point: opts.manifest?.entry_point ?? 'server/dist/index.js',
-    tools: opts.manifest?.tools ?? tools,
-    env_vars: opts.manifest?.env_vars ?? envVars,
+    ...buildMcpbManifest({
+      name: projectName,
+      version: projectVersion,
+      description: projectDescription,
+      author: typeof pkgJson.author === 'string' ? pkgJson.author : undefined,
+      license: typeof pkgJson.license === 'string' ? pkgJson.license : undefined,
+      tools,
+      envVars,
+    }),
+    ...opts.manifest,
   };
 
   // Create temp staging directory

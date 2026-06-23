@@ -110,25 +110,42 @@ describe.skipIf(!E2E || !!skipReason)('e2e bundle: .mcpb packaging of a generate
       // The stripped server package.json is also part of the documented layout.
       expect(entries).toContain('server/package.json');
 
-      // manifest.json must parse and carry every required field.
+      // manifest.json must parse and carry the schema-conformant MCPB shape (v0.3).
       const manifest = JSON.parse(await readZipMember(outPath, 'manifest.json')) as {
-        schema_version: string;
+        manifest_version: string;
         name: string;
         version: string;
-        tools: { name: string; description: string }[];
-        env_vars: { name: string; description: string; required: boolean }[];
+        author: { name: string };
+        server: { type: string; entry_point: string; mcp_config: { command: string } };
+        tools: { name: string; description?: string }[];
+        user_config: Record<string, { type: string; title: string; required?: boolean }>;
       };
-      for (const key of ['schema_version', 'name', 'version', 'tools', 'env_vars'] as const) {
+      for (const key of [
+        'manifest_version',
+        'name',
+        'version',
+        'author',
+        'server',
+        'tools',
+      ] as const) {
         expect(manifest, `manifest missing field: ${key}`).toHaveProperty(key);
       }
-      expect(manifest.schema_version).toBe('1.0');
+      // Official MCPB manifest version (NOT the old custom schema_version: '1.0').
+      expect(manifest.manifest_version).toBe('0.3');
       expect(manifest.name).toBe(EXPECTED_NAME);
       expect(manifest.version).toBe(EXPECTED_VERSION);
+      // author is an OBJECT (schema requires author.name).
+      expect(typeof manifest.author.name).toBe('string');
+      // entry_point/type/mcp_config live under `server` per the schema.
+      expect(manifest.server.type).toBe('node');
+      expect(manifest.server.entry_point).toBe('server/dist/index.js');
+      expect(manifest.server.mcp_config.command).toBe('node');
       // Exactly the petstore's four tools were extracted from src/tools/*.ts.
       expect(manifest.tools.map((t) => t.name).sort()).toEqual(EXPECTED_TOOL_NAMES);
-      // env_vars is populated from .env.example (BASE_URL is always present).
-      expect(manifest.env_vars.map((v) => v.name)).toContain('BASE_URL');
-      expect(manifest.env_vars.every((v) => v.required === true)).toBe(true);
+      // .env.example env vars become user_config entries (BASE_URL → key base_url).
+      expect(manifest.user_config).toHaveProperty('base_url');
+      expect(manifest.user_config.base_url.title).toBe('BASE_URL');
+      expect(manifest.user_config.base_url.required).toBe(true);
     });
   });
 
