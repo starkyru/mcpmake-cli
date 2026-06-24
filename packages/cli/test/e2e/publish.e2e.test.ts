@@ -95,6 +95,23 @@ describe.skipIf(!E2E)('e2e publish: registry manifests (local fs)', () => {
     });
   });
 
+  it('--preview prints the registry manifest(s) to stdout and writes no files', async () => {
+    await withTempDir(async (dir) => {
+      makeProject(dir);
+      const r = await runCli(['publish', dir, '--preview'], { cwd: dir });
+      expect(r.code, combined(r)).toBe(0);
+      const out = combined(r);
+      // Default previews BOTH smithery + glama.
+      expect(out).toContain('# smithery.yaml');
+      expect(out).toContain('// glama.json');
+      expect(out).toContain('my-cool-mcp');
+      expect(out).toContain('get_weather');
+      // A preview must never touch the project directory.
+      expect(existsSync(join(dir, 'smithery.yaml'))).toBe(false);
+      expect(existsSync(join(dir, 'glama.json'))).toBe(false);
+    });
+  });
+
   it('--registry glama writes a glama.json with the project name + tools', async () => {
     await withTempDir(async (dir) => {
       makeProject(dir);

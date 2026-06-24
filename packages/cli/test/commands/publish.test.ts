@@ -2,7 +2,49 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { mkdtemp, rm, writeFile, mkdir } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { confirmPush, detectTransport } from '../../src/commands/publish.js';
+import {
+  confirmPush,
+  detectTransport,
+  buildSmitheryManifest,
+  buildGlamaManifest,
+} from '../../src/commands/publish.js';
+
+describe('registry manifest builders (preview/write share these)', () => {
+  const manifest = {
+    name: 'petstore',
+    version: '1.2.3',
+    description: 'A petstore server',
+    transport: 'stdio' as const,
+    tools: [
+      { name: 'list_pets', description: 'List pets' },
+      { name: 'create_pet', description: 'Create a pet' },
+    ],
+  };
+
+  it('buildSmitheryManifest maps name/description/version/transport/tools', () => {
+    expect(buildSmitheryManifest(manifest)).toEqual({
+      name: 'petstore',
+      description: 'A petstore server',
+      version: '1.2.3',
+      transport: 'stdio',
+      tools: [
+        { name: 'list_pets', description: 'List pets' },
+        { name: 'create_pet', description: 'Create a pet' },
+      ],
+    });
+  });
+
+  it('buildGlamaManifest emits the glama field order (version before description)', () => {
+    expect(Object.keys(buildGlamaManifest(manifest))).toEqual([
+      'name',
+      'version',
+      'description',
+      'transport',
+      'tools',
+    ]);
+    expect(buildGlamaManifest(manifest)).toMatchObject({ name: 'petstore', transport: 'stdio' });
+  });
+});
 
 describe('detectTransport (A4-6) — reads src/index.ts, not a duplicate path', () => {
   let tmp: string;

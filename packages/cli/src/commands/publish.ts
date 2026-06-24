@@ -81,6 +81,12 @@ export default defineCommand({
         'Skip the interactive confirmation before --push (required in non-interactive runs)',
       default: false,
     },
+    preview: {
+      type: 'boolean',
+      description:
+        'Preview the registry manifest(s) (server.json / smithery.yaml / glama.json) to stdout WITHOUT writing files or publishing',
+      default: false,
+    },
   },
   async run({ args }) {
     const projectDir = resolve(args.directory);
@@ -105,6 +111,7 @@ export default defineCommand({
         remoteUrl: args['remote-url'],
         push: args.push ?? false,
         yes: args.yes ?? false,
+        preview: args.preview ?? false,
       });
       return;
     }
@@ -129,6 +136,19 @@ export default defineCommand({
 
     const generateSmithery = !registry || registry === 'smithery';
     const generateGlama = !registry || registry === 'glama';
+
+    if (args.preview) {
+      // Preview: print the manifest(s) to stdout — never touch the project dir.
+      if (generateSmithery) {
+        process.stdout.write('# smithery.yaml\n');
+        process.stdout.write(yamlStringify(buildSmitheryManifest(manifest), { lineWidth: 120 }));
+      }
+      if (generateGlama) {
+        process.stdout.write('// glama.json\n');
+        process.stdout.write(JSON.stringify(buildGlamaManifest(manifest), null, 2) + '\n');
+      }
+      return;
+    }
 
     if (generateSmithery) {
       await writeSmitheryManifest(projectDir, manifest);
@@ -250,40 +270,40 @@ async function extractTools(projectDir: string): Promise<ToolInfo[]> {
   return tools;
 }
 
-async function writeSmitheryManifest(
-  projectDir: string,
-  manifest: RegistryManifest,
-): Promise<void> {
-  const smitheryData = {
+/** The Smithery manifest object for a server (pure — used by both write + preview). */
+export function buildSmitheryManifest(manifest: RegistryManifest): Record<string, unknown> {
+  return {
     name: manifest.name,
     description: manifest.description,
     version: manifest.version,
     transport: manifest.transport,
-    tools: manifest.tools.map((t) => ({
-      name: t.name,
-      description: t.description,
-    })),
+    tools: manifest.tools.map((t) => ({ name: t.name, description: t.description })),
   };
+}
 
-  const yamlContent = yamlStringify(smitheryData, { lineWidth: 120 });
+/** The Glama manifest object for a server (pure — used by both write + preview). */
+export function buildGlamaManifest(manifest: RegistryManifest): Record<string, unknown> {
+  return {
+    name: manifest.name,
+    version: manifest.version,
+    description: manifest.description,
+    transport: manifest.transport,
+    tools: manifest.tools.map((t) => ({ name: t.name, description: t.description })),
+  };
+}
+
+async function writeSmitheryManifest(
+  projectDir: string,
+  manifest: RegistryManifest,
+): Promise<void> {
+  const yamlContent = yamlStringify(buildSmitheryManifest(manifest), { lineWidth: 120 });
   const outputPath = resolve(projectDir, 'smithery.yaml');
   await writeFile(outputPath, yamlContent, 'utf-8');
   logger.success(`Generated ${outputPath}`);
 }
 
 async function writeGlamaManifest(projectDir: string, manifest: RegistryManifest): Promise<void> {
-  const glamaData = {
-    name: manifest.name,
-    version: manifest.version,
-    description: manifest.description,
-    transport: manifest.transport,
-    tools: manifest.tools.map((t) => ({
-      name: t.name,
-      description: t.description,
-    })),
-  };
-
-  const jsonContent = JSON.stringify(glamaData, null, 2) + '\n';
+  const jsonContent = JSON.stringify(buildGlamaManifest(manifest), null, 2) + '\n';
   const outputPath = resolve(projectDir, 'glama.json');
   await writeFile(outputPath, jsonContent, 'utf-8');
   logger.success(`Generated ${outputPath}`);
@@ -298,6 +318,7 @@ interface OfficialOpts {
   remoteUrl?: string;
   push: boolean;
   yes: boolean;
+  preview?: boolean;
 }
 
 /**
@@ -352,6 +373,13 @@ async function publishOfficial(
     environmentVariables: envVars,
     remoteUrl: opts.remoteUrl,
   });
+
+  if (opts.preview) {
+    // Preview: print the server.json the official registry would receive; write nothing,
+    // touch no package.json mcpName, run no publisher.
+    process.stdout.write(JSON.stringify(serverJson, null, 2) + '\n');
+    return;
+  }
 
   const serverJsonPath = resolve(projectDir, 'server.json');
   await writeFile(serverJsonPath, JSON.stringify(serverJson, null, 2) + '\n', 'utf-8');
