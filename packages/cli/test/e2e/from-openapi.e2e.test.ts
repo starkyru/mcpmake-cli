@@ -118,6 +118,34 @@ describe.skipIf(!E2E)('e2e: from openapi (petstore)', () => {
     });
   });
 
+  it('--mcp-ui emits a ui:// tool-launcher module and registers it in the server', async () => {
+    await withTempDir(async (dir) => {
+      const out = join(dir, 'out');
+      const r = await runCli(['from', 'openapi', SPEC, '-o', out, '--mcp-ui'], { cwd: dir });
+      expect(r.code, combined(r)).toBe(0);
+
+      // The MCP Apps module is emitted and registered in the server entry.
+      expect(listTree(out)).toContain('src/mcp-ui.ts');
+      expect(readFileSync(join(out, 'src/index.ts'), 'utf8')).toContain('registerMcpUi(server)');
+
+      // The module exposes a conformant UIResource (ui:// + mcp-app MIME) carrying the tools.
+      const ui = readFileSync(join(out, 'src/mcp-ui.ts'), 'utf8');
+      expect(ui).toContain('ui://swagger-petstore/tools');
+      expect(ui).toContain('text/html;profile=mcp-app');
+      expect(ui).toContain("window.parent.postMessage({ type: 'tool'");
+      expect(ui).toContain('list_pets');
+    });
+  });
+
+  it('default generation does NOT emit the mcp-ui module (opt-in)', async () => {
+    await withTempDir(async (dir) => {
+      const out = join(dir, 'out');
+      await runCli(['from', 'openapi', SPEC, '-o', out], { cwd: dir });
+      expect(existsSync(join(out, 'src/mcp-ui.ts'))).toBe(false);
+      expect(readFileSync(join(out, 'src/index.ts'), 'utf8')).not.toContain('registerMcpUi');
+    });
+  });
+
   it('--dry-run previews files but writes nothing to disk', async () => {
     await withTempDir(async (dir) => {
       const out = join(dir, 'out');

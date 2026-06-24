@@ -1,6 +1,7 @@
 import type { ProjectManifest } from '../types/index.js';
 import type { CodeUnit } from './code-writer.js';
 import { renderTemplate } from './template-loader.js';
+import { buildMcpUiModule } from './mcp-ui.js';
 
 /**
  * At/above this tool count, registering every tool upfront is a real token-cost
@@ -92,6 +93,7 @@ export function scaffoldSharedModules(manifest: ProjectManifest): CodeUnit[] {
   const hasDynamicDiscovery = manifest.dynamicDiscovery ?? false;
   const hasStaticTools = !hasDynamicDiscovery || (manifest.staticToolCount ?? 0) > 0;
   const hasAsyncTools = manifest.tools.some((t) => t.isAsync);
+  const hasMcpUi = manifest.mcpUi ?? false;
   const templateData = {
     ...manifest,
     hasResources: (manifest.resources?.length ?? 0) > 0,
@@ -100,8 +102,9 @@ export function scaffoldSharedModules(manifest: ProjectManifest): CodeUnit[] {
     hasDynamicDiscovery,
     hasStaticTools,
     hasAsyncTools,
+    hasMcpUi,
   };
-  return [
+  const units: CodeUnit[] = [
     {
       filePath: 'src/index.ts',
       content: renderTemplate(
@@ -138,4 +141,18 @@ export function scaffoldSharedModules(manifest: ProjectManifest): CodeUnit[] {
       content: renderTemplate('types.ts', manifest),
     },
   ];
+
+  // MCP Apps output: also ship a ui:// tool-launcher module (registered in src/index.ts
+  // via the hasMcpUi template branch).
+  if (hasMcpUi) {
+    units.push({
+      filePath: 'src/mcp-ui.ts',
+      content: buildMcpUiModule(
+        manifest.serverName,
+        manifest.tools.map((t) => ({ name: t.name, description: t.description ?? '' })),
+      ),
+    });
+  }
+
+  return units;
 }

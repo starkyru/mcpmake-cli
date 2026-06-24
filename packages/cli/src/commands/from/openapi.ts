@@ -83,6 +83,12 @@ export default defineConfigurableCommand('openapi', {
         'Curate: review the operations and select which to keep before generation (for large APIs)',
       default: false,
     },
+    'mcp-ui': {
+      type: 'boolean',
+      description:
+        'MCP Apps output: also emit a ui:// tool-launcher UI (mcp-ui standard) the server exposes',
+      default: false,
+    },
     'dry-run': {
       type: 'boolean',
       description: 'Preview generated files without writing',
@@ -270,6 +276,7 @@ export default defineConfigurableCommand('openapi', {
       ],
       dynamicDiscovery,
       staticToolCount,
+      mcpUi: args['mcp-ui'] ?? false,
       target,
     };
 

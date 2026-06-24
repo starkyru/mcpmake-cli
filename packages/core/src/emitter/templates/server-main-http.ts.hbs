@@ -8,6 +8,9 @@ import { registerAllResources } from './resources.js';
 {{#if hasPrompts}}
 import { registerAllPrompts } from './prompts.js';
 {{/if}}
+{{#if hasMcpUi}}
+import { registerMcpUi } from './mcp-ui.js';
+{{/if}}
 import { loadConfig } from './config.js';
 {{#if hasAsyncTools}}
 import { handleTaskRoutes, handleTaskRpc } from './task-handlers.js';
@@ -157,6 +160,9 @@ function createMcpServer(config: ReturnType<typeof loadConfig>): McpServer {
 {{/if}}
 {{#if hasPrompts}}
   registerAllPrompts(server);
+{{/if}}
+{{#if hasMcpUi}}
+  registerMcpUi(server);
 {{/if}}
   return server;
 }
