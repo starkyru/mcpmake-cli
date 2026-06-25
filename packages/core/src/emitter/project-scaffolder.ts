@@ -2,6 +2,7 @@ import type { ProjectManifest } from '../types/index.js';
 import type { CodeUnit } from './code-writer.js';
 import { renderTemplate } from './template-loader.js';
 import { buildMcpUiModule } from './mcp-ui.js';
+import { buildA2aModule } from './a2a.js';
 
 /**
  * At/above this tool count, registering every tool upfront is a real token-cost
@@ -94,6 +95,7 @@ export function scaffoldSharedModules(manifest: ProjectManifest): CodeUnit[] {
   const hasStaticTools = !hasDynamicDiscovery || (manifest.staticToolCount ?? 0) > 0;
   const hasAsyncTools = manifest.tools.some((t) => t.isAsync);
   const hasMcpUi = manifest.mcpUi ?? false;
+  const hasA2a = manifest.a2a ?? false;
   const templateData = {
     ...manifest,
     hasResources: (manifest.resources?.length ?? 0) > 0,
@@ -103,6 +105,7 @@ export function scaffoldSharedModules(manifest: ProjectManifest): CodeUnit[] {
     hasStaticTools,
     hasAsyncTools,
     hasMcpUi,
+    hasA2a,
   };
   const units: CodeUnit[] = [
     {
@@ -151,6 +154,24 @@ export function scaffoldSharedModules(manifest: ProjectManifest): CodeUnit[] {
         manifest.serverName,
         manifest.tools.map((t) => ({ name: t.name, description: t.description ?? '' })),
       ),
+    });
+  }
+
+  // A2A output: also ship an A2A server-wrapper module (AgentCard + JSON-RPC),
+  // registered in src/index.ts via the hasA2a template branch.
+  if (hasA2a) {
+    units.push({
+      filePath: 'src/a2a.ts',
+      content: buildA2aModule({
+        serverName: manifest.serverName,
+        serverVersion: manifest.serverVersion,
+        baseUrl: manifest.baseUrl,
+        tools: manifest.tools.map((t) => ({
+          name: t.name,
+          title: t.title,
+          description: t.description ?? '',
+        })),
+      }),
     });
   }
 

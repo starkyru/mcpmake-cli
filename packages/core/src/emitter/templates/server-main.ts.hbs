@@ -15,6 +15,9 @@ import { registerAllPrompts } from './prompts.js';
 {{#if hasMcpUi}}
 import { registerMcpUi } from './mcp-ui.js';
 {{/if}}
+{{#if hasA2a}}
+import { registerA2a } from './a2a.js';
+{{/if}}
 import { loadConfig } from './config.js';
 
 const config = loadConfig();
@@ -38,6 +41,19 @@ registerAllPrompts(server);
 {{/if}}
 {{#if hasMcpUi}}
 registerMcpUi(server);
+{{/if}}
+{{#if hasA2a}}
+// A2A wrapper: serves the AgentCard + maps A2A message/send → MCP tools/call against a
+// dedicated server populated with the same tool surface (so it never contends with the
+// stdio transport). The HTTP listener is opt-in via A2A_HTTP=true.
+await registerA2a(server, (s) => {
+{{#if hasStaticTools}}
+  registerAllTools(s, config);
+{{/if}}
+{{#if hasDynamicDiscovery}}
+  registerDiscoveryTools(s, config);
+{{/if}}
+});
 {{/if}}
 
 const transport = new StdioServerTransport();

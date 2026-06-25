@@ -146,6 +146,34 @@ describe.skipIf(!E2E)('e2e: from openapi (petstore)', () => {
     });
   });
 
+  it('--a2a emits the A2A module + agent card and registers it', async () => {
+    await withTempDir(async (dir) => {
+      const out = join(dir, 'out');
+      const r = await runCli(['from', 'openapi', SPEC, '-o', out, '--a2a'], { cwd: dir });
+      expect(r.code, combined(r)).toBe(0);
+
+      // The A2A server-wrapper module is emitted and registered in the server entry.
+      expect(listTree(out)).toContain('src/a2a.ts');
+      expect(readFileSync(join(out, 'src/index.ts'), 'utf8')).toContain('registerA2a');
+
+      // The module carries a conformant AgentCard (well-known path + skills) over the tools.
+      const a2a = readFileSync(join(out, 'src/a2a.ts'), 'utf8');
+      expect(a2a).toContain('/.well-known/agent.json');
+      expect(a2a).toContain('export async function registerA2a(');
+      expect(a2a).toContain("case 'message/send':");
+      expect(a2a).toContain('list_pets'); // one A2A skill per generated tool
+    });
+  });
+
+  it('default generation does NOT emit the a2a module (opt-in)', async () => {
+    await withTempDir(async (dir) => {
+      const out = join(dir, 'out');
+      await runCli(['from', 'openapi', SPEC, '-o', out], { cwd: dir });
+      expect(existsSync(join(out, 'src/a2a.ts'))).toBe(false);
+      expect(readFileSync(join(out, 'src/index.ts'), 'utf8')).not.toContain('registerA2a');
+    });
+  });
+
   it('--dry-run previews files but writes nothing to disk', async () => {
     await withTempDir(async (dir) => {
       const out = join(dir, 'out');

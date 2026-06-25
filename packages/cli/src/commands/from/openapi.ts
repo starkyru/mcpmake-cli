@@ -89,6 +89,12 @@ export default defineConfigurableCommand('openapi', {
         'MCP Apps output: also emit a ui:// tool-launcher UI (mcp-ui standard) the server exposes',
       default: false,
     },
+    a2a: {
+      type: 'boolean',
+      description:
+        'A2A output: also emit an A2A server-wrapper (AgentCard + JSON-RPC) over the generated tools',
+      default: false,
+    },
     'dry-run': {
       type: 'boolean',
       description: 'Preview generated files without writing',
@@ -277,6 +283,7 @@ export default defineConfigurableCommand('openapi', {
       dynamicDiscovery,
       staticToolCount,
       mcpUi: args['mcp-ui'] ?? false,
+      a2a: args['a2a'] ?? false,
       target,
     };
 

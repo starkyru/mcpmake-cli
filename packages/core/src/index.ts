@@ -18,6 +18,14 @@ export {
 export type { EmitOptions } from './emitter/index.js';
 export { generateMcpb } from './emitter/mcpb-bundler.js';
 export { renderTemplate } from './emitter/template-loader.js';
+export {
+  buildAgentCard,
+  agentCardJson,
+  buildA2aModule,
+  A2A_PROTOCOL_VERSION,
+  A2A_AGENT_CARD_PATH,
+} from './emitter/a2a.js';
+export type { A2aTool, A2aCardInputs, A2aSkill, A2aAgentCard } from './emitter/a2a.js';
 export { scaffoldSharedModules } from './emitter/project-scaffolder.js';
 export { normalizeTree, treeFingerprint } from './emitter/normalize-tree.js';
 export type { CodeUnit } from './emitter/code-writer.js';

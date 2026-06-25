@@ -11,6 +11,9 @@ import { registerAllPrompts } from './prompts.js';
 {{#if hasMcpUi}}
 import { registerMcpUi } from './mcp-ui.js';
 {{/if}}
+{{#if hasA2a}}
+import { registerA2a } from './a2a.js';
+{{/if}}
 import { loadConfig } from './config.js';
 {{#if hasAsyncTools}}
 import { handleTaskRoutes, handleTaskRpc } from './task-handlers.js';
@@ -170,6 +173,12 @@ function createMcpServer(config: ReturnType<typeof loadConfig>): McpServer {
 /* ── Bootstrap ───────────────────────────────────────────────────────── */
 
 const config = loadConfig();
+{{#if hasA2a}}
+// A2A wrapper: serves the AgentCard + maps A2A message/send → MCP tools/call against a
+// dedicated server populated with the same tools (so it never contends with the MCP HTTP
+// transport). The A2A HTTP listener is opt-in via A2A_HTTP=true.
+await registerA2a(createMcpServer(config), (s) => registerAllTools(s, config));
+{{/if}}
 const transportMode = process.env.TRANSPORT ?? 'stdio';
 
 if (transportMode === 'http') {

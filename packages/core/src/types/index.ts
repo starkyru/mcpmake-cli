@@ -259,6 +259,8 @@ export interface ProjectManifest {
   staticToolCount?: number;
   /** MCP Apps output: also emit + register a `ui://` tool-launcher (mcp-ui standard). */
   mcpUi?: boolean;
+  /** A2A output: also emit + register an A2A server-wrapper (AgentCard + JSON-RPC). */
+  a2a?: boolean;
   /** Deployment target (default `node`). `cloudflare` emits a Workers project. */
   target?: EmitTarget;
   /**
