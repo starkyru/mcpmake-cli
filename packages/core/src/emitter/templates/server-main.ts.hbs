@@ -18,6 +18,9 @@ import { registerMcpUi } from './mcp-ui.js';
 {{#if hasA2a}}
 import { registerA2a } from './a2a.js';
 {{/if}}
+{{#if hasCompositeTools}}
+import { registerCompositeTools } from './composite-tools.js';
+{{/if}}
 import { loadConfig } from './config.js';
 
 const config = loadConfig();
@@ -41,6 +44,17 @@ registerAllPrompts(server);
 {{/if}}
 {{#if hasMcpUi}}
 registerMcpUi(server);
+{{/if}}
+{{#if hasCompositeTools}}
+// Composite tools run existing tools in sequence via an in-process loopback MCP
+// client populated with the same tool surface (so a step never contends with the
+// stdio transport). The loopback is stood up lazily on the first composite call.
+registerCompositeTools(server, (s) => {
+  registerAllTools(s, config);
+{{#if hasDynamicDiscovery}}
+  registerDiscoveryTools(s, config);
+{{/if}}
+});
 {{/if}}
 {{#if hasA2a}}
 // A2A wrapper: serves the AgentCard + maps A2A message/send → MCP tools/call against a

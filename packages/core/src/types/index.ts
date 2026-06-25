@@ -261,6 +261,14 @@ export interface ProjectManifest {
   mcpUi?: boolean;
   /** A2A output: also emit + register an A2A server-wrapper (AgentCard + JSON-RPC). */
   a2a?: boolean;
+  /**
+   * Composite tools (`compositeTools:` in `.mcpmake.yaml`): each is one MCP tool
+   * that runs several existing generated tools in order, threading data between
+   * them. Opt-in — absent → no `src/composite-tools.ts` is emitted and output is
+   * byte-for-byte unchanged. Loosely typed here ({@link CompositeToolSpec} lives
+   * in the emitter) to avoid a types→emitter import cycle.
+   */
+  compositeTools?: import('../emitter/composite-tools.js').CompositeToolSpec[];
   /** Deployment target (default `node`). `cloudflare` emits a Workers project. */
   target?: EmitTarget;
   /**

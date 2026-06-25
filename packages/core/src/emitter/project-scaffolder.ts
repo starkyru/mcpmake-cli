@@ -3,6 +3,7 @@ import type { CodeUnit } from './code-writer.js';
 import { renderTemplate } from './template-loader.js';
 import { buildMcpUiModule } from './mcp-ui.js';
 import { buildA2aModule } from './a2a.js';
+import { buildCompositeToolsModule } from './composite-tools.js';
 
 /**
  * At/above this tool count, registering every tool upfront is a real token-cost
@@ -96,6 +97,7 @@ export function scaffoldSharedModules(manifest: ProjectManifest): CodeUnit[] {
   const hasAsyncTools = manifest.tools.some((t) => t.isAsync);
   const hasMcpUi = manifest.mcpUi ?? false;
   const hasA2a = manifest.a2a ?? false;
+  const hasCompositeTools = (manifest.compositeTools?.length ?? 0) > 0;
   const templateData = {
     ...manifest,
     hasResources: (manifest.resources?.length ?? 0) > 0,
@@ -106,6 +108,7 @@ export function scaffoldSharedModules(manifest: ProjectManifest): CodeUnit[] {
     hasAsyncTools,
     hasMcpUi,
     hasA2a,
+    hasCompositeTools,
   };
   const units: CodeUnit[] = [
     {
@@ -154,6 +157,18 @@ export function scaffoldSharedModules(manifest: ProjectManifest): CodeUnit[] {
         manifest.serverName,
         manifest.tools.map((t) => ({ name: t.name, description: t.description ?? '' })),
       ),
+    });
+  }
+
+  // Composite tools: also ship a composite-tools module that registers each
+  // declared composite (one tool spanning several existing tools), registered in
+  // src/index.ts via the hasCompositeTools template branch. buildCompositeToolsModule
+  // validates every step/returns/tool reference and throws a clear build error on
+  // any invalid reference.
+  if (hasCompositeTools) {
+    units.push({
+      filePath: 'src/composite-tools.ts',
+      content: buildCompositeToolsModule(manifest.compositeTools ?? [], manifest.tools),
     });
   }
 

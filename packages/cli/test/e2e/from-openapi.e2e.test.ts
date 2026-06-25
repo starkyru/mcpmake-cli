@@ -174,6 +174,62 @@ describe.skipIf(!E2E)('e2e: from openapi (petstore)', () => {
     });
   });
 
+  it('a .mcpmake.yaml compositeTools block emits + registers the composite module', async () => {
+    await withTempDir(async (dir) => {
+      const out = join(dir, 'out');
+      // Declare a composite over the petstore fixture's REAL generated tool names
+      // (create_pet → show_pet_by_id), threading the created id into the lookup.
+      const { writeFileSync } = await import('node:fs');
+      writeFileSync(
+        join(dir, '.mcpmake.yaml'),
+        [
+          'compositeTools:',
+          '  - name: create_and_show_pet',
+          '    description: Create a pet, then fetch it back.',
+          '    steps:',
+          '      - tool: create_pet',
+          '        with:',
+          '          body: { $input: petBody }',
+          '      - tool: show_pet_by_id',
+          '        with:',
+          '          petId: { $step: [0, id] }',
+          '    returns: { $step: [1] }',
+          '',
+        ].join('\n'),
+      );
+
+      const r = await runCli(['from', 'openapi', SPEC, '-o', out], { cwd: dir });
+      expect(r.code, combined(r)).toBe(0);
+
+      // The composite module is emitted and registered in the server entry.
+      expect(listTree(out)).toContain('src/composite-tools.ts');
+      expect(readFileSync(join(out, 'src/index.ts'), 'utf8')).toContain(
+        'registerCompositeTools(server',
+      );
+
+      // The module registers the composite under its declared name and wires the
+      // step data-flow ($input → input[...], $step → steps[...] / stepField).
+      const composite = readFileSync(join(out, 'src/composite-tools.ts'), 'utf8');
+      expect(composite).toContain('export function registerCompositeTools(');
+      expect(composite).toContain('"create_and_show_pet"');
+      expect(composite).toContain('await callStep(client, "create_pet"');
+      expect(composite).toContain('await callStep(client, "show_pet_by_id"');
+      expect(composite).toContain('stepField(steps, 0, "id")');
+      expect(composite).toContain('input["petBody"]');
+    });
+  });
+
+  it('default generation does NOT emit the composite-tools module (opt-in)', async () => {
+    await withTempDir(async (dir) => {
+      const out = join(dir, 'out');
+      await runCli(['from', 'openapi', SPEC, '-o', out], { cwd: dir });
+      expect(existsSync(join(out, 'src/composite-tools.ts'))).toBe(false);
+      expect(readFileSync(join(out, 'src/index.ts'), 'utf8')).not.toContain(
+        'registerCompositeTools',
+      );
+    });
+  });
+
   it('--dry-run previews files but writes nothing to disk', async () => {
     await withTempDir(async (dir) => {
       const out = join(dir, 'out');

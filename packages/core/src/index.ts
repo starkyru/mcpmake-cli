@@ -26,6 +26,21 @@ export {
   A2A_AGENT_CARD_PATH,
 } from './emitter/a2a.js';
 export type { A2aTool, A2aCardInputs, A2aSkill, A2aAgentCard } from './emitter/a2a.js';
+export {
+  buildCompositeToolsModule,
+  parseCompositeToolSpecs,
+  validateCompositeTool,
+  CompositeToolError,
+} from './emitter/composite-tools.js';
+export type {
+  CompositeToolSpec,
+  CompositeStepSpec,
+  CompositeValue,
+  CompositeLiteral,
+  CompositeInputRef,
+  CompositeStepRef,
+  CompositeBuildResult,
+} from './emitter/composite-tools.js';
 export { scaffoldSharedModules } from './emitter/project-scaffolder.js';
 export { normalizeTree, treeFingerprint } from './emitter/normalize-tree.js';
 export type { CodeUnit } from './emitter/code-writer.js';
@@ -130,6 +145,8 @@ export type { LowConfidenceSelector, RescanSummary, ChangeCounts } from './resca
 // Config (shared command/config plumbing)
 // ---------------------------------------------------------------------------
 export { defineConfigurableCommand } from './config/configurable-command.js';
+export { loadConfig, findConfigPath } from './config/mcpmake-config.js';
+export type { LoadedConfig, ConfigEnv } from './config/mcpmake-config.js';
 
 // ---------------------------------------------------------------------------
 // Plugins (adapter registry)

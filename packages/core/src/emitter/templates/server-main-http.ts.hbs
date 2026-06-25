@@ -14,6 +14,9 @@ import { registerMcpUi } from './mcp-ui.js';
 {{#if hasA2a}}
 import { registerA2a } from './a2a.js';
 {{/if}}
+{{#if hasCompositeTools}}
+import { registerCompositeTools } from './composite-tools.js';
+{{/if}}
 import { loadConfig } from './config.js';
 {{#if hasAsyncTools}}
 import { handleTaskRoutes, handleTaskRpc } from './task-handlers.js';
@@ -166,6 +169,12 @@ function createMcpServer(config: ReturnType<typeof loadConfig>): McpServer {
 {{/if}}
 {{#if hasMcpUi}}
   registerMcpUi(server);
+{{/if}}
+{{#if hasCompositeTools}}
+  // Composite tools run existing tools in sequence via an in-process loopback MCP
+  // client (stood up lazily on the first composite call) populated with the same
+  // tool surface, so a step never contends with this server's transport.
+  registerCompositeTools(server, (s) => registerAllTools(s, config));
 {{/if}}
   return server;
 }

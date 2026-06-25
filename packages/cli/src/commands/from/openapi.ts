@@ -14,6 +14,7 @@ import { resourceTreeNames } from '@mcpmake/core';
 import { buildResources, buildPrompts } from '@mcpmake/core';
 import { applyClientCompat, type ClientMode } from '@mcpmake/core';
 import { emitProject, emitPythonProject } from '@mcpmake/core';
+import { loadConfig, parseCompositeToolSpecs } from '@mcpmake/core';
 import { printWorkerNextSteps } from './target-support.js';
 import { apiKeyArg, applyApiKey, modelArg, providerArg } from '../api-key.js';
 import { parseIntFlag, toPackageName } from '../../utils/cli-helpers.js';
@@ -262,6 +263,21 @@ export default defineConfigurableCommand('openapi', {
       ? parseIntFlag(args['static-tools'], 'static-tools', 0)
       : undefined;
 
+    // Composite tools are declared under `compositeTools:` in `.mcpmake.yaml`
+    // (config presence is the trigger — no CLI flag). Parse + validate the shape
+    // here so a malformed declaration fails fast with a clear build error; the
+    // emitter then validates each step/returns/tool reference against the real
+    // tool names. Absent config → empty list → output is byte-for-byte unchanged.
+    let compositeTools;
+    try {
+      const loaded = loadConfig({
+        configPath: typeof args.config === 'string' ? args.config : undefined,
+      });
+      compositeTools = parseCompositeToolSpecs(loaded?.data.compositeTools);
+    } catch (err) {
+      await fail(`compositeTools error: ${err instanceof Error ? err.message : String(err)}`, err);
+    }
+
     const manifest = {
       serverName,
       serverVersion: info.version ?? '1.0.0',
@@ -284,6 +300,7 @@ export default defineConfigurableCommand('openapi', {
       staticToolCount,
       mcpUi: args['mcp-ui'] ?? false,
       a2a: args['a2a'] ?? false,
+      compositeTools,
       target,
     };
 
