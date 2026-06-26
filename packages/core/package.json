@@ -1,6 +1,6 @@
 {
   "name": "@mcpmake/core",
-  "version": "0.3.7",
+  "version": "0.4.0",
   "description": "Shared generation library for mcpmake — parse APIs (OpenAPI/HAR/Postman/websites) and emit MCP servers.",
   "type": "module",
   "license": "Apache-2.0",
