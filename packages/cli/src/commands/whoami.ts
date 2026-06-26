@@ -1,6 +1,6 @@
 import { defineCommand } from 'citty';
 import { logger, fail } from '@mcpmake/core';
-import { apiRequest } from '../auth/api-client.js';
+import { apiRequest, assertSecureChannel } from '../auth/api-client.js';
 import { loadCredentials, resolveDeployToken } from '../auth/credentials.js';
 
 const DEFAULT_SERVER = 'https://mcpmake.dev';
@@ -37,6 +37,16 @@ export default defineCommand({
     if (!token) {
       logger.info('Not logged in. Run:  mcpmake login');
       return;
+    }
+    // Refuse to send the token over a plaintext remote channel with a clear,
+    // token-free message — mirroring login.ts. Without this, the blanket
+    // `.catch(() => null)` below swallows assertSecureChannel's rejection and
+    // mislabels a channel-policy refusal as a "token rejected" auth failure,
+    // advising a re-login that cannot fix it.
+    try {
+      assertSecureChannel(new URL(serverUrl), args.insecure ?? false);
+    } catch (e) {
+      return await fail(e instanceof Error ? e.message : String(e));
     }
     const who = await apiRequest('GET', serverUrl, '/api/cli/whoami', {
       token,

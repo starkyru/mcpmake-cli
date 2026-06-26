@@ -104,7 +104,10 @@ export function mergeSpecs(
         continue;
       }
 
-      const methods = ['get', 'post', 'put', 'patch', 'delete', 'head', 'options'] as const;
+      // All OpenAPI v3 PathItem operation methods. `trace` must be included or a
+      // conflicting trace op on the same path bypasses the conflict check below
+      // and is silently overwritten by the `{ ...baseItem, ...otherItem }` spread.
+      const methods = ['get', 'post', 'put', 'patch', 'delete', 'head', 'options', 'trace'] as const;
 
       for (const method of methods) {
         if (baseItem[method] && otherItem[method]) {

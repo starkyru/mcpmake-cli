@@ -260,3 +260,18 @@ describe('overlay-loader prototype-pollution guard', () => {
     expect((spec.info as Record<string, unknown>).title).toBe('patched');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Comment-only / empty overlay parses to `null` — must surface the clear
+// validation error, not a `null.actions` TypeError. The regex asserts the
+// CLEAR message (".../actions array/") which a TypeError ("Cannot read
+// properties of null (reading 'actions')") would NOT contain — discriminating
+// against the pre-fix opaque crash.
+// ---------------------------------------------------------------------------
+describe('overlay-loader null-document guard', () => {
+  it('rejects a comment-only overlay with the clear "actions array" error (not a TypeError)', async () => {
+    const overlay = writeOverlay('# just a comment\n');
+    const spec: Record<string, unknown> = { info: { title: 'orig' } };
+    await expect(applyOverlay(spec, overlay)).rejects.toThrow(/must contain an "actions" array/);
+  });
+});

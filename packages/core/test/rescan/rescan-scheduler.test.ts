@@ -93,6 +93,66 @@ describe('computeNextRun — day-of-month vs day-of-week (M8)', () => {
   });
 });
 
+describe('computeNextRun — combined list members (range/step inside a list)', () => {
+  // Regression for the expandField list bug: `spec.split(',').map(parseInt)`
+  // mis-parsed combined members because parseInt('5-7') === 5 and
+  // parseInt('*/15') === NaN, so '1,5-7' silently collapsed to the set {1,5}.
+  // The fix recursively expands each member, so 6 and 7 are now in the set.
+  // Dates use the local-time constructor + local getters to match the suite's
+  // timezone-independent convention (computeNextRun reads local-time getters).
+
+  it('1,5-7 minute field: a "from" just after minute 5 advances to minute 6 (range member is honored)', () => {
+    // 10:05:30 → search starts at 10:06:00. With the bug the set was {1,5}, so
+    // 6 would not match and the next run would jump to 11:01. With the fix,
+    // {1,5,6,7} contains 6, so the next run is exactly 10:06:00.
+    const after = new Date(2026, 5, 20, 10, 5, 30); // Sat Jun 20 2026, 10:05:30 local
+    const next = computeNextRun('1,5-7 * * * *', after);
+    expect(next).not.toBeNull();
+    expect(next!.getTime()).toBe(new Date(2026, 5, 20, 10, 6, 0).getTime());
+    expect(next!.getMinutes()).toBe(6); // NOT 1 of the next hour
+  });
+
+  it('1,5-7 minute field: every member of {1,5,6,7} is reachable as the next run', () => {
+    // From HH:07:30 the only remaining match this hour would be… none of
+    // {1,5,6,7} (all <= 7 and we start at :08), so it wraps to next hour's :01.
+    const after = new Date(2026, 5, 20, 10, 7, 30); // 10:07:30 local
+    const next = computeNextRun('1,5-7 * * * *', after);
+    expect(next).not.toBeNull();
+    expect(next!.getTime()).toBe(new Date(2026, 5, 20, 11, 1, 0).getTime());
+    expect(next!.getMinutes()).toBe(1);
+  });
+
+  it('0,*/15 minute field: a step member inside a list is expanded (minute 15 reachable)', () => {
+    // 10:01:00 → search starts at 10:02:00. Set is {0,15,30,45}; first match is
+    // 15 → 10:15:00. With the bug, parseInt('*/15') === NaN would have rejected
+    // the whole field (null); the fix accepts it and unions {0} ∪ {0,15,30,45}.
+    const after = new Date(2026, 5, 20, 10, 1, 0); // 10:01:00 local
+    const next = computeNextRun('0,*/15 * * * *', after);
+    expect(next).not.toBeNull();
+    expect(next!.getTime()).toBe(new Date(2026, 5, 20, 10, 15, 0).getTime());
+    expect(next!.getMinutes()).toBe(15);
+  });
+
+  it('0,*/15 minute field: minute 0 of the next hour is reachable after :45', () => {
+    // 10:46:00 → search starts at 10:47:00; remaining {0,15,30,45} match is the
+    // next hour's :00 → 11:00:00. Confirms 0 is in the unioned set.
+    const after = new Date(2026, 5, 20, 10, 46, 0); // 10:46:00 local
+    const next = computeNextRun('0,*/15 * * * *', after);
+    expect(next).not.toBeNull();
+    expect(next!.getTime()).toBe(new Date(2026, 5, 20, 11, 0, 0).getTime());
+    expect(next!.getMinutes()).toBe(0);
+  });
+
+  it('rejects the whole field when a combined list member is invalid (out-of-range range)', () => {
+    // Member '5-99' has end 99 > max 59 → expandField returns null → the whole
+    // field is rejected and computeNextRun returns null. This is exactly what the
+    // old `parseInt(member)` shortcut got wrong: parseInt('5-99') === 5 would have
+    // silently accepted the field as the set [1,5] instead of rejecting it.
+    const after = new Date(2026, 5, 20, 10, 0, 0);
+    expect(computeNextRun('1,5-99 * * * *', after)).toBeNull();
+  });
+});
+
 describe('RescanScheduler — interval unref (R2-B)', () => {
   afterEach(() => {
     vi.restoreAllMocks();

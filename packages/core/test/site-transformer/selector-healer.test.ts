@@ -103,4 +103,36 @@ describe('selector-healer (L-jsonparse: tolerates fenced/prose output)', () => {
     const result = await healBrokenSelector('tree', broken, 'login button');
     expect(result).toBeNull();
   });
+
+  it('normalizes a missing/non-array fallbacks key to an empty string[]', async () => {
+    // The LLM OMITS `fallbacks` entirely (otherwise-valid object). Before the
+    // fix the returned `fallbacks` was `undefined`, so a downstream consumer
+    // doing `[primary, ...fallbacks]` threw "is not iterable".
+    const noFallbacks = JSON.stringify({
+      primary: 'button.login',
+      strategy: 'css-path',
+      confidence: 0.9,
+      humanLabel: 'Login button',
+    });
+    modelReturns(noFallbacks);
+    const { healBrokenSelector } = await import('../../src/site-transformer/selector-healer.js');
+    const result = await healBrokenSelector('tree', broken, 'login button');
+    expect(result).not.toBeNull();
+    expect(Array.isArray(result?.fallbacks)).toBe(true);
+    expect(result?.fallbacks).toEqual([]);
+
+    // A non-array `fallbacks` (here: a string) is normalized to [] as well.
+    const stringFallbacks = JSON.stringify({
+      primary: 'button.login',
+      fallbacks: 'not-an-array',
+      strategy: 'css-path',
+      confidence: 0.9,
+      humanLabel: 'Login button',
+    });
+    modelReturns(stringFallbacks);
+    const result2 = await healBrokenSelector('tree', broken, 'login button');
+    expect(result2).not.toBeNull();
+    expect(Array.isArray(result2?.fallbacks)).toBe(true);
+    expect(result2?.fallbacks).toEqual([]);
+  });
 });

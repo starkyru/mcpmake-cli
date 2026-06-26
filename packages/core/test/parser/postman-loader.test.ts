@@ -517,4 +517,62 @@ describe('postman-loader', () => {
     expect(entries).toHaveLength(1);
     expect(entries[0].request.url).toContain('page=2');
   });
+
+  // -------------------------------------------------------------------------
+  // R23-C: a disabled query param exported with value:null (the standard
+  // Postman representation) must not throw `.replace` on null and abort the
+  // whole import. The null-valued entry is skipped; sibling requests survive.
+  // -------------------------------------------------------------------------
+  it('R23-C: object-url query with { value: null, disabled: true } is skipped; both requests still import', async () => {
+    const collection = {
+      info: { name: 'NullValueQuery', schema: '' },
+      item: [
+        {
+          name: 'Req1',
+          request: {
+            method: 'GET',
+            // Structured (object) url — no `raw`, so the protocol/host/path/query
+            // branch of resolveUrl runs (the one that loops over query entries).
+            url: {
+              protocol: 'https',
+              host: ['api', 'test', 'com'],
+              path: ['search'],
+              // Postman exports a disabled param with value:null — this previously
+              // crashed resolveVars(null) and aborted the entire collection import.
+              query: [{ key: 'foo', value: null, disabled: true }],
+            },
+          },
+        },
+        {
+          name: 'Req2',
+          request: {
+            method: 'GET',
+            url: {
+              protocol: 'https',
+              host: ['api', 'test', 'com'],
+              path: ['items'],
+              query: [{ key: 'page', value: '2' }],
+            },
+          },
+        },
+      ],
+    };
+
+    const filePath = resolve(tempDir, 'null-value-query.json');
+    await writeFile(filePath, JSON.stringify(collection));
+
+    // The null-valued param must not abort the import: BOTH requests survive.
+    const { entries } = await loadPostmanCollection(filePath);
+    expect(entries).toHaveLength(2);
+
+    // Req2's valid query param is preserved verbatim.
+    const req2 = entries.find((e) => e.request.url.includes('/items'));
+    expect(req2).toBeDefined();
+    expect(new URL(req2!.request.url).searchParams.get('page')).toBe('2');
+
+    // The null-valued param's key is NOT present on Req1's resulting URL.
+    const req1 = entries.find((e) => e.request.url.includes('/search'));
+    expect(req1).toBeDefined();
+    expect(new URL(req1!.request.url).searchParams.has('foo')).toBe(false);
+  });
 });

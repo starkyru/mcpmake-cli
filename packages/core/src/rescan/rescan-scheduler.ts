@@ -396,11 +396,19 @@ function expandField(spec: string, min: number, max: number): number[] | null {
     return result;
   }
 
-  // List: 1,3,5
+  // List: 1,3,5 — and combined members like 1,5-7 or 0,*/15. Expand each member
+  // through the same field logic and union the results. The previous
+  // `parseInt(member)` shortcut silently mis-parsed a range/step member
+  // (parseInt('5-7') === 5), accepting '1,5-7' as the wrong set [1,5]. A member
+  // that fails to expand (any invalid token) rejects the whole field.
   if (spec.includes(',')) {
-    const values = spec.split(',').map((s) => parseInt(s.trim(), 10));
-    if (values.some((v) => isNaN(v) || v < min || v > max)) return null;
-    return values;
+    const set = new Set<number>();
+    for (const member of spec.split(',')) {
+      const expanded = expandField(member.trim(), min, max);
+      if (expanded === null) return null;
+      for (const v of expanded) set.add(v);
+    }
+    return [...set].sort((a, b) => a - b);
   }
 
   // Range: 1-5

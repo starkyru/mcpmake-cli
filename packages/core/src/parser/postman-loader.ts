@@ -196,6 +196,12 @@ function resolveUrl(url: PostmanUrl | string, vars: Map<string, string>): string
   for (const q of url.query ?? []) {
     // R23-B: null/non-object query elements are skipped.
     if (q === null || typeof q !== 'object') continue;
+    // R23-C: Postman exports disabled/empty query params with a null value
+    // (`{ key, value: null, disabled: true }`). resolveVars() calls `.replace`
+    // on its argument, so a non-string key/value would throw and abort the
+    // entire collection import. Mirror the header branch and variable map,
+    // which both require string key/value, and skip non-string entries.
+    if (typeof q.key !== 'string' || typeof q.value !== 'string') continue;
     parsed.searchParams.set(q.key, resolveVars(q.value, vars));
   }
 

@@ -50,7 +50,9 @@ registerMcpUi(server);
 // client populated with the same tool surface (so a step never contends with the
 // stdio transport). The loopback is stood up lazily on the first composite call.
 registerCompositeTools(server, (s) => {
+{{#if hasStaticTools}}
   registerAllTools(s, config);
+{{/if}}
 {{#if hasDynamicDiscovery}}
   registerDiscoveryTools(s, config);
 {{/if}}

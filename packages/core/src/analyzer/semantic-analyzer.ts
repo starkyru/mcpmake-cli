@@ -172,8 +172,16 @@ ${JSON.stringify(summaries, null, 2)}`;
         description: pageResult.description ?? page.description,
       };
 
+      // The LLM commonly omits empty/irrelevant arrays, so a page with no
+      // buttons yields a pageResult with no `buttons` key. Default each nested
+      // array before `.find`, otherwise `pageResult.buttons.find` throws and the
+      // outer catch discards ALL semantic naming for the ENTIRE site.
+      const formResults = pageResult.forms ?? [];
+      const buttonResults = pageResult.buttons ?? [];
+      const linkResults = pageResult.links ?? [];
+
       updatedPage.forms = page.forms.map((form, formIndex) => {
-        const formResult = pageResult.forms.find((f) => f.formIndex === formIndex);
+        const formResult = formResults.find((f) => f.formIndex === formIndex);
         if (!formResult) return form;
         return {
           ...form,
@@ -183,7 +191,7 @@ ${JSON.stringify(summaries, null, 2)}`;
       });
 
       updatedPage.buttons = page.buttons.map((btn, buttonIndex) => {
-        const btnResult = pageResult.buttons.find((b) => b.buttonIndex === buttonIndex);
+        const btnResult = buttonResults.find((b) => b.buttonIndex === buttonIndex);
         if (!btnResult) return btn;
         return {
           ...btn,
@@ -193,7 +201,7 @@ ${JSON.stringify(summaries, null, 2)}`;
       });
 
       updatedPage.links = page.links.map((link, linkIndex) => {
-        const linkResult = pageResult.links.find((l) => l.linkIndex === linkIndex);
+        const linkResult = linkResults.find((l) => l.linkIndex === linkIndex);
         if (!linkResult) return link;
         return {
           ...link,

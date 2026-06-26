@@ -124,6 +124,15 @@ ${safeTree}`;
       parsed.humanLabel = parsed.humanLabel.replace(/[\x00-\x1f\x7f]/g, ' ').trim();
     }
 
+    // Normalize fallbacks to the SelectorSet.fallbacks: string[] invariant every
+    // consumer assumes (e.g. validateSelector's `[primary, ...fallbacks]` spread,
+    // and a later heal's `brokenSelector.fallbacks.map(...)`). The LLM may omit
+    // the key or emit a non-array; the candidate loop above only *read* it
+    // defensively, it never wrote a normalized value back.
+    parsed.fallbacks = Array.isArray(parsed.fallbacks)
+      ? parsed.fallbacks.filter((f): f is string => typeof f === 'string')
+      : [];
+
     logger.info(`Healed selector: ${brokenSelector.primary} → ${parsed.primary}`);
     return parsed;
   } catch (err) {

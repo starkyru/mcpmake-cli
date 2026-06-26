@@ -3,6 +3,7 @@ import type { Entry, QueryString, PostData } from 'har-format';
 import { normalizeEntry } from '../../src/parser/har-normalizer.js';
 import { clusterEntries } from '../../src/transformer/har-clusterer.js';
 import { clustersToOperations } from '../../src/transformer/har-to-operations.js';
+import { buildAllTools } from '../../src/transformer/tool-builder.js';
 
 function makeEntry(url: string, queryString: QueryString[] = [], method = 'GET'): Entry {
   return {
@@ -71,7 +72,14 @@ describe('har-to-operations query-string auth (M10)', () => {
     // The auth key is not surfaced as an ordinary query parameter.
     const op = result.operations[0];
     expect(op.parameters.find((p) => p.in === 'query' && p.name === 'api_key')).toBeUndefined();
-    expect(op.security.some((s) => s.schemeName === 'apiKey')).toBe(true);
+    // op.security stays EMPTY for capture-derived operations. Stamping it with a
+    // synthetic schemeName (the auth *type*) made deriveAuthRequirement emit a
+    // { mode:'schemes', schemeNames:['apiKey'] } filter that never matched the
+    // nameless AuthScheme the consumers build, so the generated server sent no
+    // credential. With security empty the single detected credential is applied
+    // globally instead. The detected auth (asserted above) still drives the
+    // AuthScheme/env-var generation.
+    expect(op.security).toEqual([]);
   });
 
   it.each([
@@ -145,6 +153,59 @@ describe('har-to-operations query-string auth (M10)', () => {
     expect(queryNames).toContain('page');
     expect(queryNames).not.toContain('api_key');
     expect(JSON.stringify(result)).not.toContain(SECRET);
+  });
+});
+
+describe('har-to-operations Authorization-header auth scheme detection', () => {
+  it('detects `Authorization: Token <secret>` as bearer and redacts the secret', () => {
+    // GitHub-legacy / Django REST Framework style. The `Token` scheme was
+    // previously detected with type 'token', which is NOT a DetectedAuth['type']
+    // member, so every downstream consumer dropped it and the generated server
+    // had no auth. It must now map onto 'bearer'.
+    const tokenSecret = 'sometoken123';
+    const entry = makeEntry('https://api.example.com/v1/items');
+    entry.request.headers = [{ name: 'Authorization', value: 'Token ' + tokenSecret }];
+
+    const result = convert([entry]);
+
+    expect(result.detectedAuth).toHaveLength(1);
+    expect(result.detectedAuth[0].type).toBe('bearer');
+    expect(result.detectedAuth[0].headerName).toBe('Authorization');
+
+    // The literal token value must never appear in the generated output.
+    expect(JSON.stringify(result)).not.toContain(tokenSecret);
+  });
+
+  it('detects `Authorization: Bearer <secret>` as bearer too', () => {
+    // Guards the AUTH_HEADER_PATTERNS table so the Bearer row is not regressed
+    // alongside the Token mapping.
+    const bearerSecret = 'xyz';
+    const entry = makeEntry('https://api.example.com/v1/items');
+    entry.request.headers = [{ name: 'Authorization', value: 'Bearer ' + bearerSecret }];
+
+    const result = convert([entry]);
+
+    expect(result.detectedAuth).toHaveLength(1);
+    expect(result.detectedAuth[0].type).toBe('bearer');
+    expect(result.detectedAuth[0].headerName).toBe('Authorization');
+  });
+
+  it('builds tools with NO per-op authRequirement so the detected credential is applied', () => {
+    // End-to-end through buildAllTools: a HAR op carries security:[] (no synthetic
+    // scheme name), so deriveAuthRequirement returns undefined. The generated
+    // schemeApplies(undefined, …) returns true, meaning the credential IS sent.
+    // Before the fix, op.security was [{schemeName:'bearer'}] → authRequirement
+    // {mode:'schemes',schemeNames:['bearer']}, which the nameless AuthScheme never
+    // matched, so the server sent no Authorization header (silent 401s).
+    const entry = makeEntry('https://api.example.com/v1/items');
+    entry.request.headers = [{ name: 'Authorization', value: 'Bearer xyz' }];
+
+    const { operations } = convert([entry]);
+    expect(operations[0].security).toEqual([]);
+
+    const tools = buildAllTools(operations);
+    expect(tools).toHaveLength(1);
+    expect(tools[0].authRequirement).toBeUndefined();
   });
 });
 

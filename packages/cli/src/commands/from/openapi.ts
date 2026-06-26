@@ -278,6 +278,19 @@ export default defineConfigurableCommand('openapi', {
       await fail(`compositeTools error: ${err instanceof Error ? err.message : String(err)}`, err);
     }
 
+    // Composite tools invoke other tools by name through an in-process loopback
+    // populated with the static tool surface. Under --dynamic-discovery with no
+    // --static-tools, only discovery meta-tools are registered, so every
+    // composite step would fail at runtime with "tool not found" (and the stdio
+    // template would not even compile). Reject the combination up front.
+    if (compositeTools && compositeTools.length > 0 && dynamicDiscovery && (staticToolCount ?? 0) === 0) {
+      await fail(
+        'Composite tools require static tools to call their steps, but --dynamic-discovery ' +
+          'without --static-tools registers only discovery meta-tools. Add --static-tools=<N> ' +
+          '(at least covering the tools your composites invoke) or drop --dynamic-discovery.',
+      );
+    }
+
     const manifest = {
       serverName,
       serverVersion: info.version ?? '1.0.0',
@@ -378,6 +391,12 @@ export default defineConfigurableCommand('openapi', {
 
     // Watch mode — re-generate on spec file changes
     if (args.watch && !provider) {
+      // Preserve the user's interactive curation across regenerations: keep only
+      // the originally-selected operations that still exist (the prompt cannot be
+      // replayed non-interactively).
+      const selectedIds = args.interactive
+        ? new Set(selected.map((op) => op.operationId))
+        : undefined;
       watchFile({
         filePath: args.spec,
         onChange: async () => {
@@ -386,14 +405,31 @@ export default defineConfigurableCommand('openapi', {
             await applyOverlay(freshApi as Record<string, unknown>, args.overlay);
           }
           const fresh = extractOperations(freshApi as OpenAPIV3.Document);
-          const freshFiltered = filterOperations(fresh.operations, {
+          // Mirror the initial pipeline so a regeneration is identical to the
+          // first emit — without this, --resource-names/--improve-names/--client
+          // and the --no-resources/--no-prompts toggles were silently dropped and
+          // the degraded output overwrote the correct one (force: true).
+          let freshOps = fresh.operations;
+          if (args['resource-names']) {
+            freshOps = resourceTreeNames(freshOps);
+          }
+          if (args['improve-names']) {
+            freshOps = await improveToolNames(freshOps, args.model);
+          }
+          let freshFiltered = filterOperations(freshOps, {
             include: args.include?.split(',').map((s) => s.trim()),
             exclude: args.exclude?.split(',').map((s) => s.trim()),
           });
-          const freshTools = buildAllTools(freshFiltered);
+          if (selectedIds) {
+            freshFiltered = freshFiltered.filter((op) => selectedIds.has(op.operationId));
+          }
+          let freshTools = buildAllTools(freshFiltered);
+          if (args.client) {
+            freshTools = applyClientCompat(freshTools, args.client as ClientMode);
+          }
           const freshAuth = detectAuthSchemes(fresh.securitySchemes);
-          const freshResources = buildResources(freshFiltered);
-          const freshPrompts = buildPrompts(freshFiltered);
+          const freshResources = args['no-resources'] ? [] : buildResources(freshFiltered);
+          const freshPrompts = args['no-prompts'] ? [] : buildPrompts(freshFiltered);
           await emitProject(
             {
               ...manifest,

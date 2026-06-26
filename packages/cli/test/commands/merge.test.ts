@@ -154,4 +154,35 @@ describe('mergeSpecs — null path-item guard (R22-5)', () => {
 
     expect(() => mergeSpecs(base, other)).toThrow(/Path conflict/);
   });
+
+  it('throws on a TRACE/TRACE conflict on the same path (trace must be in the methods list)', () => {
+    const base = makeMinimalSpec({
+      '/items': { trace: { responses: { '200': { description: 'ok' } } } },
+    });
+    const other = makeMinimalSpec({
+      '/items': { trace: { responses: { '200': { description: 'also ok' } } } },
+    });
+
+    expect(() => mergeSpecs(base, other)).toThrow(/Path conflict: TRACE \/items/);
+  });
+
+  it('does not throw and preserves the single trace op when only one spec defines a trace on the path', () => {
+    const base = makeMinimalSpec({
+      '/items': { get: { responses: { '200': { description: 'ok' } } } },
+    });
+    const other = makeMinimalSpec({
+      '/items': { trace: { responses: { '200': { description: 'traced' } } } },
+    });
+
+    let merged: OpenAPIV3.Document;
+    expect(() => {
+      merged = mergeSpecs(base, other);
+    }).not.toThrow();
+
+    const pathItem = merged!.paths['/items'] as OpenAPIV3.PathItemObject;
+    // Base get is retained and the single other-side trace op is merged in.
+    expect(pathItem.get).toBeDefined();
+    expect(pathItem.trace).toBeDefined();
+    expect(pathItem.trace!.responses!['200']).toEqual({ description: 'traced' });
+  });
 });

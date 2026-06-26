@@ -12,10 +12,14 @@ import { mergeRequestBodySchemas } from './schema-merger.js';
 import type { NormalizedEntry } from '../parser/har-normalizer.js';
 import { inferRequestBodySchema } from './har-schema-inferrer.js';
 
-const AUTH_HEADER_PATTERNS: Array<{ pattern: RegExp; schemeName: string }> = [
+const AUTH_HEADER_PATTERNS: Array<{ pattern: RegExp; schemeName: DetectedAuth['type'] }> = [
   { pattern: /^Bearer\s+/i, schemeName: 'bearer' },
   { pattern: /^Basic\s+/i, schemeName: 'basic' },
-  { pattern: /^Token\s+/i, schemeName: 'token' },
+  // `Authorization: Token <secret>` (GitHub-legacy / Django REST Framework) is
+  // an opaque token in the Authorization header — functionally bearer-style.
+  // Map it onto 'bearer' so it flows through the BEARER_TOKEN path; 'token' is
+  // not a DetectedAuth['type'] member and every consumer would silently drop it.
+  { pattern: /^Token\s+/i, schemeName: 'bearer' },
 ];
 
 const CUSTOM_AUTH_HEADERS = [
@@ -146,11 +150,18 @@ export function clustersToOperations(clusters: EntryCluster[]): HarConversionRes
       }
     }
 
-    // Security
-    const security: SecurityRequirement[] = auth.map((a) => ({
-      schemeName: a.type,
-      scopes: [],
-    }));
+    // Security: HAR/URL/Postman captures have no real OpenAPI scheme *names* to
+    // scope per-operation auth to — only a detected credential *type*
+    // ('bearer'/'basic'/'apiKey'). Stamping op.security with the type string made
+    // deriveAuthRequirement emit authRequirement = { mode:'schemes',
+    // schemeNames:['bearer'] }, but the AuthScheme objects every consumer builds
+    // carry no schemeName, so the generated schemeApplies(requirement, null) was
+    // always false and the credential was never sent (silent 401s). Leave
+    // security empty so deriveAuthRequirement returns undefined and the single
+    // detected credential is applied globally — the intended behavior for a
+    // capture-derived server. (detectedAuth still drives AuthScheme/env-var
+    // generation, so configuration is unaffected.)
+    const security: SecurityRequirement[] = [];
 
     operations.push({
       operationId,
@@ -191,7 +202,7 @@ function detectAuth(entry: Entry): DetectedAuth[] {
       for (const { pattern, schemeName } of AUTH_HEADER_PATTERNS) {
         if (pattern.test(header.value)) {
           result.push({
-            type: schemeName as DetectedAuth['type'],
+            type: schemeName,
             headerName: 'Authorization',
             exampleValue: '[REDACTED]',
           });

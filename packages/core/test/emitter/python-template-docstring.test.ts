@@ -48,4 +48,35 @@ describe('pyDocstring (A4-5: backslash-first escape order)', () => {
   it('leaves strings with no special chars unchanged', () => {
     expect(pyDocstring('Hello, world')).toBe('Hello, world');
   });
+
+  it('escapes EVERY double-quote (not just literal """ runs) so a trailing quote cannot terminate the docstring', () => {
+    // Regression: the old code escaped only literal `"""` runs, leaving a lone
+    // trailing/adjacent `"` intact. A description ending in `"` emitted into
+    // `"""{{pyDocstring}}"""` produced four consecutive quotes at the close →
+    // Python `SyntaxError: unterminated string literal` → server.py failed to import.
+
+    // 1) Exact hand-derived output: each `"` becomes `\"` (backslash + quote).
+    const result = pyDocstring('Search the "Inbox"');
+    expect(result).toBe('Search the \\"Inbox\\"');
+
+    // 2) No run of two-or-more unescaped quotes: the output cannot contribute a
+    //    `""` that fuses with the closing `"""`.
+    expect(result).not.toContain('""');
+    // The same holds for a description ENDING in two quotes — the case the old
+    // code left as a literal `""` run (the buggy output kept them unescaped).
+    expect(pyDocstring('ends in two quotes""')).not.toContain('""');
+
+    // 3) Construct the FULL emitted docstring line and prove the close is safe:
+    //    every double-quote in the description body is backslash-escaped, so it
+    //    cannot terminate the string early. (The bug left bare quotes here, which
+    //    is the exact SyntaxError condition.)
+    const body = pyDocstring('ends in a quote"');
+    const line = '    """' + body + '"""';
+    // The body portion (between the opening and closing `"""`) must contain no
+    // UNescaped double-quote — i.e. every `"` is preceded by a backslash.
+    expect(body).not.toMatch(/(^|[^\\])"/);
+    // And the emitted line still opens and closes with exactly three quotes.
+    expect(line.startsWith('    """')).toBe(true);
+    expect(line.endsWith('"""')).toBe(true);
+  });
 });

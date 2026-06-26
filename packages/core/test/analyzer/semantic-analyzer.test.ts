@@ -89,4 +89,50 @@ describe('semantic-analyzer (L-jsonparse: tolerates fenced/prose output)', () =>
     const out = await analyzeSemantics([makePage()]);
     expect(out[0].semanticName).toBeUndefined();
   });
+
+  it('keeps page semantics when the LLM omits the buttons key for a page that HAS a button', async () => {
+    // Real crawled page WITH a non-empty button: the enrichment `.map` callback
+    // must run to reach the per-element `.find`, which is where the omitted-key
+    // crash used to surface and discard ALL semantic naming for the whole site.
+    const page = makePage();
+    page.buttons = [
+      {
+        buttonId: 'b0',
+        selector: { primary: '#cart', fallbacks: [], strategy: 'id', confidence: 1 },
+        text: 'Add to cart',
+        type: 'button',
+      },
+    ];
+
+    // LLM result provides page semanticName/description (and a forms key) but
+    // OMITS `buttons` entirely — exactly what LLMs do for arrays they consider
+    // empty/irrelevant. Pre-fix, `pageResult.buttons.find` threw here.
+    modelReturns(
+      JSON.stringify({
+        pages: [
+          {
+            pageIndex: 0,
+            semanticName: 'cart_page',
+            description: 'The shopping cart page',
+            forms: [],
+            // no `buttons` key, no `links` key
+          },
+        ],
+      }),
+    );
+
+    const { analyzeSemantics } = await import('../../src/analyzer/semantic-analyzer.js');
+    const out = await analyzeSemantics([page]);
+
+    // Enrichment was NOT discarded: the page semantics the LLM DID provide are applied.
+    expect(out[0].semanticName).toBe('cart_page');
+    expect(out[0].description).toBe('The shopping cart page');
+
+    // The button whose result was omitted is returned unchanged (graceful
+    // per-element fallback, not a thrown-away site).
+    expect(out[0].buttons).toHaveLength(1);
+    expect(out[0].buttons[0].buttonId).toBe('b0');
+    expect(out[0].buttons[0].text).toBe('Add to cart');
+    expect(out[0].buttons[0].semanticAction).toBeUndefined();
+  });
 });

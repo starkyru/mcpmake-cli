@@ -194,17 +194,26 @@ async function extractStandaloneButtons(page: Page): Promise<ButtonDescriptor[]>
 
   for (const btnEl of buttonElements.slice(0, MAX_BUTTONS)) {
     try {
-      const attrs = await btnEl.evaluate((el) => ({
-        tagName: el.tagName.toLowerCase(),
-        type: el.getAttribute('type') || 'button',
-        text: el.textContent?.trim().slice(0, 80) || '',
-        ariaLabel: el.getAttribute('aria-label') || '',
-        href: el.getAttribute('href') || '',
-        isHidden:
-          (el as HTMLElement).offsetParent === null ||
-          getComputedStyle(el).display === 'none' ||
-          getComputedStyle(el).visibility === 'hidden',
-      }));
+      const attrs = await btnEl.evaluate((el) => {
+        // `offsetParent === null` is true for ANY position:fixed element even
+        // when fully visible (and for not-yet-laid-out nodes), which silently
+        // dropped visible fixed/sticky CTAs ("Buy now", "Log in"). Use a
+        // zero-size bounding rect instead: display:none collapses to a 0×0 rect
+        // (also caught by the explicit display check), while a visible fixed
+        // element keeps a non-zero rect.
+        const rect = (el as HTMLElement).getBoundingClientRect();
+        return {
+          tagName: el.tagName.toLowerCase(),
+          type: el.getAttribute('type') || 'button',
+          text: el.textContent?.trim().slice(0, 80) || '',
+          ariaLabel: el.getAttribute('aria-label') || '',
+          href: el.getAttribute('href') || '',
+          isHidden:
+            (rect.width === 0 && rect.height === 0) ||
+            getComputedStyle(el).display === 'none' ||
+            getComputedStyle(el).visibility === 'hidden',
+        };
+      });
 
       // Skip hidden or empty buttons
       if (attrs.isHidden) continue;
@@ -246,16 +255,22 @@ async function extractLinks(page: Page): Promise<LinkDescriptor[]> {
   for (const linkEl of linkElements.slice(0, MAX_LINKS * 2)) {
     // Over-fetch then filter
     try {
-      const attrs = await linkEl.evaluate((el) => ({
-        href: (el as HTMLAnchorElement).href,
-        text: el.textContent?.trim().slice(0, 80) || '',
-        ariaLabel: el.getAttribute('aria-label') || '',
-        isHidden:
-          (el as HTMLElement).offsetParent === null ||
-          getComputedStyle(el).display === 'none' ||
-          getComputedStyle(el).visibility === 'hidden',
-        target: el.getAttribute('target') || '',
-      }));
+      const attrs = await linkEl.evaluate((el) => {
+        // See extractStandaloneButtons: a zero-size rect (not offsetParent) is
+        // the correct hidden test so visible position:fixed/sticky nav links
+        // are not dropped.
+        const rect = (el as HTMLElement).getBoundingClientRect();
+        return {
+          href: (el as HTMLAnchorElement).href,
+          text: el.textContent?.trim().slice(0, 80) || '',
+          ariaLabel: el.getAttribute('aria-label') || '',
+          isHidden:
+            (rect.width === 0 && rect.height === 0) ||
+            getComputedStyle(el).display === 'none' ||
+            getComputedStyle(el).visibility === 'hidden',
+          target: el.getAttribute('target') || '',
+        };
+      });
 
       if (attrs.isHidden) continue;
       if (!attrs.text && !attrs.ariaLabel) continue;

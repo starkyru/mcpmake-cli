@@ -46,7 +46,11 @@ function parseOverlay(content: string): OverlayDocument {
     doc = JSON.parse(content) as OverlayDocument;
   }
 
-  if (!doc.actions || !Array.isArray(doc.actions)) {
+  // An empty / whitespace-only / comment-only overlay parses to `null` (normal
+  // for an empty YAML document), so guard the object itself before reading
+  // `.actions` — otherwise `null.actions` throws an opaque TypeError instead of
+  // this clear validation error.
+  if (!doc || typeof doc !== 'object' || !Array.isArray((doc as OverlayDocument).actions)) {
     throw new Error('Overlay document must contain an "actions" array');
   }
 

@@ -1,7 +1,12 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+{{#if hasStaticTools}}
 import { registerAllTools } from './tools/index.js';
+{{/if}}
+{{#if hasDynamicDiscovery}}
+import { registerDiscoveryTools } from './discovery.js';
+{{/if}}
 {{#if hasResources}}
 import { registerAllResources } from './resources.js';
 {{/if}}
@@ -160,7 +165,12 @@ function createMcpServer(config: ReturnType<typeof loadConfig>): McpServer {
     name: '{{serverName}}',
     version: '{{serverVersion}}',
   });
+{{#if hasStaticTools}}
   registerAllTools(server, config);
+{{/if}}
+{{#if hasDynamicDiscovery}}
+  registerDiscoveryTools(server, config);
+{{/if}}
 {{#if hasResources}}
   registerAllResources(server, config);
 {{/if}}
@@ -174,7 +184,14 @@ function createMcpServer(config: ReturnType<typeof loadConfig>): McpServer {
   // Composite tools run existing tools in sequence via an in-process loopback MCP
   // client (stood up lazily on the first composite call) populated with the same
   // tool surface, so a step never contends with this server's transport.
-  registerCompositeTools(server, (s) => registerAllTools(s, config));
+  registerCompositeTools(server, (s) => {
+{{#if hasStaticTools}}
+    registerAllTools(s, config);
+{{/if}}
+{{#if hasDynamicDiscovery}}
+    registerDiscoveryTools(s, config);
+{{/if}}
+  });
 {{/if}}
   return server;
 }
@@ -186,7 +203,14 @@ const config = loadConfig();
 // A2A wrapper: serves the AgentCard + maps A2A message/send → MCP tools/call against a
 // dedicated server populated with the same tools (so it never contends with the MCP HTTP
 // transport). The A2A HTTP listener is opt-in via A2A_HTTP=true.
-await registerA2a(createMcpServer(config), (s) => registerAllTools(s, config));
+await registerA2a(createMcpServer(config), (s) => {
+{{#if hasStaticTools}}
+  registerAllTools(s, config);
+{{/if}}
+{{#if hasDynamicDiscovery}}
+  registerDiscoveryTools(s, config);
+{{/if}}
+});
 {{/if}}
 const transportMode = process.env.TRANSPORT ?? 'stdio';
 

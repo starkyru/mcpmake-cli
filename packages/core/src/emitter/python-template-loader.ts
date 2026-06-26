@@ -25,7 +25,12 @@ Handlebars.registerHelper('or', function (a: unknown, b: unknown) {
 
 Handlebars.registerHelper('pyDocstring', function (str: string) {
   if (!str) return '';
-  return str.replace(/\\/g, '\\\\').replace(/"""/g, '\\"\\"\\"');
+  // Escape backslashes first, then EVERY double-quote. Escaping only literal
+  // `"""` runs left a lone trailing/adjacent quote intact, so a description
+  // ending in `"` (e.g. `Search the "Inbox"`) produced four consecutive quotes
+  // at the `"""{{pyDocstring}}"""` close — an unterminated-string SyntaxError
+  // that broke the whole generated server.py on import.
+  return str.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 });
 
 // Escape a value for embedding in a double-quoted Python string literal.

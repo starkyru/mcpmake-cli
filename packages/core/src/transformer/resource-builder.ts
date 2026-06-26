@@ -1,7 +1,21 @@
 import type { OperationDescriptor } from '../types/index.js';
 import type { ResourceDefinition, PromptDefinition } from '../types/index.js';
-import { escapeTemplateLiteral, escapeStringLiteral } from '../utils/sanitize.js';
+import { escapeTemplateLiteral, escapeStringLiteral, sanitizeIdentifier } from '../utils/sanitize.js';
 import { toToolName } from './naming.js';
+
+/**
+ * The name a tool is actually REGISTERED under — must mirror buildToolDefinition
+ * (tool-builder.ts) so workflow-prompt text references real tool names. An
+ * `x-mcp-name` (set directly or by the Stainless translator) overrides the
+ * operationId-derived name; without honoring it the prompt would point the model
+ * at tools that do not exist. (Post-collision `_method`/`_2` suffixes applied by
+ * buildAllTools are not visible here, so those rare colliding names may still
+ * diverge — the systematic x-mcp-name case is what this resolves.)
+ */
+function registeredToolName(op: OperationDescriptor): string {
+  const mcpName = op.mcpExtensions?.name;
+  return mcpName ? sanitizeIdentifier(mcpName) : toToolName(op.operationId);
+}
 
 /**
  * Produce an RFC 6570-safe URI-template variable name from an arbitrary path
@@ -175,7 +189,7 @@ export function buildPrompts(operations: OperationDescriptor[]): PromptDefinitio
     if (registeredOps.length === 0) continue;
 
     const toolList = registeredOps
-      .map((op) => `- ${toToolName(op.operationId)}: ${op.summary ?? op.path}`)
+      .map((op) => `- ${registeredToolName(op)}: ${op.summary ?? op.path}`)
       .join('\\n');
 
     // R11-C: derive a unique prompt name.
