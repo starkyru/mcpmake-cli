@@ -16,6 +16,26 @@ describe('formatPrice', () => {
   });
 });
 
+describe('bundled pricing copy — shipped-truth guard', () => {
+  // The bundled FAMILY_A_PRICING is printed offline by the CLI and can be served by the cloud
+  // via /api/pricing, so its summaries must not advertise capabilities that don't ship. The
+  // only shipped "Sync" mechanism is the self-hosted `mcpmake ci init [--pr]` workflow — there
+  // is no managed centralized multi-repo sync service and no policy-check engine. This test
+  // blocks that phrasing from silently returning to the copy.
+  const UNSHIPPED = [/policy\s*check/i, /multi[-\s]?repo/i, /centralized sync/i];
+
+  it('no Family A summary advertises an unshipped Sync capability', () => {
+    for (const [key, point] of Object.entries(FAMILY_A_PRICING)) {
+      for (const banned of UNSHIPPED) {
+        expect(
+          banned.test(point.summary),
+          `pricing "${key}" summary contains unshipped phrasing (${banned}): "${point.summary}"`,
+        ).toBe(false);
+      }
+    }
+  });
+});
+
 describe('fetchPricing', () => {
   afterEach(() => {
     vi.restoreAllMocks();

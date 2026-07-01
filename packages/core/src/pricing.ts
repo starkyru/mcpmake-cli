@@ -48,7 +48,7 @@ export const FAMILY_A_PRICING: Record<string, PricePoint> = {
     priceUsd: 19,
     priceMaxUsd: null,
     period: 'monthly',
-    summary: 'CI drift-check + spec-currency auto-PRs, 1 repo.',
+    summary: 'CI drift-check that fails the build on spec drift, 1 repo.',
   },
   syncTeam: {
     id: 'sync-team',
@@ -56,7 +56,7 @@ export const FAMILY_A_PRICING: Record<string, PricePoint> = {
     priceUsd: 499,
     priceMaxUsd: null,
     period: 'monthly',
-    summary: 'Multi-repo CI sync, policy checks, support.',
+    summary: 'CI drift-check with team seats and priority support.',
   },
   // NB: the CLI is Apache-2.0 — running the generator on your own infra is
   // already free, so this is NOT a code license. It sells the commercial
