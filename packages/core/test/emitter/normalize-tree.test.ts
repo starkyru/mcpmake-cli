@@ -77,6 +77,49 @@ describe('normalizeTree', () => {
     ).toThrow(/conflicting duplicate path/);
   });
 
+  it('fully collapses repeated `/./` and trailing `/.` (segment-based, idempotent)', () => {
+    // The old regex chain left `foo/././bar` as `foo/./bar` and `a/.` as `a/.`, so these
+    // disk-equivalent spellings did NOT dedup/conflict. Segment canonicalization fixes both.
+    const out = normalizeTree([
+      { filePath: 'foo/././bar', content: 'x' },
+      { filePath: 'foo/bar', content: 'x' },
+      { filePath: 'a/.', content: 'y' },
+      { filePath: 'a', content: 'y' },
+    ]);
+    expect(out).toEqual([
+      { filePath: 'a', content: 'y' },
+      { filePath: 'foo/bar', content: 'x' },
+    ]);
+    // A disk-equivalent path spelled `foo/././bar` with DIFFERENT content now conflicts.
+    expect(() =>
+      normalizeTree([
+        { filePath: 'foo/bar', content: 'one' },
+        { filePath: 'foo/././bar', content: 'two' },
+      ]),
+    ).toThrow(/conflicting duplicate path/);
+  });
+
+  it('is idempotent: normalizeTree(normalizeTree(x)) equals normalizeTree(x)', () => {
+    const input: CodeUnit[] = [
+      { filePath: 'foo/././bar', content: 'x' },
+      { filePath: './deep//nested/./file.ts', content: 'y' },
+    ];
+    const once = normalizeTree(input);
+    expect(normalizeTree(once)).toEqual(once);
+  });
+
+  it('rejects an absolute path instead of silently stripping the root', () => {
+    for (const bad of ['/etc/x', '/', '\\\\server\\share']) {
+      expect(() => normalizeTree([{ filePath: bad, content: 'x' }])).toThrow(
+        /absolute file path not allowed/,
+      );
+    }
+  });
+
+  it('normalizes an empty tree to an empty array', () => {
+    expect(normalizeTree([])).toEqual([]);
+  });
+
   it('does not mutate the input array', () => {
     const input: CodeUnit[] = [
       { filePath: 'b.ts', content: '2' },
@@ -122,5 +165,22 @@ describe('treeFingerprint', () => {
 
   it('returns a 64-char hex sha-256 digest', () => {
     expect(treeFingerprint([{ filePath: 'a.ts', content: 'x' }])).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('matches a golden digest (independently derived) so a silent format change is caught', () => {
+    // Expected value derived OUT OF BAND from the documented serialization, not from this code:
+    //   printf 'mcpmake-tree\n1\n4\na.ts\n1\nx\n' | shasum -a 256
+    // A relational "same tree → same hash" assert cannot catch a serialization-format change
+    // (both sides change together); a pinned golden literal can.
+    expect(treeFingerprint([{ filePath: 'a.ts', content: 'x' }])).toBe(
+      '0dd34bd8c1a9645a32200bccbf2d81ade7e04000b4ac607b39d85da19ef33852',
+    );
+  });
+
+  it('fingerprints an empty tree to a stable digest', () => {
+    // printf 'mcpmake-tree\n0\n' | shasum -a 256
+    expect(treeFingerprint([])).toBe(
+      '0f9eccc4d68be325929f8ad10642b10335eb3b793de96128b2dea999c1a783d4',
+    );
   });
 });

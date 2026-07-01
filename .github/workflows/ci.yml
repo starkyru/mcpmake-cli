@@ -28,7 +28,7 @@ jobs:
   # job so the fast build-and-test gate above is unchanged. Net-free by default
   # (no real LLM/cloud — mock loopback servers only). Heavy/browser tiers
   # (MCPMAKE_E2E_HEAVY / MCPMAKE_E2E_BROWSER) are intentionally NOT set here;
-  # they run on a nightly/dispatch workflow.
+  # they run on the scheduled/dispatch `e2e-nightly.yml` workflow.
   e2e:
     needs: build-and-test
     runs-on: ubuntu-latest

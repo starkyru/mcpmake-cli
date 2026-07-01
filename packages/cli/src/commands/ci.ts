@@ -60,10 +60,17 @@ function isUnsafePath(value: string): boolean {
  * absolute paths so the value cannot escape the repo root.
  */
 function assertCiSafe(value: string, label: string, pattern: RegExp): void {
-  if (!pattern.test(value) || (pattern === SAFE_PATH && isUnsafePath(value))) {
+  // A leading `-` makes the value look like a CLI flag once it reaches a shell/git
+  // context (e.g. `git status --porcelain "--all"` — git parses it as an option, not
+  // a pathspec — so the drift gate fails OPEN). Reject it for every interpolated value.
+  if (
+    !pattern.test(value) ||
+    value.startsWith('-') ||
+    (pattern === SAFE_PATH && isUnsafePath(value))
+  ) {
     throw new Error(
       `Unsafe ${label} for the CI workflow: "${value}". ` +
-        `Only letters, digits and ${pattern === SAFE_PATH ? '. _ / -' : '. _ -'} are allowed.`,
+        `Must not start with "-"; only letters, digits and ${pattern === SAFE_PATH ? '. _ / -' : '. _ -'} are allowed.`,
     );
   }
 }
@@ -96,6 +103,15 @@ function q(value: string): string {
  * workflow). It also runs `mcpmake verify` for OpenAPI specs.
  */
 export function buildWorkflowYaml(opts: WorkflowOptions): string {
+  // Validate `source` INSIDE the builder, not only in the CLI wrapper: this function is
+  // exported, so a direct/programmatic caller must not be able to inject arbitrary text
+  // into the generated `from <source>` run-step. `source` is an enum, so an exact-set
+  // check is both the validation and the injection guard.
+  if (!SOURCES.has(opts.source)) {
+    throw new Error(
+      `Unsafe source for the CI workflow: "${opts.source}". Use one of: openapi, har, postman.`,
+    );
+  }
   assertCiSafe(opts.spec, 'spec path', SAFE_PATH);
   assertCiSafe(opts.output, 'output directory', SAFE_PATH);
   assertCiSafe(opts.version, 'mcpmake version', SAFE_TOKEN);
@@ -203,7 +219,7 @@ export function buildWorkflowYaml(opts: WorkflowOptions): string {
     lines.push(
       '      - name: Fail if the generated server is out of date',
       '        run: |',
-      `          if [ -n "$(git status --porcelain ${q(opts.output)})" ]; then`,
+      `          if [ -n "$(git status --porcelain -- ${q(opts.output)})" ]; then`,
       `            echo "::error::The committed MCP server under ${opts.output} is out of date with ${opts.spec}. Regenerate it and commit the result."`,
       `            git --no-pager diff -- ${q(opts.output)}`,
       '            exit 1',
@@ -285,21 +301,31 @@ const initCommand = defineCommand({
     // Reject shell/YAML-unsafe values up front with a friendly message (the same
     // checks are enforced inside buildWorkflowYaml as a hard safety net).
     const version = String(args['mcpmake-version']);
-    if (!SAFE_PATH.test(args.spec) || isUnsafePath(args.spec)) {
+    const output = String(args.output);
+    // A leading `-` is rejected everywhere (it would be read as a flag in the generated
+    // shell/git steps); the hard gate lives in buildWorkflowYaml, these give a friendly message.
+    if (!SAFE_PATH.test(args.spec) || isUnsafePath(args.spec) || args.spec.startsWith('-')) {
       await fail(
-        `Unsafe spec path "${args.spec}". Use a plain relative path (letters, digits, . _ / -).`,
+        `Unsafe spec path "${args.spec}". Use a plain relative path (letters, digits, . _ / -), not starting with "-".`,
       );
     }
-    if (!SAFE_PATH.test(String(args.output)) || isUnsafePath(String(args.output))) {
+    if (!SAFE_PATH.test(output) || isUnsafePath(output) || output.startsWith('-')) {
       await fail(
-        `Unsafe --output "${args.output}". Use a plain relative path (letters, digits, . _ / -).`,
+        `Unsafe --output "${output}". Use a plain relative path (letters, digits, . _ / -), not starting with "-".`,
       );
     }
-    if (args.name !== undefined && !SAFE_TOKEN.test(String(args.name))) {
-      await fail(`Unsafe --name "${args.name}". Use letters, digits, . _ - only.`);
+    if (
+      args.name !== undefined &&
+      (!SAFE_TOKEN.test(String(args.name)) || String(args.name).startsWith('-'))
+    ) {
+      await fail(
+        `Unsafe --name "${args.name}". Use letters, digits, . _ - only, not starting with "-".`,
+      );
     }
-    if (!SAFE_TOKEN.test(version)) {
-      await fail(`Unsafe --mcpmake-version "${version}". Use letters, digits, . _ - only.`);
+    if (!SAFE_TOKEN.test(version) || version.startsWith('-')) {
+      await fail(
+        `Unsafe --mcpmake-version "${version}". Use letters, digits, . _ - only, not starting with "-".`,
+      );
     }
     const openPr = Boolean(args.pr);
     const prBranch = String(args['pr-branch']);

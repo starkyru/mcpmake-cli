@@ -76,5 +76,17 @@ describe('integration: emitter determinism gate', () => {
     expect(treeA.map((u) => u.filePath).sort()).toContain('src/index.ts');
     // ...and regenerating it is byte-identical — the property managed Sync depends on.
     expect(treeFingerprint(treeA)).toBe(treeFingerprint(treeB));
+
+    // Both emits ran at the same instant, so a coarse (date/second-resolution) `new Date()`
+    // leak would still fingerprint-match here and pass the assert above. Guard the leak class
+    // directly: no generated file may carry an ISO-8601 datetime. A hardcoded license year like
+    // "2026" is fine — it has no time component and won't match.
+    const isoDateTime = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/;
+    for (const unit of treeA) {
+      expect(
+        isoDateTime.test(unit.content),
+        `generated ${unit.filePath} contains a baked ISO timestamp (non-deterministic)`,
+      ).toBe(false);
+    }
   });
 });

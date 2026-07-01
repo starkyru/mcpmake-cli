@@ -28,20 +28,30 @@ function byteCompare(a: string, b: string): number {
 }
 
 /**
- * Canonicalize a relative path: Windows separators → POSIX `/`, collapse repeated slashes and
- * mid-path `/./` segments, strip a leading `./` and any trailing `/`. This matters for the
- * dedup contract: `foo/./bar`, `foo//bar`, and `foo/bar/` all resolve to the SAME file on disk,
- * so they must canonicalize identically here — otherwise two units differing only in path
- * spelling slip past the collision check and `writeCodeUnits` silently last-write-wins. `..`
- * segments are NOT resolved (that would need a real path stack); they are rejected by the caller.
+ * Canonicalize a relative path by SEGMENTS: Windows separators → POSIX `/`, then drop every
+ * empty segment (from repeated, leading, or trailing slashes) and every `.` segment. This is
+ * provably idempotent — `normalizePath(normalizePath(p)) === normalizePath(p)` — because the
+ * result can contain no empty or `.` segment for a second pass to remove. A regex chain is NOT
+ * used: `/\/\.\//g` is non-overlapping, so `foo/././bar` → `foo/./bar` (a residual `/./`) and a
+ * trailing `/.` survives — both defeat the dedup contract by leaving disk-equivalent paths in
+ * distinct canonical forms. `foo/./bar`, `foo//bar`, `foo/bar/`, and `foo/././bar` all resolve
+ * to the SAME file on disk, so they must canonicalize identically here — otherwise two units
+ * differing only in path spelling slip past the collision check and `writeCodeUnits` silently
+ * last-write-wins. `..` segments are NOT resolved (that would need a real path stack); they are
+ * preserved so the caller can reject them.
  */
 function normalizePath(filePath: string): string {
   return filePath
     .replace(/\\/g, '/')
-    .replace(/\/{2,}/g, '/')
-    .replace(/\/\.\//g, '/')
-    .replace(/^\.\//, '')
-    .replace(/\/$/, '');
+    .split('/')
+    .filter((segment) => segment !== '' && segment !== '.')
+    .join('/');
+}
+
+/** True if the path is absolute (POSIX `/` or Windows `\` root). Absolute paths escape the
+ * output-dir contract, so the gate rejects them rather than silently stripping the root. */
+function isAbsolutePath(filePath: string): boolean {
+  return /^[/\\]/.test(filePath);
 }
 
 /** True if any path segment is exactly `..` (an unresolved traversal the gate must reject). */
@@ -59,8 +69,13 @@ function hasDotDotSegment(filePath: string): boolean {
 export function normalizeTree(units: CodeUnit[]): CodeUnit[] {
   const byPath = new Map<string, string>();
   for (const unit of units) {
+    if (isAbsolutePath(unit.filePath)) {
+      throw new Error(
+        `normalizeTree: absolute file path not allowed: ${JSON.stringify(unit.filePath)}`,
+      );
+    }
     const filePath = normalizePath(unit.filePath);
-    if (filePath === '' || filePath === '.' || hasDotDotSegment(filePath)) {
+    if (filePath === '' || hasDotDotSegment(filePath)) {
       throw new Error(
         `normalizeTree: empty or invalid file path: ${JSON.stringify(unit.filePath)}`,
       );

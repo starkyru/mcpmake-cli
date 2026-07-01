@@ -3,9 +3,10 @@
 **Turn any API into an MCP server an AI agent can actually use — in one command.**
 
 `mcpmake` reads what you already have — an OpenAPI spec, a Postman collection, a
-HAR capture, a live URL, a whole website, or just a plain-English description —
-and generates a clean, typed, editable [Model Context Protocol](https://modelcontextprotocol.io)
-server you **own**. No boilerplate, no SDK lock-in.
+HAR capture, a Stainless config, or a live URL — and generates a clean, typed,
+editable [Model Context Protocol](https://modelcontextprotocol.io) server you
+**own**. No boilerplate, no SDK lock-in. (Browser- and LLM-driven paths — whole-website
+capture and plain-English `describe` — also exist as **experimental**, best-effort inputs.)
 
 [![npm](https://img.shields.io/npm/v/mcpmake.svg)](https://www.npmjs.com/package/mcpmake)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](./LICENSE)

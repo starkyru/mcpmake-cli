@@ -60,6 +60,13 @@ jobs:
       - run: npm run build
       - run: npm audit --omit=dev --audit-level=high
 
+      # Built-bin e2e: prove the *installed* bin and generated servers actually work before
+      # publishing — the exact surface users buy. Net-free (mock loopback only); heavy/browser
+      # tiers run on the scheduled e2e-nightly.yml workflow.
+      - run: npm run test:e2e
+        env:
+          MCPMAKE_E2E: '1'
+
       - name: Bump patch version (both packages, lockstep)
         id: bump
         run: |

@@ -63,8 +63,8 @@ describe.skipIf(!E2E)('e2e: mcpmake ci init', () => {
       expect(yaml).toContain(
         'run: npx --yes mcpmake@latest verify "api-spec.yaml" -p "./mcp-server"',
       );
-      // Drift gate.
-      expect(yaml).toContain('git status --porcelain "./mcp-server"');
+      // Drift gate — `--` terminates git options so a `-`-leading output can't be read as a flag.
+      expect(yaml).toContain('git status --porcelain -- "./mcp-server"');
       expect(yaml).toContain('exit 1');
     });
   });
@@ -127,7 +127,7 @@ describe.skipIf(!E2E)('e2e: mcpmake ci init', () => {
       expect(r.code).toBe(1);
       // Exact message from ci.ts.
       expect(combined(r)).toContain(
-        'Unsafe spec path "foo$(reboot).yaml". Use a plain relative path (letters, digits, . _ / -).',
+        'Unsafe spec path "foo$(reboot).yaml". Use a plain relative path (letters, digits, . _ / -), not starting with "-".',
       );
       expect(existsSync(join(dir, WORKFLOW_REL))).toBe(false);
     });
@@ -142,7 +142,7 @@ describe.skipIf(!E2E)('e2e: mcpmake ci init', () => {
       const r = await runCli(['ci', 'init', '../../etc/x', '-s', 'openapi'], { cwd: dir });
       expect(r.code).toBe(1);
       expect(combined(r)).toContain(
-        'Unsafe spec path "../../etc/x". Use a plain relative path (letters, digits, . _ / -).',
+        'Unsafe spec path "../../etc/x". Use a plain relative path (letters, digits, . _ / -), not starting with "-".',
       );
       expect(existsSync(join(dir, WORKFLOW_REL))).toBe(false);
     });

@@ -1,0 +1,31 @@
+name: E2E (heavy + browser)
+
+# The expensive e2e tiers the fast CI gate intentionally skips: generated Node/Worker/Python
+# compile+import+run, generated MCP handshake (HEAVY), and real browser URL capture / website
+# crawl / rescan (BROWSER). These are slow and Playwright-dependent, so they run on a schedule
+# and on demand rather than on every push.
+on:
+  schedule:
+    # 07:00 UTC nightly.
+    - cron: '0 7 * * *'
+  workflow_dispatch:
+
+jobs:
+  e2e-heavy-browser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      # Playwright browser + OS deps for the BROWSER tier (URL capture / crawl / rescan).
+      - name: Install Playwright browser
+        run: npx --yes playwright install --with-deps chromium
+      - run: npm run test:e2e
+        env:
+          MCPMAKE_E2E: '1'
+          MCPMAKE_E2E_HEAVY: '1'
+          MCPMAKE_E2E_BROWSER: '1'

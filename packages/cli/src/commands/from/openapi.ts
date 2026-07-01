@@ -283,7 +283,12 @@ export default defineConfigurableCommand('openapi', {
     // --static-tools, only discovery meta-tools are registered, so every
     // composite step would fail at runtime with "tool not found" (and the stdio
     // template would not even compile). Reject the combination up front.
-    if (compositeTools && compositeTools.length > 0 && dynamicDiscovery && (staticToolCount ?? 0) === 0) {
+    if (
+      compositeTools &&
+      compositeTools.length > 0 &&
+      dynamicDiscovery &&
+      (staticToolCount ?? 0) === 0
+    ) {
       await fail(
         'Composite tools require static tools to call their steps, but --dynamic-discovery ' +
           'without --static-tools registers only discovery meta-tools. Add --static-tools=<N> ' +

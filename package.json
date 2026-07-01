@@ -20,7 +20,8 @@
     "test:e2e": "vitest run -c vitest.e2e.config.ts",
     "format": "prettier --write 'packages/*/src/**/*.ts' 'packages/*/test/**/*.ts'",
     "format:check": "prettier --check 'packages/*/src/**/*.ts' 'packages/*/test/**/*.ts'",
-    "publish:all": "npm run build && npm publish --workspace @mcpmake/core && npm publish --workspace mcpmake"
+    "prepublish:all": "npm run format:check && npm run typecheck && npm test && npm run build && MCPMAKE_E2E=1 npm run test:e2e && npm audit --omit=dev --audit-level=high",
+    "publish:all": "npm run prepublish:all && npm publish --workspace @mcpmake/core && npm publish --workspace mcpmake"
   },
   "devDependencies": {
     "@types/har-format": "^1.2.16",

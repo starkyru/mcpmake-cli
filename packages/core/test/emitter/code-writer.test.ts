@@ -81,6 +81,34 @@ describe('writeCodeUnits — atomic regeneration safety (M11/M12)', () => {
     ).rejects.toThrow(/Path traversal/);
   });
 
+  it('throws on a same-path/different-content duplicate before touching disk (data-loss guard)', async () => {
+    await expect(
+      writeCodeUnits(
+        [
+          { filePath: 'src/tools/home.ts', content: 'export const home = 1;' },
+          { filePath: 'src/tools/home.ts', content: 'export const home = 2;' },
+        ],
+        dir,
+        { force: true, dryRun: false },
+      ),
+    ).rejects.toThrow(/conflicting content/);
+    // Nothing was written — the throw happens before any staging/rename.
+    const top = await readdir(dir);
+    expect(top).toEqual([]);
+  });
+
+  it('collapses an identical same-path duplicate without error', async () => {
+    await writeCodeUnits(
+      [
+        { filePath: 'src/tools/home.ts', content: 'export const home = 1;' },
+        { filePath: 'src/tools/home.ts', content: 'export const home = 1;' },
+      ],
+      dir,
+      { force: true, dryRun: false },
+    );
+    expect(await readFile(resolve(dir, 'src/tools/home.ts'), 'utf-8')).toContain('home = 1');
+  });
+
   it('dry-run writes nothing', async () => {
     await writeCodeUnits([{ filePath: 'src/index.ts', content: 'x' }], dir, {
       force: true,

@@ -1,6 +1,10 @@
 import type { OperationDescriptor } from '../types/index.js';
 import type { ResourceDefinition, PromptDefinition } from '../types/index.js';
-import { escapeTemplateLiteral, escapeStringLiteral, sanitizeIdentifier } from '../utils/sanitize.js';
+import {
+  escapeTemplateLiteral,
+  escapeStringLiteral,
+  sanitizeIdentifier,
+} from '../utils/sanitize.js';
 import { toToolName } from './naming.js';
 
 /**

@@ -13,14 +13,23 @@ server. No boilerplate, no SDK lock-in.
 
 ---
 
-## Six ways in
+## Ways in
+
+**Primary paths** — deterministic, driven by a spec or recorded traffic you already have:
 
 | Input | Command |
 |-------|---------|
 | OpenAPI / Swagger spec | `mcpmake from openapi ./spec.yaml -o ./server` |
 | Postman collection | `mcpmake from postman ./collection.json -o ./server` |
 | HAR capture (recorded traffic) | `mcpmake from har ./session.har -o ./server` |
+| Stainless config (migration) | `mcpmake from stainless ./stainless.yaml -o ./server` |
 | A live URL (record it for you) | `mcpmake from url https://api.example.com -o ./server` |
+
+**Experimental paths** — browser- and LLM-driven, best-effort, and higher-variance
+across arbitrary real-world sites/prompts. Review the generated server before you ship it:
+
+| Input | Command |
+|-------|---------|
 | A whole website (browser tools) | `mcpmake from website https://example.com -o ./server` |
 | A plain-English description | `mcpmake from describe "a todo API with auth" -o ./server` |
 
@@ -86,12 +95,17 @@ See the migration guide at **[mcpmake.dev](https://mcpmake.dev)**.
 
 ## Publish to a registry
 
-Generated servers can be published to the MCP ecosystem — mcp.so, Smithery,
-Glama, and the official registry:
+Generate the registry manifests your server needs for the MCP ecosystem — mcp.so,
+Smithery, Glama, and the official registry — and hand off to `mcp-publisher` for the
+actual upload:
 
 ```bash
 mcpmake publish ./server
 ```
+
+> Manifest generation is tested end-to-end; live upload depends on the external
+> `mcp-publisher` and each registry's API. Verify the publish against the target
+> registry before relying on it in automation.
 
 ## Pricing
 

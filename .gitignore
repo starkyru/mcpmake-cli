@@ -5,7 +5,7 @@ dist/
 .build.lock/
 *.log
 .DS_Store
-AUDIT_REPORT.md
+AUDIT_REPORT*.md
 DONE.md
 TODO.md
 .claude/*

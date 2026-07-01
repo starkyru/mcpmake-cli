@@ -35,7 +35,10 @@ async function readTree(dir: string): Promise<CodeUnit[]> {
       const abs = resolve(current, entry.name);
       if (entry.isDirectory()) await walk(abs);
       else if (entry.isFile())
-        out.push({ filePath: relative(dir, abs).split(sep).join('/'), content: await readFile(abs, 'utf-8') });
+        out.push({
+          filePath: relative(dir, abs).split(sep).join('/'),
+          content: await readFile(abs, 'utf-8'),
+        });
     }
   }
   await walk(dir);

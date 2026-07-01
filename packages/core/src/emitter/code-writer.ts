@@ -30,20 +30,20 @@ export async function writeCodeUnits(
     return { absPath, unit };
   });
 
-  // Defense-in-depth: collapse units that resolve to the SAME absolute path so
-  // the force/atomic path never stages one temp once but renames it twice
-  // (→ ENOENT on the second rename). Two site tools sharing a generated
-  // filename is the known trigger; the tool-generator now keeps them distinct,
-  // but a future collision must not crash or silently drop a file. Last writer
-  // wins, first-occurrence order is preserved, and every drop is warned once —
-  // a no-op when there are no collisions.
+  // Defense-in-depth: two units resolving to the SAME absolute path is a data-loss class.
+  // Silently keeping the last writer would drop one file's content while still "succeeding",
+  // and in the force/atomic path it also stages one temp but renames it twice (→ ENOENT on
+  // the second rename). The tool-generator dedups filenames so this should never fire in
+  // practice, but a future generator regression must FAIL LOUDLY before touching disk rather
+  // than corrupt the output. Identical-content duplicates are harmless and collapse to one.
   const byPath = new Map<string, (typeof resolved)[number]>();
   for (const entry of resolved) {
     const existing = byPath.get(entry.absPath);
-    if (existing) {
-      logger.warn(
-        `Duplicate output path: ${entry.unit.filePath} overwrites ${existing.unit.filePath} ` +
-          `(both resolve to the same file) — keeping the last.`,
+    if (existing && existing.unit.content !== entry.unit.content) {
+      throw new Error(
+        `Duplicate output path with conflicting content: "${entry.unit.filePath}" and ` +
+          `"${existing.unit.filePath}" resolve to the same file but emit different content. ` +
+          `This is a generator bug — refusing to write to avoid dropping a file.`,
       );
     }
     byPath.set(entry.absPath, entry);
