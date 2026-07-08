@@ -51,3 +51,38 @@ install/build/run + MCP handshake), `MCPMAKE_E2E_BROWSER` (Playwright crawls).
 - Assertions must be discriminating: exact tool counts, exact filenames, exact
   exit codes, specific message substrings — never just truthiness/length.
 - Helpers in `./helpers/`, fixtures in `./fixtures/`.
+
+## Parity tier (`parity/generated-parity.e2e.test.ts`, HEAVY)
+
+Generates **one** OpenAPI fixture (`fixtures/parity.yaml`) as all three targets,
+RUNS four runtimes — node-stdio, node-http (`TRANSPORT=http`), a Cloudflare
+Worker under `wrangler dev`, and a python FastMCP server in a venv — against a
+single recording mock upstream, and cross-compares real MCP traffic:
+
+- `tools/list`: identical tool inventory; schemas deep-equal after language
+  envelopes are stripped (`helpers/normalize-mcp.ts` — unit-tested in the fast
+  tier by `packages/cli/test/normalize-mcp.unit.test.ts`).
+- `tools/call`: identical canonical upstream wire request (method / path /
+  query / `X-Api-Key` / JSON body) and identical normalized result.
+- Every KNOWN divergence (control args, tool title, outputSchema provenance,
+  structuredContent, annotations, upstream-error `isError`, `MCP_TOOLS`
+  filtering, http transport) is pinned in `parity/asymmetries.ts` and asserted
+  in **both directions** — a gap silently closing fails just like a capability
+  silently regressing.
+
+When drift is INTENTIONAL (a feature added to or removed from one target),
+update the boolean table / error-text regexes in `parity/asymmetries.ts` in the
+same change, with a comment saying why — the table is the documented contract
+of what each target does and does not do.
+
+Run locally (needs network for npm installs, a `python3`, and ~5 min):
+
+```bash
+npm run build
+MCPMAKE_E2E=1 MCPMAKE_E2E_HEAVY=1 npx vitest run -c vitest.e2e.config.ts \
+  packages/cli/test/e2e/parity/generated-parity.e2e.test.ts
+```
+
+A runtime whose toolchain can't be provisioned (offline, no python, wrangler
+boot failure) skips cleanly with a `[parity] SKIP …` console line; the
+remaining runtimes are still cross-compared.

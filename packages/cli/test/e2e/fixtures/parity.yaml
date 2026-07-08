@@ -1,0 +1,183 @@
+openapi: "3.0.0"
+info:
+  version: 1.0.0
+  title: Widget Store
+  description: Cross-language parity fixture — one spec generated as node/worker/python.
+servers:
+  - url: https://widgets.example.com/v1
+paths:
+  /widgets:
+    get:
+      summary: List all widgets
+      operationId: listWidgets
+      tags:
+        - widgets
+      parameters:
+        - name: limit
+          in: query
+          description: How many widgets to return at one time (max 100)
+          required: false
+          schema:
+            type: integer
+            maximum: 100
+        - name: active
+          in: query
+          description: Only return active widgets
+          required: false
+          schema:
+            type: boolean
+        - name: sort
+          in: query
+          description: Sort order
+          required: false
+          schema:
+            type: string
+            enum: [asc, desc]
+        - name: X-Request-Id
+          in: header
+          description: Optional request correlation id
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: A paged array of widgets
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Widgets"
+    post:
+      summary: Create a widget
+      operationId: createWidget
+      tags:
+        - widgets
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NewWidget"
+      responses:
+        "201":
+          description: Creation receipt echoing the submitted widget
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreatedWidget"
+  /widgets/{widgetId}:
+    get:
+      summary: Info for a specific widget
+      operationId: getWidget
+      tags:
+        - widgets
+      parameters:
+        - name: widgetId
+          in: path
+          required: true
+          description: The id of the widget to retrieve
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Expected response to a valid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Widget"
+    delete:
+      summary: Delete a widget
+      operationId: deleteWidget
+      tags:
+        - widgets
+      parameters:
+        - name: widgetId
+          in: path
+          required: true
+          description: The id of the widget to delete
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Deletion confirmation
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted:
+                    type: boolean
+components:
+  schemas:
+    Widget:
+      type: object
+      required:
+        - id
+        - name
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+    # The list endpoint returns compact entries with NUMERIC ids (the detail
+    # endpoint uses string ids) — matching the parity mock upstream exactly, so
+    # the node target's structuredContent-vs-outputSchema validation passes.
+    Widgets:
+      type: array
+      items:
+        type: object
+        required:
+          - id
+          - name
+        properties:
+          id:
+            type: integer
+          name:
+            type: string
+    CreatedWidget:
+      type: object
+      required:
+        - id
+        - echo
+      properties:
+        id:
+          type: string
+        echo:
+          description: The submitted widget, echoed back
+          type: object
+          additionalProperties: true
+    NewWidget:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          description: Display name of the widget
+        tags:
+          type: array
+          description: Free-form labels
+          items:
+            type: string
+        priority:
+          type: string
+          description: Scheduling priority
+          enum: [low, med, high]
+        dimensions:
+          type: object
+          description: Physical size
+          properties:
+            width:
+              type: number
+            height:
+              type: number
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-Api-Key
+security:
+  - ApiKeyAuth: []
