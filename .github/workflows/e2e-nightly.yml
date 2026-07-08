@@ -19,6 +19,15 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      # Python for the parity tier (the generated FastMCP server runs in a venv).
+      # The cache is keyed on the generated-server requirements template — the
+      # exact dep set provisionPythonVenv installs (the repo has no top-level
+      # requirements.txt for the default glob to find).
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: packages/core/src/emitter/python-templates/requirements.txt.hbs
       - run: npm ci
       - run: npm run build
       # Playwright browser + OS deps for the BROWSER tier (URL capture / crawl / rescan).
@@ -29,3 +38,4 @@ jobs:
           MCPMAKE_E2E: '1'
           MCPMAKE_E2E_HEAVY: '1'
           MCPMAKE_E2E_BROWSER: '1'
+          WRANGLER_SEND_METRICS: 'false'
