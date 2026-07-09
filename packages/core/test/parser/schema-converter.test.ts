@@ -113,10 +113,7 @@ describe('schema-converter', () => {
 
     it('sanitizes garbage defaults nested inside anyOf branches', () => {
       const code = jsonSchemaToZodCode({
-        anyOf: [
-          { type: 'array', items: { type: 'string' }, default: 'bogus' },
-          { type: 'null' },
-        ],
+        anyOf: [{ type: 'array', items: { type: 'string' }, default: 'bogus' }, { type: 'null' }],
       } as any);
       expect(code).not.toContain('.default("bogus")');
     });

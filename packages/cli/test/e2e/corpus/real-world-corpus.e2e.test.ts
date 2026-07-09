@@ -156,131 +156,111 @@ describe.skipIf(!HEAVY)('e2e corpus: 10 real-world API specs', () => {
 
   for (const entry of CORPUS) {
     describe(`${entry.name} (OpenAPI ${entry.specVersion})`, () => {
-      it(
-        'generates the node project with the exact expected tool inventory',
-        async () => {
-          const st = states.get(entry.name)!;
-          if (!st.specPath) return; // download skipped cleanly
+      it('generates the node project with the exact expected tool inventory', async () => {
+        const st = states.get(entry.name)!;
+        if (!st.specPath) return; // download skipped cleanly
 
-          const gen = await runCli(['from', 'openapi', st.specPath, '-o', st.nodeDir], {
-            cwd: parentDir,
+        const gen = await runCli(['from', 'openapi', st.specPath, '-o', st.nodeDir], {
+          cwd: parentDir,
+        });
+        expect(gen.code, combined(gen)).toBe(0);
+
+        const pkg = JSON.parse(readFileSync(join(st.nodeDir, 'package.json'), 'utf8')) as {
+          name: string;
+        };
+        expect(pkg.name).toBe(entry.serverName);
+
+        const files = nodeToolFileNames(st.nodeDir);
+        expect(files).toHaveLength(entry.toolCount);
+        for (const tool of entry.sampleTools) {
+          expect(files).toContain(tool.replaceAll('_', '-'));
+        }
+      }, 240_000);
+
+      it('generated node project compiles (tsc)', async () => {
+        const st = states.get(entry.name)!;
+        if (!st.specPath || !deps.ok || !existsSync(st.nodeDir)) return;
+        if (!entry.typecheck) return; // documented scale limitation — see manifest
+
+        const result = await tscBuild(parentDir, st.nodeDir);
+        expect(result.code, `tsc diagnostics:\n${result.output}`).toBe(0);
+        expect(existsSync(join(st.nodeDir, 'dist', 'index.js'))).toBe(true);
+      }, 300_000);
+
+      it('node server boots and tools/list matches the manifest exactly', async () => {
+        const st = states.get(entry.name)!;
+        const viaDist = entry.typecheck; // typecheck:false boots via tsx instead
+        if (!st.specPath || !deps.ok) return;
+        if (viaDist && !existsSync(join(st.nodeDir, 'dist', 'index.js'))) return;
+        if (!viaDist && !existsSync(join(st.nodeDir, 'src', 'index.ts'))) return;
+
+        let client: McpStdioClient | undefined;
+        try {
+          const { client: c, serverInfo } = await startMcpServer({
+            cwd: st.nodeDir,
+            // No tools/call is made; the URL only has to parse.
+            env: { BASE_URL: 'http://127.0.0.1:9' },
+            requestTimeoutMs: 60_000,
+            ...(viaDist
+              ? {}
+              : {
+                  command: join(parentDir, 'node_modules', '.bin', 'tsx'),
+                  args: ['src/index.ts'],
+                }),
           });
-          expect(gen.code, combined(gen)).toBe(0);
+          client = c;
+          expect(serverInfo.name).toBe(entry.serverName);
 
-          const pkg = JSON.parse(readFileSync(join(st.nodeDir, 'package.json'), 'utf8')) as {
-            name: string;
-          };
-          expect(pkg.name).toBe(entry.serverName);
-
-          const files = nodeToolFileNames(st.nodeDir);
-          expect(files).toHaveLength(entry.toolCount);
-          for (const tool of entry.sampleTools) {
-            expect(files).toContain(tool.replaceAll('_', '-'));
+          const tools = await client.listTools();
+          const names = tools.map((t) => t.name);
+          expect(names).toHaveLength(entry.toolCount);
+          expect(new Set(names).size).toBe(entry.toolCount); // no duplicates
+          for (const name of names) {
+            expect(name).toMatch(/^[a-z0-9_]+$/);
           }
-        },
-        240_000,
-      );
-
-      it(
-        'generated node project compiles (tsc)',
-        async () => {
-          const st = states.get(entry.name)!;
-          if (!st.specPath || !deps.ok || !existsSync(st.nodeDir)) return;
-          if (!entry.typecheck) return; // documented scale limitation — see manifest
-
-          const result = await tscBuild(parentDir, st.nodeDir);
-          expect(result.code, `tsc diagnostics:\n${result.output}`).toBe(0);
-          expect(existsSync(join(st.nodeDir, 'dist', 'index.js'))).toBe(true);
-        },
-        300_000,
-      );
-
-      it(
-        'node server boots and tools/list matches the manifest exactly',
-        async () => {
-          const st = states.get(entry.name)!;
-          const viaDist = entry.typecheck; // typecheck:false boots via tsx instead
-          if (!st.specPath || !deps.ok) return;
-          if (viaDist && !existsSync(join(st.nodeDir, 'dist', 'index.js'))) return;
-          if (!viaDist && !existsSync(join(st.nodeDir, 'src', 'index.ts'))) return;
-
-          let client: McpStdioClient | undefined;
-          try {
-            const { client: c, serverInfo } = await startMcpServer({
-              cwd: st.nodeDir,
-              // No tools/call is made; the URL only has to parse.
-              env: { BASE_URL: 'http://127.0.0.1:9' },
-              requestTimeoutMs: 60_000,
-              ...(viaDist
-                ? {}
-                : {
-                    command: join(parentDir, 'node_modules', '.bin', 'tsx'),
-                    args: ['src/index.ts'],
-                  }),
-            });
-            client = c;
-            expect(serverInfo.name).toBe(entry.serverName);
-
-            const tools = await client.listTools();
-            const names = tools.map((t) => t.name);
-            expect(names).toHaveLength(entry.toolCount);
-            expect(new Set(names).size).toBe(entry.toolCount); // no duplicates
-            for (const name of names) {
-              expect(name).toMatch(/^[a-z0-9_]+$/);
-            }
-            for (const sample of entry.sampleTools) {
-              expect(names).toContain(sample);
-            }
-            st.nodeRuntimeTools = [...names].sort();
-          } finally {
-            await client?.close();
+          for (const sample of entry.sampleTools) {
+            expect(names).toContain(sample);
           }
-        },
-        120_000,
-      );
+          st.nodeRuntimeTools = [...names].sort();
+        } finally {
+          await client?.close();
+        }
+      }, 120_000);
 
-      it(
-        'python server registers the IDENTICAL tool inventory (cross-language)',
-        async () => {
-          const st = states.get(entry.name)!;
-          if (!st.specPath) return;
+      it('python server registers the IDENTICAL tool inventory (cross-language)', async () => {
+        const st = states.get(entry.name)!;
+        if (!st.specPath) return;
 
-          const gen = await runCli(
-            ['from', 'openapi', st.specPath, '-o', st.pyDir, '--format', 'python'],
-            { cwd: parentDir },
-          );
-          expect(gen.code, combined(gen)).toBe(0);
+        const gen = await runCli(
+          ['from', 'openapi', st.specPath, '-o', st.pyDir, '--format', 'python'],
+          { cwd: parentDir },
+        );
+        expect(gen.code, combined(gen)).toBe(0);
 
-          const pyNames = pythonToolNames(st.pyDir).sort();
-          // Prefer the node server's RUNTIME inventory; fall back to the
-          // generated file names (same names, kebab-cased) when the boot test
-          // was skipped (offline) so the cross-language check still runs.
-          const nodeNames =
-            st.nodeRuntimeTools ??
-            (existsSync(st.nodeDir)
-              ? nodeToolFileNames(st.nodeDir)
-                  .map((f) => f.replaceAll('-', '_'))
-                  .sort()
-              : null);
-          expect(pyNames).toHaveLength(entry.toolCount);
-          if (nodeNames) {
-            expect(pyNames).toEqual(nodeNames);
-          }
-        },
-        240_000,
-      );
+        const pyNames = pythonToolNames(st.pyDir).sort();
+        // Prefer the node server's RUNTIME inventory; fall back to the
+        // generated file names (same names, kebab-cased) when the boot test
+        // was skipped (offline) so the cross-language check still runs.
+        const nodeNames =
+          st.nodeRuntimeTools ??
+          (existsSync(st.nodeDir)
+            ? nodeToolFileNames(st.nodeDir)
+                .map((f) => f.replaceAll('-', '_'))
+                .sort()
+            : null);
+        expect(pyNames).toHaveLength(entry.toolCount);
+        if (nodeNames) {
+          expect(pyNames).toEqual(nodeNames);
+        }
+      }, 240_000);
 
-      it(
-        'python server imports cleanly (registrations execute)',
-        async () => {
-          const st = states.get(entry.name)!;
-          if (!st.specPath || !py.python || !existsSync(join(st.pyDir, 'server.py'))) return;
+      it('python server imports cleanly (registrations execute)', async () => {
+        const st = states.get(entry.name)!;
+        if (!st.specPath || !py.python || !existsSync(join(st.pyDir, 'server.py'))) return;
 
-          const result = await pythonImportServer(py.python, st.pyDir);
-          expect(result.code, `python import:\n${result.stdout}\n${result.stderr}`).toBe(0);
-        },
-        180_000,
-      );
+        const result = await pythonImportServer(py.python, st.pyDir);
+        expect(result.code, `python import:\n${result.stdout}\n${result.stderr}`).toBe(0);
+      }, 180_000);
     });
   }
 });

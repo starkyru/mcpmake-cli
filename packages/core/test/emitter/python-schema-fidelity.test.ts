@@ -402,7 +402,9 @@ describe('A4-H2 — full-fidelity Python input schema', () => {
       expect(defLine!).toMatch(/opt_fields: str \| None = None/);
       expect(defLine!).toMatch(/peek: str \| None = None/);
       // Safe pattern preserved.
-      expect(defLine!).toMatch(/plain: Annotated\[str \| None, Field\(pattern="\^\[a-z\]\+\$"\)\] = None/);
+      expect(defLine!).toMatch(
+        /plain: Annotated\[str \| None, Field\(pattern="\^\[a-z\]\+\$"\)\] = None/,
+      );
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

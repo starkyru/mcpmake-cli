@@ -48,7 +48,11 @@ export const CORPUS: CorpusEntry[] = [
     specVersion: '3.0',
     serverName: 'twilio-messaging',
     toolCount: 58,
-    sampleTools: ['create_alpha_sender', 'create_brand_registration_otp', 'update_us_app_to_person'],
+    sampleTools: [
+      'create_alpha_sender',
+      'create_brand_registration_otp',
+      'update_us_app_to_person',
+    ],
     typecheck: true,
   },
   {
@@ -92,7 +96,11 @@ export const CORPUS: CorpusEntry[] = [
     specVersion: '3.1',
     serverName: 'discord-http-api-preview',
     toolCount: 242,
-    sampleTools: ['action_guild_join_request', 'add_group_dm_user', 'upload_application_attachment'],
+    sampleTools: [
+      'action_guild_join_request',
+      'add_group_dm_user',
+      'upload_application_attachment',
+    ],
     typecheck: true,
   },
   {
