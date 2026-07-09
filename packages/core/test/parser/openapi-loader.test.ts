@@ -147,6 +147,50 @@ describe('convertSwagger2ToOpenApi3 — $ref body parameters', () => {
   });
 });
 
+describe('convertSwagger2ToOpenApi3 — $refs INSIDE definitions are rewritten', () => {
+  it('rewrites definition-to-definition $refs to #/components/schemas', () => {
+    // Real-world 2.0 specs (netlify, docker, slack, kubernetes) all have
+    // definitions referencing other definitions. Copying the map verbatim
+    // leaves `#/definitions/...` pointers that make dereference throw
+    // `Missing $ref pointer "#/definitions/X". Token "definitions" does not exist.`
+    const doc = makeDoc({
+      definitions: {
+        Deploy: {
+          type: 'object',
+          properties: {
+            files: { $ref: '#/definitions/DeployFiles' },
+            tags: { type: 'array', items: { $ref: '#/definitions/Tag' } },
+          },
+        },
+        DeployFiles: { type: 'object', properties: { count: { type: 'integer' } } },
+        Tag: { type: 'string' },
+      },
+      paths: {
+        '/deploys': {
+          get: {
+            operationId: 'listDeploys',
+            responses: {
+              200: { description: 'ok', schema: { $ref: '#/definitions/Deploy' } },
+            },
+          },
+        },
+      },
+    });
+
+    const result = convertSwagger2ToOpenApi3(doc);
+    const schemas = (result.components as Record<string, unknown>).schemas as Record<
+      string,
+      Record<string, unknown>
+    >;
+
+    const props = schemas.Deploy.properties as Record<string, Record<string, unknown>>;
+    expect(props.files.$ref).toBe('#/components/schemas/DeployFiles');
+    expect((props.tags.items as Record<string, unknown>).$ref).toBe('#/components/schemas/Tag');
+    // No `#/definitions/` pointer may survive anywhere in the converted doc.
+    expect(JSON.stringify(result)).not.toContain('#/definitions/');
+  });
+});
+
 describe('convertSwagger2ToOpenApi3 — unresolvable $ref is warned and skipped', () => {
   afterEach(() => {
     vi.restoreAllMocks();

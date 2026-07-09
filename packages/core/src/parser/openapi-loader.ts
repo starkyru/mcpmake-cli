@@ -130,9 +130,12 @@ export function convertSwagger2ToOpenApi3(doc: Swagger2Doc): Record<string, unkn
 
   const components: Record<string, unknown> = {};
 
-  // Map definitions -> components.schemas
+  // Map definitions -> components.schemas. Definitions reference EACH OTHER
+  // with `#/definitions/...` $refs, so the whole map must go through the same
+  // deep $ref rewrite as operation schemas — copying it verbatim leaves
+  // dangling pointers that make dereference fail on any real-world 2.0 spec.
   if (doc.definitions) {
-    components.schemas = doc.definitions;
+    components.schemas = convertSchemaRef(doc.definitions);
   }
 
   // Map parameters -> components.parameters

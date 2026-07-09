@@ -364,4 +364,47 @@ describe('A4-H2 — full-fidelity Python input schema', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it('drops regex patterns pydantic-core cannot compile, keeps safe ones (corpus: asana)', async () => {
+    // pydantic-core uses the Rust `regex` crate: no backreferences, no
+    // lookarounds. Emitting such a pattern kills the server at import time
+    // with a SchemaError, so the constraint must be dropped — while an
+    // ordinary pattern must still be emitted.
+    const op = richOp();
+    op.operationId = 'patternedOp';
+    op.requestBody = undefined;
+    op.parameters = [
+      {
+        name: 'opt_fields',
+        in: 'query',
+        required: false,
+        // asana's comma-separated-enum idiom: backreference `\1`.
+        schema: { type: 'string', pattern: '([a-z]+)(,\\1)*' },
+      },
+      {
+        name: 'peek',
+        in: 'query',
+        required: false,
+        schema: { type: 'string', pattern: '(?=abc).*' },
+      },
+      {
+        name: 'plain',
+        in: 'query',
+        required: false,
+        schema: { type: 'string', pattern: '^[a-z]+$' },
+      },
+    ];
+    const { py, dir } = await emitPy(manifestWith(op));
+    try {
+      const defLine = py.split('\n').find((l) => l.includes('async def patternedOp('));
+      expect(defLine, 'tool def line present').toBeTruthy();
+      // Unsafe patterns dropped entirely — plain `str | None`, no Field(pattern=…).
+      expect(defLine!).toMatch(/opt_fields: str \| None = None/);
+      expect(defLine!).toMatch(/peek: str \| None = None/);
+      // Safe pattern preserved.
+      expect(defLine!).toMatch(/plain: Annotated\[str \| None, Field\(pattern="\^\[a-z\]\+\$"\)\] = None/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

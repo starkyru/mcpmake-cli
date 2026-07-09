@@ -135,13 +135,18 @@ export function loadConfig(): AppConfig {
 {{/if}}
 {{/if}}
 {{#if (eq type "http-bearer")}}
+{{#unless (eq emitBearer false)}}
     bearerToken: process.env.{{envVarName}},
+{{/unless}}
 {{/if}}
 {{#if (eq type "http-basic")}}
+{{#unless (eq emitBasic false)}}
     basicUsername: process.env.BASIC_USERNAME,
     basicPassword: process.env.BASIC_PASSWORD,
+{{/unless}}
 {{/if}}
 {{#if (eq type "oauth2")}}
+{{#unless (eq emitOAuth2 false)}}
     oauth2Token: process.env.OAUTH2_TOKEN,
     oauth2ClientId: process.env.OAUTH2_CLIENT_ID,
     oauth2ClientSecret: process.env.OAUTH2_CLIENT_SECRET,
@@ -149,6 +154,7 @@ export function loadConfig(): AppConfig {
     oauth2TokenUrl: process.env.OAUTH2_TOKEN_URL,
     oauth2RedirectUri: process.env.OAUTH2_REDIRECT_URI,
     oauth2Scopes: resolveOAuthScopes(),
+{{/unless}}
 {{/if}}
 {{/each}}
     maxRetries: nonNegInt(process.env.MAX_RETRIES, 3),

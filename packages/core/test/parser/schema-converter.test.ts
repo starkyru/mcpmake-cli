@@ -55,6 +55,105 @@ describe('schema-converter', () => {
       expect(code.match(/uniqueFieldB/g)?.length).toBe(2);
     });
 
+    it('drops `default: null` on a non-nullable array (docker-engine SystemInfo)', () => {
+      const code = jsonSchemaToZodCode({
+        type: 'array',
+        items: { type: 'string' },
+        default: null,
+      } as any);
+      expect(code).toBe('z.array(z.string())');
+    });
+
+    it('drops a string default on an array type (openai Eval.testing_criteria)', () => {
+      const code = jsonSchemaToZodCode({
+        type: 'array',
+        items: { type: 'string' },
+        default: 'eval',
+      } as any);
+      expect(code).toBe('z.array(z.string())');
+    });
+
+    it('drops an array default on a string enum (openai TranscriptionInclude)', () => {
+      const code = jsonSchemaToZodCode({
+        type: 'string',
+        enum: ['logprobs'],
+        default: [],
+      } as any);
+      expect(code).toBe('z.literal("logprobs")');
+    });
+
+    it('drops a default that is not a member of the enum', () => {
+      const code = jsonSchemaToZodCode({
+        type: 'string',
+        enum: ['a', 'b'],
+        default: 'c',
+      } as any);
+      expect(code).toBe('z.enum(["a","b"])');
+    });
+
+    it('keeps a coherent default', () => {
+      const code = jsonSchemaToZodCode({
+        type: 'array',
+        items: { type: 'string' },
+        default: [],
+      } as any);
+      expect(code).toBe('z.array(z.string()).default([])');
+    });
+
+    it('keeps `default: null` on a nullable schema, hoisted onto the union', () => {
+      const code = jsonSchemaToZodCode({
+        type: 'string',
+        nullable: true,
+        default: null,
+      } as any);
+      // nullable → oneOf union; the null default survives on the wrapper.
+      expect(code).toContain('.default(null)');
+      expect(code).toContain('z.null()');
+    });
+
+    it('sanitizes garbage defaults nested inside anyOf branches', () => {
+      const code = jsonSchemaToZodCode({
+        anyOf: [
+          { type: 'array', items: { type: 'string' }, default: 'bogus' },
+          { type: 'null' },
+        ],
+      } as any);
+      expect(code).not.toContain('.default("bogus")');
+    });
+
+    it('bounds expansion of a heavily-shared schema DAG (stripe OOM)', () => {
+      // Build a DAG whose FULL expansion is 4^10 > 1M nodes but whose document
+      // is tiny: each layer's node is referenced by 4 properties of the layer
+      // above (the shape of stripe's customer/charge/subscription web after
+      // dereferencing). Without a node budget this either OOMs or emits
+      // megabytes of zod code.
+      let layer: any = { type: 'string' };
+      for (let i = 0; i < 10; i++) {
+        layer = {
+          type: 'object',
+          properties: { a: layer, b: layer, c: layer, d: layer },
+        };
+      }
+      const code = jsonSchemaToZodCode(layer);
+      // Bounded output: the budget (2000 nodes) keeps the code in the tens of
+      // KB, and over-budget subtrees degrade to the permissive record form.
+      expect(code.length).toBeLessThan(200_000);
+      expect(code).toContain('Truncated: schema too large');
+      expect(code).toContain('z.record(z.any())');
+    });
+
+    it('does not truncate a schema within the node budget', () => {
+      const code = jsonSchemaToZodCode({
+        type: 'object',
+        properties: {
+          name: { type: 'string' },
+          nested: { type: 'object', properties: { id: { type: 'integer' } } },
+        },
+      });
+      expect(code).not.toContain('Truncated');
+      expect(code).toContain('z.number().int()');
+    });
+
     it('terminates on a truly self-referential schema without stack overflow (M2)', () => {
       // A real back-edge to an ancestor must still be cut so recursion bounds.
       const node: any = {

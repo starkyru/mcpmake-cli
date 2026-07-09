@@ -69,10 +69,26 @@ function boundsFieldArgs(schema: JsonSchema): string[] {
   numeric('exclusiveMaximum', 'lt');
   numeric('minLength', 'min_length');
   numeric('maxLength', 'max_length');
-  if (typeof schema.pattern === 'string' && schema.pattern.length > 0) {
+  if (
+    typeof schema.pattern === 'string' &&
+    schema.pattern.length > 0 &&
+    isPydanticSafePattern(schema.pattern)
+  ) {
     args.push(`pattern=${pyStringLiteral(schema.pattern)}`);
   }
   return args;
+}
+
+/**
+ * pydantic-core compiles `pattern` with the Rust `regex` crate, which supports
+ * neither backreferences (`\1`) nor lookarounds (`(?=`, `(?!`, `(?<=`, `(?<!`).
+ * Real-world specs use both (asana: `(a|b|…)(,\1)*` for comma-separated enums);
+ * emitting such a pattern makes the generated server die on import with a
+ * SchemaError. Dropping the constraint loses validation strictness but keeps
+ * the tool usable — the upstream API still enforces the real rule.
+ */
+function isPydanticSafePattern(pattern: string): boolean {
+  return !/\\[1-9]|\(\?<?[=!]/.test(pattern);
 }
 
 /**

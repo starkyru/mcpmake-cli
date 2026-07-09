@@ -9,12 +9,128 @@ import { logger } from '../utils/logger.js';
 
 const MAX_SCHEMA_DEPTH = 15;
 
+/** True when a schema's type admits `null` (so `default: null` is coherent). */
+function schemaAllowsNull(schema: JsonSchema): boolean {
+  if (schema.nullable === true || schema.type === 'null') return true;
+  if (Array.isArray(schema.type) && schema.type.includes('null')) return true;
+  if (Array.isArray(schema.enum) && schema.enum.includes(null)) return true;
+  for (const keyword of ['oneOf', 'anyOf'] as const) {
+    const branches = schema[keyword];
+    if (
+      Array.isArray(branches) &&
+      branches.some((b) => b && typeof b === 'object' && (b as JsonSchema).type === 'null')
+    ) {
+      return true;
+    }
+  }
+  // No type constraint at all (bare {} / description-only) → zod z.any(), null is fine.
+  return (
+    schema.type === undefined &&
+    schema.oneOf === undefined &&
+    schema.anyOf === undefined &&
+    schema.allOf === undefined &&
+    schema.properties === undefined &&
+    schema.items === undefined &&
+    schema.enum === undefined
+  );
+}
+
+/** True when `def` matches a single JSON Schema type keyword. */
+function valueMatchesType(type: string, def: unknown): boolean {
+  switch (type) {
+    case 'array':
+      return Array.isArray(def);
+    case 'object':
+      return typeof def === 'object' && def !== null && !Array.isArray(def);
+    case 'string':
+      return typeof def === 'string';
+    case 'number':
+    case 'integer':
+      return typeof def === 'number';
+    case 'boolean':
+      return typeof def === 'boolean';
+    case 'null':
+      return def === null;
+    default:
+      return true;
+  }
+}
+
+/**
+ * True when a declared `default` is coherent with the schema, i.e. keeping it
+ * will produce compiling zod code. Real-world specs carry garbage defaults
+ * (openai: `default: []` on a string enum, `default: "eval"` on an array) that
+ * json-schema-to-zod emits verbatim as `.default(<garbage>)` — a TS2769 in the
+ * generated project. Unjudgeable cases (no `type`, unions) are kept as-is.
+ */
+function defaultMatchesSchema(schema: JsonSchema, def: unknown): boolean {
+  if (def === null) return schemaAllowsNull(schema);
+  const type = schema.type;
+  if (typeof type === 'string' && !valueMatchesType(type, def)) return false;
+  if (Array.isArray(type) && !type.some((t) => valueMatchesType(t as string, def))) return false;
+  // Primitive default not in the enum → z.enum([...]).default(<other>) won't compile.
+  if (
+    Array.isArray(schema.enum) &&
+    ['string', 'number', 'boolean'].includes(typeof def) &&
+    !schema.enum.includes(def)
+  ) {
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Cap on the TOTAL number of schema nodes expanded per top-level conversion.
+ *
+ * A dereferenced OpenAPI doc is a DAG: heavily shared components (stripe's
+ * `customer`/`charge`/`subscription` web) are expanded once PER USE SITE, so
+ * the expanded tree can be exponentially larger than the document even under
+ * the depth cap — stripe OOMs an 8 GB heap on a single operation, and
+ * kubernetes emits 68 MB of tool sources that tsc cannot check. Past the
+ * budget a subtree degrades to a permissive object (`z.record(z.any())`),
+ * which keeps the tool callable (arguments still flow through; the upstream
+ * API enforces the real contract) and keeps the emitted inputSchema at a size
+ * an LLM can actually consume. Traversal order is deterministic, so truncation
+ * is stable across runs.
+ */
+const MAX_SCHEMA_NODES = 800;
+
+interface ExpansionBudget {
+  remaining: number;
+}
+
+/**
+ * Nested (non-root) schema descriptions are capped: kubernetes-style specs
+ * attach multi-paragraph docs to every leaf, which dominates the emitted zod
+ * code (68 MB of tool sources) without helping a model call the tool. The
+ * root description (the tool/body text an LLM actually reads first) is never
+ * trimmed. Cut at a sentence boundary when one exists reasonably early.
+ */
+const MAX_NESTED_DESCRIPTION_LENGTH = 200;
+
+function trimNestedDescription(description: string): string {
+  if (description.length <= MAX_NESTED_DESCRIPTION_LENGTH) return description;
+  const head = description.slice(0, MAX_NESTED_DESCRIPTION_LENGTH);
+  const sentenceEnd = head.indexOf('. ');
+  return sentenceEnd > 40 ? head.slice(0, sentenceEnd + 1) : `${head}…`;
+}
+
 /**
  * Pre-process a JSON Schema to simplify common patterns before Zod conversion.
- * Handles: single-item allOf (unwrap), nullable types, circular refs, array root wrapping.
+ * Handles: single-item allOf (unwrap), nullable types, circular refs, array root
+ * wrapping, and bounds total expansion via {@link MAX_SCHEMA_NODES}.
  */
-function simplifySchema(schema: JsonSchema, depth = 0, seen = new WeakSet<object>()): JsonSchema {
+function simplifySchema(
+  schema: JsonSchema,
+  depth = 0,
+  seen = new WeakSet<object>(),
+  budget: ExpansionBudget = { remaining: MAX_SCHEMA_NODES },
+): JsonSchema {
   if (!schema || typeof schema !== 'object') return schema;
+
+  if (budget.remaining-- <= 0) {
+    return { type: 'object', description: 'Truncated: schema too large' };
+  }
 
   // Circular reference detection: `seen` is the set of nodes on the current DFS
   // path (ancestors only). A hit here is a true back-edge to an ancestor, i.e. an
@@ -36,29 +152,72 @@ function simplifySchema(schema: JsonSchema, depth = 0, seen = new WeakSet<object
     if (schema.allOf && Array.isArray(schema.allOf) && schema.allOf.length === 1) {
       const inner = schema.allOf[0] as JsonSchema;
       const { allOf, ...rest } = schema;
-      return simplifySchema({ ...inner, ...rest }, depth + 1, seen);
+      return simplifySchema({ ...inner, ...rest }, depth + 1, seen, budget);
     }
 
-    // Handle nullable shorthand: { type: "string", nullable: true }
+    // Drop defaults that contradict the schema's own type (docker-engine:
+    // `default: null` on an array; openai: `default: []` on a string enum).
+    // json-schema-to-zod emits them verbatim as `.default(<garbage>)`, which
+    // does not typecheck (TS2769). Coherent defaults are preserved.
+    if (schema.default !== undefined && !defaultMatchesSchema(schema, schema.default)) {
+      const { default: _default, ...rest } = schema;
+      schema = rest as JsonSchema;
+    }
+
+    // Handle nullable shorthand: { type: "string", nullable: true }.
+    // A `default` must be hoisted onto the union wrapper: leaving it on the
+    // inner branch would emit `.default(null)` on the non-null zod type.
     if (schema.nullable === true && schema.type) {
-      const { nullable, ...rest } = schema;
-      return { oneOf: [rest as JsonSchema, { type: 'null' }] };
+      const { nullable, default: defaultValue, ...rest } = schema;
+      const union: JsonSchema = {
+        oneOf: [simplifySchema(rest as JsonSchema, depth + 1, seen, budget), { type: 'null' }],
+      };
+      if (defaultValue !== undefined) {
+        (union as Record<string, unknown>).default = defaultValue;
+      }
+      return union;
     }
 
-    // Recursively simplify nested schemas
+    // Recursively simplify nested schemas. Keywords can coexist on one node
+    // (e.g. properties + anyOf), so compose instead of returning at the first
+    // match — and recurse into union branches, which real-world specs nest
+    // `nullable`/`default: null` inside just as often as under properties.
+    let out = schema;
+    const mutable = (): Record<string, unknown> => {
+      if (out === schema) out = { ...schema };
+      return out as Record<string, unknown>;
+    };
+
+    if (
+      depth > 0 &&
+      typeof schema.description === 'string' &&
+      schema.description.length > MAX_NESTED_DESCRIPTION_LENGTH
+    ) {
+      mutable().description = trimNestedDescription(schema.description);
+    }
+
     if (schema.properties && typeof schema.properties === 'object') {
       const simplified: Record<string, unknown> = {};
       for (const [key, value] of Object.entries(schema.properties as Record<string, JsonSchema>)) {
-        simplified[key] = simplifySchema(value, depth + 1, seen);
+        simplified[key] = simplifySchema(value, depth + 1, seen, budget);
       }
-      return { ...schema, properties: simplified };
+      mutable().properties = simplified;
     }
 
     if (schema.items && typeof schema.items === 'object') {
-      return { ...schema, items: simplifySchema(schema.items as JsonSchema, depth + 1, seen) };
+      mutable().items = simplifySchema(schema.items as JsonSchema, depth + 1, seen, budget);
     }
 
-    return schema;
+    for (const keyword of ['oneOf', 'anyOf', 'allOf'] as const) {
+      const branches = schema[keyword];
+      if (Array.isArray(branches)) {
+        mutable()[keyword] = branches.map((branch) =>
+          simplifySchema(branch as JsonSchema, depth + 1, seen, budget),
+        );
+      }
+    }
+
+    return out;
   } finally {
     // Remove from the DFS path once this subtree is fully processed so sibling
     // branches that share the same node are not mistaken for cycles.
@@ -81,10 +240,26 @@ export function wrapArrayRoot(schema: JsonSchema): JsonSchema {
   return schema;
 }
 
+/**
+ * Byte ceiling for one conversion's emitted zod code. The node budget bounds
+ * STRUCTURE but not bytes (long property names/descriptions): stripe's 587
+ * tools each emit >100 KB under the node cap alone — 69 MB of sources that
+ * OOM tsc. When the emitted code exceeds this, the conversion re-runs with a
+ * halved node budget until it fits (deterministic; unaffected schemas never
+ * re-run). 16 KB of zod ≈ 12 KB of JSON schema — still generous for a tool.
+ */
+const MAX_ZOD_CODE_BYTES = 16_000;
+const MIN_SCHEMA_NODES = 50;
+
 export function jsonSchemaToZodCode(schema: JsonSchema): string {
   try {
-    const simplified = simplifySchema(schema);
-    return jsonSchemaToZod(simplified, { module: 'none' });
+    let budget = MAX_SCHEMA_NODES;
+    for (;;) {
+      const simplified = simplifySchema(schema, 0, new WeakSet(), { remaining: budget });
+      const code = jsonSchemaToZod(simplified, { module: 'none' });
+      if (code.length <= MAX_ZOD_CODE_BYTES || budget <= MIN_SCHEMA_NODES) return code;
+      budget = Math.floor(budget / 2);
+    }
   } catch {
     return 'z.any()';
   }
