@@ -86,3 +86,36 @@ MCPMAKE_E2E=1 MCPMAKE_E2E_HEAVY=1 npx vitest run -c vitest.e2e.config.ts \
 A runtime whose toolchain can't be provisioned (offline, no python, wrangler
 boot failure) skips cleanly with a `[parity] SKIP …` console line; the
 remaining runtimes are still cross-compared.
+
+## Real-world corpus (`corpus/real-world-corpus.e2e.test.ts`, HEAVY)
+
+11 public API specs (`corpus/manifest.ts`: twilio, netlify, spotify, slack,
+discord, openai, asana, plaid, docker-engine, kubernetes, stripe — 4× Swagger
+2.0, 5× OAS 3.0, 2× OAS 3.1, 58–1106 operations) that the generator must
+handle end-to-end. Per spec: node generation with the EXACT manifest tool inventory →
+tsc compile → real MCP boot + `tools/list` → python generation with the
+IDENTICAL tool inventory → python import in a venv. Deep `tools/call`
+cross-comparison stays in the parity tier (controlled fixture + mock
+upstream); the corpus proves the same contracts hold on real-world input.
+
+Specs are downloaded on demand (commit-pinned URLs, sha256-verified) into
+`node_modules/.cache/mcpmake-corpus/` — never vendored. Offline: downloads and
+toolchains skip cleanly, hash mismatches fail loudly. When generator output
+legitimately changes (naming, operation support), update the manifest's
+`toolCount`/`sampleTools` in the same change, with review — those numbers are
+the pinned contract.
+
+Schema expansion is bounded (`schema-converter.ts`: node budget + per-schema
+byte cap + nested-description trimming) — without it, stripe's shared-schema
+web OOMs generation outright and kubernetes emits 68 MB of zod that no tsc
+heap can check. A `typecheck: false` manifest flag exists to pin (not hide)
+any future spec that regresses tsc-checkability; currently all entries
+typecheck.
+
+Run locally (~10–15 min, needs network + python3):
+
+```bash
+npm run build
+MCPMAKE_E2E=1 MCPMAKE_E2E_HEAVY=1 npx vitest run -c vitest.e2e.config.ts \
+  packages/cli/test/e2e/corpus/real-world-corpus.e2e.test.ts
+```
