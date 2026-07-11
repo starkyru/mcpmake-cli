@@ -552,6 +552,17 @@ if (transportMode === 'http') {
             rpcError(res, null, -32600, 'Empty request body');
             return;
           }
+          /* Fail closed on media type: parse only bodies declared as JSON. A
+           * tools/call body mislabeled (e.g. text/plain) must not execute — this
+           * mirrors the hosted edge gate so self-hosted servers share one
+           * request-classification contract. */
+          const contentType = headerValue(req.headers['content-type']);
+          if (!contentType || !contentType.toLowerCase().includes('json')) {
+            sendJson(res, 415, {
+              error: 'Unsupported Media Type: MCP requests must use Content-Type: application/json',
+            });
+            return;
+          }
           let parsed: unknown;
           try {
             parsed = JSON.parse(raw.toString('utf-8'));
