@@ -21,8 +21,26 @@ describe('formatPrice', () => {
         summary: '',
       }),
     ).toBe('$19/mo');
-    expect(formatPrice(FAMILY_A_PRICING.enterpriseSupport)).toBe('from $8,000/yr');
-    expect(formatPrice(FAMILY_A_PRICING.migration)).toBe('$5,000–$20,000 one-off');
+    expect(formatPrice(FAMILY_A_PRICING.assessment)).toBe('$2,000 one-off');
+    expect(formatPrice(FAMILY_A_PRICING.enterpriseSupport)).toBe('from $15,000/yr');
+    expect(formatPrice(FAMILY_A_PRICING.migration)).toBe('$7,500–$20,000 one-off');
+  });
+});
+
+describe('Family A packaging — approved price floors', () => {
+  // The public floors must not drift below the approved packaging. These are
+  // the exact numbers, not values re-derived from the code under test.
+  it('sells the two-step migration at the approved floors', () => {
+    expect(FAMILY_A_PRICING.assessment.priceUsd).toBe(2_000);
+    expect(FAMILY_A_PRICING.assessment.priceMaxUsd).toBeNull();
+    expect(FAMILY_A_PRICING.migration.priceUsd).toBe(7_500);
+    expect(FAMILY_A_PRICING.migration.priceMaxUsd).toBe(20_000);
+    expect(FAMILY_A_PRICING.migration.name).toBe('Migration implementation');
+  });
+
+  it('holds the Enterprise Support floor at $15,000/yr', () => {
+    expect(FAMILY_A_PRICING.enterpriseSupport.priceUsd).toBe(15_000);
+    expect(FAMILY_A_PRICING.enterpriseSupport.period).toBe('yearly');
   });
 });
 

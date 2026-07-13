@@ -2,8 +2,9 @@
  * Canonical pricing for mcpmake's lead commercial offering ("Family A").
  *
  * Family A is the *non-cloud* product: the local compiler (CLI), an enterprise
- * support plan, and done-for-you migration services. (The old CI "Sync" tiers
- * are retired and no longer bundled here.)
+ * support plan, and a two-step done-for-you migration (a fixed assessment that
+ * de-risks scope + a larger implementation). (The old CI "Sync" tiers are
+ * retired and no longer bundled here.)
  *
  * Family B (managed cloud hosting) is a separate convenience add-on; its
  * limits and plan enforcement live in the hosting backend, not in this package.
@@ -42,6 +43,27 @@ export const FAMILY_A_PRICING: Record<string, PricePoint> = {
     summary:
       'Generate editable code you own, run anywhere. Free forever.',
   },
+  // Migration is sold in two steps: a fixed
+  // assessment that de-risks scope, credited in full toward a larger paid
+  // implementation.
+  assessment: {
+    id: 'migration-assessment',
+    name: 'Migration assessment',
+    priceUsd: 2_000,
+    priceMaxUsd: null,
+    period: 'one-off',
+    summary:
+      'Source/inventory review, target architecture, risk + acceptance plan. Credited in full toward an implementation signed within 30 days.',
+  },
+  migration: {
+    id: 'migration',
+    name: 'Migration implementation',
+    priceUsd: 7_500,
+    priceMaxUsd: 20_000,
+    period: 'one-off',
+    summary:
+      'Done-for-you API → curated owned MCP servers, auth, tests, CI, and deployment handoff.',
+  },
   // NB: the CLI is Apache-2.0 — running the generator on your own infra is
   // already free, so this is NOT a code license. It sells the commercial
   // wrapper enterprises actually need around the OSS: a support relationship
@@ -50,19 +72,11 @@ export const FAMILY_A_PRICING: Record<string, PricePoint> = {
   enterpriseSupport: {
     id: 'enterprise-support',
     name: 'Enterprise Support',
-    priceUsd: 8_000,
+    priceUsd: 15_000,
     priceMaxUsd: 40_000,
     period: 'yearly',
     summary:
-      'Commercial support + vendor contract (MSA) around the OSS. On-prem platform licensed separately.',
-  },
-  migration: {
-    id: 'migration',
-    name: 'Migration engagement',
-    priceUsd: 5_000,
-    priceMaxUsd: 20_000,
-    period: 'one-off',
-    summary: 'Done-for-you API → owned MCP servers + CI wiring.',
+      'Commercial support + vendor contract (MSA) around the Apache-2.0 OSS. Custom annual; sold after MSA/DPA + counsel review.',
   },
 };
 
@@ -139,8 +153,8 @@ const PERIOD_SUFFIX: Record<BillingPeriod, string> = {
 };
 
 /**
- * Human-readable price label, e.g. `"Free forever"`, `"$19/mo"`,
- * `"from $8,000/yr"`, `"$5,000–$20,000 one-off"`.
+ * Human-readable price label, e.g. `"Free forever"`, `"$2,000 one-off"`,
+ * `"from $15,000/yr"`, `"$7,500–$20,000 one-off"`.
  */
 export function formatPrice(p: PricePoint): string {
   if (p.priceUsd === 0) return 'Free forever';

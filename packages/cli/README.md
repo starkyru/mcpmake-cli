@@ -79,8 +79,10 @@ mcpmake ci init
 ```
 
 This scaffolds a GitHub Actions workflow that re-generates your server on every
-spec change. Pair it with managed [spec-sync on mcpmake.dev](https://mcpmake.dev)
-to keep a hosted server continuously up to date.
+spec change and opens a pull request — it runs entirely in your own repo, free.
+If you'd rather have the drift, protocol, and security maintenance handled for
+you as reviewable PRs, [mcpmake.dev](https://mcpmake.dev) offers done-for-you
+migration and a managed-maintenance pilot (private beta).
 
 ## Migrating off Stainless?
 
