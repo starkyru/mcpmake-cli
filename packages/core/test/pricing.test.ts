@@ -9,10 +9,35 @@ import {
 describe('formatPrice', () => {
   it('renders free, monthly, yearly-banded, and one-off-banded labels', () => {
     expect(formatPrice(FAMILY_A_PRICING.cli)).toBe('Free forever');
-    expect(formatPrice(FAMILY_A_PRICING.syncSolo)).toBe('$19/mo');
-    expect(formatPrice(FAMILY_A_PRICING.syncTeam)).toBe('$499/mo');
+    // Plain monthly single-price label — hand-built point (the retired Sync tiers
+    // used to cover this branch).
+    expect(
+      formatPrice({
+        id: 'x',
+        name: 'X',
+        priceUsd: 19,
+        priceMaxUsd: null,
+        period: 'monthly',
+        summary: '',
+      }),
+    ).toBe('$19/mo');
     expect(formatPrice(FAMILY_A_PRICING.enterpriseSupport)).toBe('from $8,000/yr');
     expect(formatPrice(FAMILY_A_PRICING.migration)).toBe('$5,000–$20,000 one-off');
+  });
+});
+
+describe('retired / truthful Family A copy', () => {
+  it('no longer bundles the retired Sync tiers', () => {
+    expect(FAMILY_A_PRICING).not.toHaveProperty('syncSolo');
+    expect(FAMILY_A_PRICING).not.toHaveProperty('syncTeam');
+  });
+
+  it('makes no SLA or IP-indemnity claim in the enterprise-support copy', () => {
+    const es = FAMILY_A_PRICING.enterpriseSupport;
+    expect(es.name.toLowerCase()).not.toContain('indemnity');
+    const s = es.summary.toLowerCase();
+    expect(s).not.toContain('indemnity');
+    expect(s).not.toContain('sla');
   });
 });
 

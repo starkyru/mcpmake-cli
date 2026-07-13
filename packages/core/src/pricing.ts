@@ -1,9 +1,9 @@
 /**
  * Canonical pricing for mcpmake's lead commercial offering ("Family A").
  *
- * Family A is the *non-cloud* product: the local compiler (CLI), the CI sync
- * subscription, an enterprise support + indemnity plan, and done-for-you
- * migration services.
+ * Family A is the *non-cloud* product: the local compiler (CLI), an enterprise
+ * support plan, and done-for-you migration services. (The old CI "Sync" tiers
+ * are retired and no longer bundled here.)
  *
  * Family B (managed cloud hosting) is a separate convenience add-on; its
  * limits and plan enforcement live in the hosting backend, not in this package.
@@ -42,34 +42,19 @@ export const FAMILY_A_PRICING: Record<string, PricePoint> = {
     summary:
       'Generate editable code you own, run anywhere. Free forever.',
   },
-  syncSolo: {
-    id: 'sync-solo',
-    name: 'Sync — Solo',
-    priceUsd: 19,
-    priceMaxUsd: null,
-    period: 'monthly',
-    summary: 'CI drift-check that fails the build on spec drift, 1 repo.',
-  },
-  syncTeam: {
-    id: 'sync-team',
-    name: 'Sync — Team',
-    priceUsd: 499,
-    priceMaxUsd: null,
-    period: 'monthly',
-    summary: 'CI drift-check with team seats and priority support.',
-  },
   // NB: the CLI is Apache-2.0 — running the generator on your own infra is
   // already free, so this is NOT a code license. It sells the commercial
-  // wrapper enterprises actually need around the OSS: a support SLA, IP
-  // indemnity, and a vendor contract/MSA.
+  // wrapper enterprises actually need around the OSS: a support relationship
+  // and a vendor contract/MSA. No SLA or IP indemnity is advertised until one
+  // is contractually earned + counsel-reviewed.
   enterpriseSupport: {
     id: 'enterprise-support',
-    name: 'Enterprise Support & Indemnity',
+    name: 'Enterprise Support',
     priceUsd: 8_000,
     priceMaxUsd: 40_000,
     period: 'yearly',
     summary:
-      'Support SLA, IP indemnity + commercial contract around the OSS. On-prem platform licensed separately.',
+      'Commercial support + vendor contract (MSA) around the OSS. On-prem platform licensed separately.',
   },
   migration: {
     id: 'migration',

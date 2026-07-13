@@ -25,12 +25,15 @@ export async function printUpsellFooter(): Promise<void> {
     if (!process.stdout.isTTY || process.env.CI) return;
 
     const { pricing } = await fetchPricing(undefined, UPSELL_TIMEOUT_MS);
-    const sync = pricing.syncSolo;
-    if (!sync) return;
+    // Only pitch an offer that actually exists in the fetched pricing. The Sync
+    // tiers were retired; migration is the current done-for-you
+    // Family A offer, so the footer points there.
+    const offer = pricing.migration;
+    if (!offer) return;
 
     logger.info('');
     logger.info(
-      `Tip: keep this server in sync with its API automatically — Sync ${formatPrice(sync)}.`,
+      `Tip: we can migrate your API into owned MCP servers and run them for you — Migration ${formatPrice(offer)}.`,
     );
     logger.info(
       `See all plans with \`mcpmake pricing\`. Prices subject to change: ${PRICING_PAGE}`,

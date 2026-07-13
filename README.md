@@ -50,10 +50,10 @@ Cloudflare Worker) that you control.
 
 ## Pricing
 
-The CLI is free. Paid plans (sync, team, self-hosting, migration) are listed by
-`mcpmake pricing`, fetched live from mcpmake.dev. **Prices are subject to
-change — see [mcpmake.dev/#pricing](https://mcpmake.dev/#pricing) for the
-latest.**
+The CLI is free. Paid plans (commercial support, done-for-you migration, managed
+hosting) are listed by `mcpmake pricing`, fetched live from mcpmake.dev. **Prices
+are subject to change — see [mcpmake.dev/#pricing](https://mcpmake.dev/#pricing)
+for the latest.**
 
 ## Development
 

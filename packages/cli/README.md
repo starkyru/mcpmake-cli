@@ -109,9 +109,9 @@ mcpmake publish ./server
 
 ## Pricing
 
-The CLI is free and Apache-2.0. Paid plans cover continuous spec-sync, team
-features, self-hosting, and migration help. Print the current plans (fetched live
-from mcpmake.dev, falling back to the copy bundled with your CLI when offline):
+The CLI is free and Apache-2.0. Paid plans cover commercial support, done-for-you
+migration, and managed hosting. Print the current plans (fetched live from
+mcpmake.dev, falling back to the copy bundled with your CLI when offline):
 
 ```bash
 mcpmake pricing
