@@ -148,6 +148,15 @@ export function scaffoldSharedModules(manifest: ProjectManifest): CodeUnit[] {
     },
   ];
 
+  // Feature-flag subsystem (HTTP transport only for now — its single flag gates
+  // the 2026-07-28 RC transport behaviors, which have no stdio counterpart).
+  if (manifest.transport === 'http') {
+    units.push({
+      filePath: 'src/flags.ts',
+      content: renderTemplate('flags.ts', manifest),
+    });
+  }
+
   // MCP Apps output: also ship a ui:// tool-launcher module (registered in src/index.ts
   // via the hasMcpUi template branch).
   if (hasMcpUi) {

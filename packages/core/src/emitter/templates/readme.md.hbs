@@ -48,6 +48,17 @@ needs resumable streams. A `server/discover` preflight is supported, and the
 `Mcp-Method`/`Mcp-Name` routing headers are accepted (and logged). See
 [the migration notes](https://github.com/starkyru/mcpmake/blob/main/docs/mcp-2026-07-28-migration.md).
 
+### Feature flags (2026-07-28 RC preview)
+
+Release-candidate wire behaviors ship **off by default** behind a feature flag
+(`src/flags.ts`). `MCP_FEATURES=protocol-2026-07-28` enables handshake-less
+requests (the RC removes the `initialize`/`initialized` handshake; the server
+synthesizes one internally on the pinned SDK) and per-request
+`params._meta` (`protocolVersion`/`clientInfo`/`capabilities`). A per-flag
+override (`MCP_FEATURE_PROTOCOL_2026_07_28=true|false`) wins over the list.
+The RC is **not final** — leave the flag off in production until the spec and
+the official SDK land, then update this server with `mcpmake update`.
+
 ### Distributed tracing (W3C Trace Context)
 
 An inbound [`traceparent`](https://www.w3.org/TR/trace-context/) is continued

@@ -23,6 +23,7 @@ import { registerA2a } from './a2a.js';
 import { registerCompositeTools } from './composite-tools.js';
 {{/if}}
 import { loadConfig } from './config.js';
+import { flags, enabledFlagNames } from './flags.js';
 {{#if hasAsyncTools}}
 import { handleTaskRoutes, handleTaskRpc } from './task-handlers.js';
 import { handleTaskSse } from './task-sse.js';
@@ -53,10 +54,14 @@ const ALLOW_UNAUTHENTICATED = process.env.MCP_ALLOW_UNAUTHENTICATED === 'true';
  *   - server/discover preflight (SEP-2575)
  *   - Mcp-Method / Mcp-Name routing headers logged (SEP-2243)
  *   - Tasks extension methods tasks/get|update|cancel (tasks/list removed)
- * SDK-gated (lands when @modelcontextprotocol/sdk ships RC support, then the
- * package.json pin is bumped): removal of the initialize/initialized handshake
- * and moving protocolVersion/clientInfo/capabilities into per-request _meta.
- * The 2026-07-28 RC is NOT final — wire shapes marked VERIFY may change. */
+ * Flag-gated (`MCP_FEATURES=protocol-2026-07-28`, see ./flags.ts — off by
+ * default because the RC is NOT final and wire shapes marked VERIFY may
+ * change):
+ *   - handshake-less requests (the RC removes initialize/initialized): a
+ *     synthetic initialize primes the pinned SDK's per-request server
+ *   - per-request `params._meta` (protocolVersion/clientInfo/capabilities)
+ * When @modelcontextprotocol/sdk ships native RC support, bump the
+ * package.json pin and replace the shim with the SDK path. */
 const PROTOCOL_REVISION = '2026-07-28'; // VERIFY against the final spec
 
 /* ── Bearer authentication ──────────────────────────────────────────────
@@ -151,9 +156,140 @@ function buildDiscoverResult(id: unknown): Record<string, unknown> {
         'oauth',
 {{/if}}
       ],
+      /* Enabled feature flags (locally-invented field — VERIFY: drop or rename
+       * if the final spec defines discover-level feature advertisement). */
+      features: enabledFlagNames(flags),
       cacheTtlSeconds: 300,
     },
   };
+}
+
+/* ── Per-request _meta (2026-07-28 RC, flag-gated) ──────────────────────
+ * The RC moves protocolVersion/clientInfo/capabilities out of the initialize
+ * handshake into per-request `params._meta`. VERIFY the key names against the
+ * final spec before enabling the flag by default. */
+interface RequestMeta {
+  protocolVersion?: string;
+  clientInfo?: { name: string; version: string };
+  capabilities?: Record<string, unknown>;
+}
+
+function extractRequestMeta(body: unknown): RequestMeta {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return {};
+  const params = (body as { params?: unknown }).params;
+  if (!params || typeof params !== 'object') return {};
+  const meta = (params as { _meta?: unknown })._meta;
+  if (!meta || typeof meta !== 'object' || Array.isArray(meta)) return {};
+  const m = meta as Record<string, unknown>;
+  const out: RequestMeta = {};
+  if (typeof m.protocolVersion === 'string') out.protocolVersion = m.protocolVersion;
+  if (m.clientInfo && typeof m.clientInfo === 'object' && !Array.isArray(m.clientInfo)) {
+    const ci = m.clientInfo as Record<string, unknown>;
+    if (typeof ci.name === 'string' && typeof ci.version === 'string') {
+      out.clientInfo = { name: ci.name, version: ci.version };
+    }
+  }
+  if (m.capabilities && typeof m.capabilities === 'object' && !Array.isArray(m.capabilities)) {
+    out.capabilities = m.capabilities as Record<string, unknown>;
+  }
+  return out;
+}
+
+/* ── Handshake-less requests (2026-07-28 RC, flag-gated) ────────────────
+ * When the flag is on and a stateless request arrives without an initialize,
+ * we drive a synthetic initialize through the per-request transport first —
+ * populated from the request's `_meta` when present — and discard its
+ * response. (Empirically the pinned SDK's stateless transport already serves
+ * basic requests uninitialized; the shim makes initialized state — including
+ * clientInfo/capabilities seeded from _meta — GUARANTEED on any SDK version
+ * rather than an accident of transport internals.) The
+ * protocolVersion is fed into the SDK's normal negotiation (an unsupported
+ * value negotiates down to the SDK's preferred stable version rather than
+ * failing). Replace this shim with the native SDK path on the post-RC bump. */
+function syntheticInitializeBody(meta: RequestMeta): Record<string, unknown> {
+  return {
+    jsonrpc: '2.0',
+    id: '__mcpmake_synthetic_init__',
+    method: 'initialize',
+    params: {
+      protocolVersion: meta.protocolVersion ?? PROTOCOL_REVISION,
+      clientInfo: meta.clientInfo ?? { name: 'handshake-less-client', version: '0.0.0' },
+      capabilities: meta.capabilities ?? {},
+    },
+  };
+}
+
+/* One discarded-response double per synthetic message. `done` resolves on
+ * `end`, which fires in both the JSON and the SSE response modes. */
+function makeResponseSink(): { res: http.ServerResponse; done: Promise<void> } {
+  let settle!: () => void;
+  const done = new Promise<void>((r) => {
+    settle = r;
+  });
+  const sink = {
+    statusCode: 200,
+    headersSent: false,
+    writableEnded: false,
+    setHeader() {
+      return this;
+    },
+    getHeader() {
+      return undefined;
+    },
+    writeHead() {
+      this.headersSent = true;
+      return this;
+    },
+    write() {
+      return true;
+    },
+    end() {
+      this.writableEnded = true;
+      settle();
+      return this;
+    },
+    flushHeaders() {},
+    on() {
+      return this;
+    },
+    once() {
+      return this;
+    },
+    removeListener() {
+      return this;
+    },
+    emit() {
+      return false;
+    },
+  };
+  return { res: sink as unknown as http.ServerResponse, done };
+}
+
+async function primeInitialized(
+  transport: StreamableHTTPServerTransport,
+  meta: RequestMeta,
+): Promise<void> {
+  /* Minimal request double: with `parsedBody` supplied the SDK only reads the
+   * method + headers off the request. */
+  const fakeReq = () =>
+    ({
+      method: 'POST',
+      headers: {
+        accept: 'application/json, text/event-stream',
+        'content-type': 'application/json',
+      },
+    }) as unknown as http.IncomingMessage;
+  const init = makeResponseSink();
+  await transport.handleRequest(fakeReq(), init.res, syntheticInitializeBody(meta));
+  await init.done;
+  /* Complete the handshake state the SDK tracks: notifications/initialized
+   * (answered 202 by the transport, nothing to read back). */
+  const note = makeResponseSink();
+  await transport.handleRequest(fakeReq(), note.res, {
+    jsonrpc: '2.0',
+    method: 'notifications/initialized',
+  });
+  await note.done;
 }
 
 /* ── MCP server factory ──────────────────────────────────────────────────
@@ -274,6 +410,15 @@ if (transportMode === 'http') {
   /* Stateless by default (2026-07-28). MCP_STATEFUL=true keeps Mcp-Session-Id
    * sessions during the migration / for clients that need resumable streams. */
   const stateful = process.env.MCP_STATEFUL === 'true';
+  /* Handshake-less mode is defined for the RC's stateless transport; stateful
+   * sessions still need initialize to mint the Mcp-Session-Id. Warn once so
+   * the combination is never a silent surprise. */
+  if (stateful && flags.protocol20260728) {
+    console.error(
+      'WARNING: MCP_FEATURES=protocol-2026-07-28 has no effect in MCP_STATEFUL=true mode — ' +
+        'stateful sessions still require the initialize handshake.',
+    );
+  }
   let isReady = false;
 
   /* Stateful mode keeps one McpServer + transport PER SESSION, keyed by the
@@ -397,6 +542,13 @@ if (transportMode === 'http') {
         void reqServer.close();
       });
       await reqServer.connect(transport);
+      /* Handshake-less mode (2026-07-28 RC, flag-gated): a stateless request
+       * that is not itself an initialize gets the synthetic handshake first,
+       * seeded from its per-request _meta. Clients that still initialize (or
+       * with the flag off) take the unchanged legacy path. */
+      if (flags.protocol20260728 && !isInitializeRequest(parsedBody)) {
+        await primeInitialized(transport, extractRequestMeta(parsedBody));
+      }
       await transport.handleRequest(req, res, parsedBody);
     });
   }
@@ -628,6 +780,7 @@ if (transportMode === 'http') {
       port,
       endpoint: '/mcp',
       mode: stateful ? 'stateful' : 'stateless',
+      features: enabledFlagNames(flags),
     });
   });
 

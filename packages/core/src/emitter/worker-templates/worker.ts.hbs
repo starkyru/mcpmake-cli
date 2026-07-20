@@ -58,6 +58,28 @@ function toolEnabled(name: string, env: Env): boolean {
   if (deny && deny.has(name)) return false;
   return true;
 }
+
+/* ── Feature flags (mirrors src/flags.ts in the Node target) ─────────────
+ * MCP_FEATURES is a comma/space-separated list of feature names to enable;
+ * MCP_FEATURE_PROTOCOL_2026_07_28=true|false overrides that single flag. Off
+ * by default: the 2026-07-28 RC is not final and wire shapes may change.
+ * When on, this stateless Worker also negotiates the RC protocol version and
+ * honors per-request `params._meta.protocolVersion` (the dispatcher already
+ * serves handshake-less requests — it never required initialize state). */
+const RC_FEATURE_NAME = 'protocol-2026-07-28';
+function rcFlagEnabled(env: Env): boolean {
+  const override = (env.MCP_FEATURE_PROTOCOL_2026_07_28 ?? '').trim().toLowerCase();
+  if (override === '1' || override === 'true' || override === 'on' || override === 'yes') {
+    return true;
+  }
+  if (override === '0' || override === 'false' || override === 'off' || override === 'no') {
+    return false;
+  }
+  return (env.MCP_FEATURES ?? '')
+    .split(/[\s,]+/)
+    .map((s) => s.trim().toLowerCase())
+    .includes(RC_FEATURE_NAME);
+}
 function enabledTools(env: Env): ToolEntry[] {
   return tools.filter((t) => toolEnabled(t.definition.name, env));
 }
@@ -184,6 +206,9 @@ function discoverResult(env: Env): Record<string, unknown> {
     protocolRevision: PROTOCOL_REVISION,
     capabilities: { tools: { count: enabledTools(env).length } },
     extensions: [],
+    /* Enabled feature flags (locally-invented field — VERIFY: drop or rename
+     * if the final spec defines discover-level feature advertisement). */
+    features: rcFlagEnabled(env) ? [RC_FEATURE_NAME] : [],
     cacheTtlSeconds: 300,
   };
 }
@@ -258,8 +283,11 @@ async function handleRpc(
       // we implement it; otherwise answer with our preferred version so the
       // client can decide whether to proceed.
       const requested = (msg?.params as { protocolVersion?: unknown })?.protocolVersion;
+      const supported = rcFlagEnabled(env)
+        ? [...SUPPORTED_PROTOCOL_VERSIONS, PROTOCOL_REVISION]
+        : SUPPORTED_PROTOCOL_VERSIONS;
       const negotiated =
-        typeof requested === 'string' && SUPPORTED_PROTOCOL_VERSIONS.includes(requested)
+        typeof requested === 'string' && supported.includes(requested)
           ? requested
           : PROTOCOL_VERSION;
       return ok(id, {
@@ -347,6 +375,20 @@ export default {
       parsed = JSON.parse(raw);
     } catch {
       return rpcErrorResponse(null, -32700, 'Parse error', cors);
+    }
+
+    /* Per-request _meta (2026-07-28 RC, flag-gated): the RC moves
+     * protocolVersion/clientInfo out of the handshake into `params._meta`.
+     * This stateless dispatcher needs no state from it — log it for
+     * observability so operators can see RC clients. VERIFY key names
+     * against the final spec. */
+    if (rcFlagEnabled(env) && parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      const meta = (parsed as { params?: { _meta?: { protocolVersion?: unknown } } }).params?._meta;
+      if (meta && typeof meta === 'object' && typeof meta.protocolVersion === 'string') {
+        console.log(
+          JSON.stringify({ level: 'info', msg: 'per-request _meta', protocolVersion: meta.protocolVersion }),
+        );
+      }
     }
 
     const config = loadConfig(env);

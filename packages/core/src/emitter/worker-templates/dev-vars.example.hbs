@@ -13,6 +13,12 @@ MCP_AUTH_TOKEN=
 # MCP_TOOLS=
 # MCP_EXCLUDE_TOOLS=
 
+# Feature flags (all off by default). `protocol-2026-07-28` enables the
+# release-candidate wire behaviors (RC protocol version negotiation +
+# per-request _meta). The RC is not final — leave off in production.
+# MCP_FEATURES=protocol-2026-07-28
+# MCP_FEATURE_PROTOCOL_2026_07_28=false
+
 # Named environments (optional). JSON map of name → base URL; API_ENVIRONMENT
 # selects one. Falls back to BASE_URL when unset.
 {{#if environmentsJson}}

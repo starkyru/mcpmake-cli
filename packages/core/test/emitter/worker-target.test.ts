@@ -149,7 +149,9 @@ describe('emitWorkerProject — Cloudflare Workers target', () => {
     // Preferred = current stable; a supported set is checked, not echoed.
     expect(entry).toContain("const PROTOCOL_VERSION = '2025-11-25'");
     expect(entry).toContain('SUPPORTED_PROTOCOL_VERSIONS');
-    expect(entry).toContain('SUPPORTED_PROTOCOL_VERSIONS.includes(requested)');
+    // The supported set is consulted (RC version joins it only behind the
+    // protocol-2026-07-28 feature flag), never echoed blindly.
+    expect(entry).toContain('supported.includes(requested)');
     // The old blind-echo form must be gone.
     expect(entry).not.toContain(
       "protocolVersion: typeof requested === 'string' ? requested : PROTOCOL_VERSION",

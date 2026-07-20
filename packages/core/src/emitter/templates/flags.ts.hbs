@@ -1,0 +1,85 @@
+/**
+ * Feature flags for this generated server — env-driven, evaluated once at boot.
+ *
+ * Two knobs:
+ *   - MCP_FEATURES: comma/space-separated list of feature names to enable,
+ *     e.g. `MCP_FEATURES=protocol-2026-07-28`.
+ *   - MCP_FEATURE_<NAME>=true|false: per-flag override (upper-snake name).
+ *     Wins over the list, so `MCP_FEATURE_PROTOCOL_2026_07_28=false` disables
+ *     the flag even when MCP_FEATURES mentions it.
+ *
+ * Unknown names in MCP_FEATURES log a warning and are ignored — a typo can
+ * never silently enable behavior (fail closed). Every flag defaults to off.
+ */
+
+export interface FlagDef {
+  /** Property on the {@link Flags} object this definition controls. */
+  key: keyof Flags;
+  /** Kebab-case public name used in MCP_FEATURES. */
+  name: string;
+  /** Per-flag override env var (`true`/`false` forces the flag). */
+  env: string;
+  description: string;
+  /** Value when neither knob mentions the flag. */
+  default: boolean;
+}
+
+export interface Flags {
+  /**
+   * MCP 2026-07-28 RC behaviors beyond the pinned SDK: accept handshake-less
+   * requests (the RC removes initialize/initialized) and honor per-request
+   * `params._meta` (protocolVersion / clientInfo / capabilities). The RC is
+   * NOT final — wire shapes may change until the official SDK ships support.
+   */
+  protocol20260728: boolean;
+}
+
+export const FLAG_DEFS: readonly FlagDef[] = [
+  {
+    key: 'protocol20260728',
+    name: 'protocol-2026-07-28',
+    env: 'MCP_FEATURE_PROTOCOL_2026_07_28',
+    description:
+      'MCP 2026-07-28 RC: handshake-less requests + per-request _meta ' +
+      '(release-candidate wire behavior; off by default until the spec is final)',
+    default: false,
+  },
+];
+
+/** Parse a strict boolean env value; anything unrecognised means "unset". */
+function parseBool(raw: string | undefined): boolean | undefined {
+  if (raw == null) return undefined;
+  const v = raw.trim().toLowerCase();
+  if (v === '1' || v === 'true' || v === 'on' || v === 'yes') return true;
+  if (v === '0' || v === 'false' || v === 'off' || v === 'no') return false;
+  return undefined;
+}
+
+/** Evaluate every flag from the environment. Exported for tests. */
+export function loadFlags(env: Record<string, string | undefined> = process.env): Flags {
+  const listed = new Set(
+    (env.MCP_FEATURES ?? '')
+      .split(/[\s,]+/)
+      .map((s) => s.trim().toLowerCase())
+      .filter((s) => s.length > 0),
+  );
+  const known = new Set(FLAG_DEFS.map((d) => d.name));
+  for (const name of listed) {
+    if (!known.has(name)) {
+      console.error(`WARNING: MCP_FEATURES lists unknown feature "${name}" — ignored`);
+    }
+  }
+  const flags: Flags = { protocol20260728: false };
+  for (const def of FLAG_DEFS) {
+    flags[def.key] = parseBool(env[def.env]) ?? (listed.has(def.name) || def.default);
+  }
+  return flags;
+}
+
+/** Public names of the enabled flags (for boot logs and server/discover). */
+export function enabledFlagNames(flags: Flags): string[] {
+  return FLAG_DEFS.filter((d) => flags[d.key]).map((d) => d.name);
+}
+
+/** Singleton used by the server entry point. */
+export const flags: Flags = loadFlags();
