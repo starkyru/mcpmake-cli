@@ -1,10 +1,10 @@
 /**
- * Canonical pricing for mcpmake's lead commercial offering ("Family A").
+ * Canonical pricing for mcpmake's commercial offering ("Family A").
  *
  * Family A is the *non-cloud* product: the local compiler (CLI), an enterprise
  * support plan, and a two-step done-for-you migration (a fixed assessment that
- * de-risks scope + a larger implementation). (The old CI "Sync" tiers are
- * retired and no longer bundled here.)
+ * de-risks scope + a larger implementation). The old CI "Sync" tiers are
+ * retired and no longer bundled here.
  *
  * Family B (managed cloud hosting) is a separate convenience add-on; its
  * limits and plan enforcement live in the hosting backend, not in this package.
@@ -40,12 +40,10 @@ export const FAMILY_A_PRICING: Record<string, PricePoint> = {
     priceUsd: 0,
     priceMaxUsd: null,
     period: 'monthly',
-    summary:
-      'Generate editable code you own, run anywhere. Free forever.',
+    summary: 'Generate editable code you own, run anywhere. Free forever.',
   },
-  // Migration is sold in two steps: a fixed
-  // assessment that de-risks scope, credited in full toward a larger paid
-  // implementation.
+  // Migration is sold in two steps: a fixed assessment that de-risks scope,
+  // credited in full toward an implementation signed within 30 days.
   assessment: {
     id: 'migration-assessment',
     name: 'Migration assessment',

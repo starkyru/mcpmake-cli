@@ -26,8 +26,8 @@ export async function printUpsellFooter(): Promise<void> {
 
     const { pricing } = await fetchPricing(undefined, UPSELL_TIMEOUT_MS);
     // Only pitch an offer that actually exists in the fetched pricing. The Sync
-    // tiers were retired; migration is the current done-for-you
-    // Family A offer, so the footer points there.
+    // tiers were retired; migration is the current done-for-you Family A offer,
+    // so the footer points there.
     const offer = pricing.migration;
     if (!offer) return;
 

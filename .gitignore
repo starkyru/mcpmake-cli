@@ -9,3 +9,5 @@ AUDIT_REPORT*.md
 DONE.md
 TODO.md
 .claude/*
+.env*
+!.env.example
