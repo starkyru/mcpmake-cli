@@ -10,7 +10,8 @@ import { parsePage, isSameOrigin } from './dom-parser.js';
 import { makeNavigationHopRouteHandler } from './same-origin.js';
 import { captureViewportScreenshot } from './screenshot-capture.js';
 import { logger } from '../utils/logger.js';
-import { assertPublicUrl } from '../utils/ssrf-guard.js';
+import { assertPublicUrl, resolvePublicUrl } from '../utils/ssrf-guard.js';
+import { startPinnedBrowserProxy, type PinnedBrowserProxy } from '../utils/pinned-browser-proxy.js';
 import { redactEntrySecrets } from '../parser/har-filter.js';
 import { loadChromium } from '../utils/playwright-loader.js';
 import crypto from 'node:crypto';
@@ -69,7 +70,7 @@ export async function crawlSite(options: CrawlOptions): Promise<CrawlResult> {
   }
   // SSRF guard: refuse private/loopback/link-local/metadata start hosts before
   // we launch a browser at them. Resolves DNS and enforces protocol + host.
-  await assertPublicUrl(options.url);
+  const seedResolution = await resolvePublicUrl(options.url);
   const baseUrl = `${parsedUrl.protocol}//${parsedUrl.host}`;
   // Normalized origin used for same-origin admission. A string-prefix check on
   // baseUrl would admit prefix-spoofing hosts (e.g. example.com.attacker.test).
@@ -100,10 +101,23 @@ export async function crawlSite(options: CrawlOptions): Promise<CrawlResult> {
   enqueue(options.url, 0);
 
   let browser: Browser | undefined;
+  let proxy: PinnedBrowserProxy | undefined;
 
   try {
     const chromium = await loadChromium();
-    browser = await chromium.launch({ headless: options.headless ?? false });
+    // Chromium is forced through a loopback CONNECT proxy that permits only
+    // the seed hostname and dials its already-validated address. This closes
+    // the DNS-rebinding window between the guard's lookup and browser sockets;
+    // redirects/subresources to every other host (including literal private
+    // IPs) are blocked before a network connection is made.
+    proxy = await startPinnedBrowserProxy(seedResolution);
+    browser = await chromium.launch({
+      headless: options.headless ?? false,
+      proxy: { server: proxy.server },
+      // Chromium otherwise bypasses a configured proxy for loopback targets;
+      // that bypass would let a redirect reach localhost directly.
+      args: ['--proxy-bypass-list=<-loopback>', '--disable-quic'],
+    });
     const context = await browser.newContext({ viewport });
     const page = await context.newPage();
 
@@ -114,11 +128,10 @@ export async function crawlSite(options: CrawlOptions): Promise<CrawlResult> {
     // to enqueue. Subresources (including cross-origin ones) are allowed through
     // so pages still render. See navigationHopDecision.
     //
-    // CAVEAT: Chromium follows a server 3xx redirect WITHOUT re-invoking
-    // page.route, so a same-origin URL that 302s to an internal host is NOT
-    // blocked at request time here — the post-goto landed-origin check below is
-    // the backstop (we skip parsing a page that ended off-origin). The hosted
-    // crawl additionally runs inside an egress-restricted network.
+    // Chromium follows server 3xx redirects without re-invoking page.route.
+    // The pinned proxy below is therefore the socket-layer control: it permits
+    // only the seed hostname, port, and resolved address. The landed-origin
+    // check remains a defense-in-depth parser guard.
     await page.route('**/*', makeNavigationHopRouteHandler(baseOrigin));
 
     // Optionally capture network requests as HAR entries during crawl
@@ -239,8 +252,11 @@ export async function crawlSite(options: CrawlOptions): Promise<CrawlResult> {
     // Close browser
     await browser.close().catch(() => {});
     browser = undefined;
+    await proxy.close().catch(() => {});
+    proxy = undefined;
   } catch (error) {
     if (browser) await browser.close().catch(() => {});
+    if (proxy) await proxy.close().catch(() => {});
     throw error;
   }
 

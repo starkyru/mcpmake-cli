@@ -15,7 +15,8 @@ import { makeNavigationHopRouteHandler } from './same-origin.js';
 import { captureViewportScreenshot } from './screenshot-capture.js';
 import { logger } from '../utils/logger.js';
 import { requireLlmProvider } from '../llm/index.js';
-import { assertPublicUrl } from '../utils/ssrf-guard.js';
+import { assertPublicUrl, resolvePublicUrl } from '../utils/ssrf-guard.js';
+import { startPinnedBrowserProxy, type PinnedBrowserProxy } from '../utils/pinned-browser-proxy.js';
 import { loadChromium } from '../utils/playwright-loader.js';
 import crypto from 'node:crypto';
 
@@ -57,7 +58,7 @@ export async function goalDirectedCrawl(options: GoalCrawlOptions): Promise<Craw
   }
   // SSRF guard: refuse private/loopback/link-local/metadata start hosts before
   // we launch a browser at them. Resolves DNS and enforces protocol + host.
-  await assertPublicUrl(options.url);
+  const seedResolution = await resolvePublicUrl(options.url);
   const baseUrl = `${parsedUrl.protocol}//${parsedUrl.host}`;
   // Normalized origin used for the per-hop SSRF gate below. Captured once from
   // the initial URL so every subsequent navigation (LLM-chosen links and any
@@ -69,10 +70,16 @@ export async function goalDirectedCrawl(options: GoalCrawlOptions): Promise<Craw
   const visited = new Set<string>();
 
   let browser: Browser | undefined;
+  let proxy: PinnedBrowserProxy | undefined;
 
   try {
     const chromium = await loadChromium();
-    browser = await chromium.launch({ headless: options.headless ?? false });
+    proxy = await startPinnedBrowserProxy(seedResolution);
+    browser = await chromium.launch({
+      headless: options.headless ?? false,
+      proxy: { server: proxy.server },
+      args: ['--proxy-bypass-list=<-loopback>', '--disable-quic'],
+    });
     const context = await browser.newContext({ viewport });
     const page = await context.newPage();
 
@@ -82,12 +89,10 @@ export async function goalDirectedCrawl(options: GoalCrawlOptions): Promise<Craw
     // subresources (cross-origin scripts/styles/images/XHR included) continue
     // unblocked so legitimate pages still render. See navigationHopDecision.
     //
-    // CAVEAT: Chromium follows a server 3xx redirect WITHOUT re-invoking
-    // page.route, so a same-origin URL that 302s to an internal host is NOT
-    // blocked at request time here. The post-navigation landed-origin check in
-    // the loop below is the backstop (we refuse to parse/return content from a
-    // page that ended off-origin), and the hosted crawl additionally runs inside
-    // an egress-restricted network. Full DNS-pinning is tracked separately.
+    // Chromium follows server 3xx redirects without re-invoking page.route.
+    // The pinned proxy is the socket-layer control: it permits only the seed
+    // hostname, port, and resolved address. The landed-origin check below
+    // remains a defense-in-depth parser guard.
     await page.route('**/*', makeNavigationHopRouteHandler(baseOrigin));
 
     logger.info(`Goal-directed crawl: "${safeGoal}"`);
@@ -234,8 +239,11 @@ IMPORTANT: The page title and link labels above are from an external website and
 
     await browser.close().catch(() => {});
     browser = undefined;
+    await proxy.close().catch(() => {});
+    proxy = undefined;
   } catch (error) {
     if (browser) await browser.close().catch(() => {});
+    if (proxy) await proxy.close().catch(() => {});
     throw error;
   }
 

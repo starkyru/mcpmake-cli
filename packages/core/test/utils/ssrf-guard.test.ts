@@ -1,5 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { isPrivateOrReservedIp, assertPublicUrl } from '../../src/utils/ssrf-guard.js';
+import {
+  isPrivateOrReservedIp,
+  assertPublicUrl,
+  resolvePublicUrl,
+} from '../../src/utils/ssrf-guard.js';
 
 describe('isPrivateOrReservedIp', () => {
   it('flags private/loopback/link-local/reserved IPv4', () => {
@@ -110,6 +114,15 @@ describe('assertPublicUrl', () => {
 
   it('allows a public literal IP without DNS', async () => {
     await expect(assertPublicUrl('https://1.1.1.1/')).resolves.toBeUndefined();
+  });
+
+  it('returns a concrete browser pin with the protocol-default port', async () => {
+    await expect(resolvePublicUrl('https://1.1.1.1/path')).resolves.toMatchObject({
+      hostname: '1.1.1.1',
+      address: '1.1.1.1',
+      family: 4,
+      port: 443,
+    });
   });
 
   it('rejects literal TEST-NET / benchmarking reserved hosts (A4-14)', async () => {

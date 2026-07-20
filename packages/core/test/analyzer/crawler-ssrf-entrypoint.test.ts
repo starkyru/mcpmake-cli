@@ -87,5 +87,12 @@ describe('L-ssrf-crawl: escape hatch allows private hosts (still gated by launch
     // our mock makes throw the sentinel, proving we got past the host check.
     await expect(crawlSite({ url: 'http://127.0.0.1/' })).rejects.toThrow(LAUNCH_SENTINEL);
     expect(launchSpy).toHaveBeenCalledOnce();
+    // The browser is not allowed to resolve or directly connect on its own:
+    // crawlSite gives it a loopback proxy plus disables Chromium's normal
+    // loopback proxy bypass. The proxy is the socket-level DNS pinning layer.
+    const launchOptions = launchSpy.mock.calls[0][0];
+    expect(launchOptions.proxy?.server).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+    expect(launchOptions.args).toContain('--proxy-bypass-list=<-loopback>');
+    expect(launchOptions.args).toContain('--disable-quic');
   });
 });

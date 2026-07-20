@@ -12,16 +12,25 @@ import { lookup } from 'node:dns/promises';
  * any that points at a private, loopback, link-local, or otherwise reserved
  * address.
  *
- * Residual limitation (documented, not closed here): this checks at request time
- * but does not pin DNS at the socket, so a TOCTOU/DNS-rebinding attacker who
- * flips a record between this lookup and the browser's own connect can still slip
- * through. Full DNS-pinning would require intercepting at the socket layer.
- *
  * Escape hatch: set `MCPMAKE_ALLOW_PRIVATE_HOSTS=1` to allow private/loopback
  * targets (local development against `localhost` test servers).
  */
 
 const ALLOW_ENV = 'MCPMAKE_ALLOW_PRIVATE_HOSTS';
+
+/** A validated DNS result that a browser proxy can connect to without re-resolving. */
+export interface PublicUrlResolution {
+  /** Parsed and protocol-validated URL. */
+  url: URL;
+  /** Normalized hostname, without IPv6 brackets. */
+  hostname: string;
+  /** Concrete socket address selected from the validated DNS answer. */
+  address: string;
+  /** Node address family for {@link address}. */
+  family: number;
+  /** Explicit target port, with the protocol default filled in. */
+  port: number;
+}
 
 export function privateHostsAllowed(): boolean {
   return process.env[ALLOW_ENV] === '1' || process.env[ALLOW_ENV] === 'true';
@@ -154,11 +163,14 @@ export function isPrivateOrReservedIp(ip: string): boolean {
 }
 
 /**
- * Throw if `urlString` is not a public http(s) URL. Resolves the host via DNS and
- * rejects when any resolved address is private/loopback/link-local/reserved.
- * Honors the `MCPMAKE_ALLOW_PRIVATE_HOSTS` escape hatch.
+ * Resolve a http(s) URL to a concrete socket address, rejecting private or
+ * reserved destinations unless the local-development escape hatch is enabled.
+ *
+ * Every DNS result is inspected before a single address is selected. Callers
+ * that drive a browser must pass this result to the pinned browser proxy so the
+ * browser connects to this address rather than performing a second resolution.
  */
-export async function assertPublicUrl(urlString: string): Promise<void> {
+export async function resolvePublicUrl(urlString: string): Promise<PublicUrlResolution> {
   let url: URL;
   try {
     url = new URL(urlString);
@@ -170,34 +182,52 @@ export async function assertPublicUrl(urlString: string): Promise<void> {
     throw new Error(`Refusing non-http(s) URL: ${urlString}`);
   }
 
-  if (privateHostsAllowed()) return;
-
   // Strip IPv6 brackets from the hostname for literal checks.
   const host = url.hostname.replace(/^\[/, '').replace(/\]$/, '');
+  const port = url.port ? Number(url.port) : url.protocol === 'https:' ? 443 : 80;
+  const allowPrivate = privateHostsAllowed();
 
   // Literal IP host — check directly, no DNS needed.
   if (isIP(host)) {
-    if (isPrivateOrReservedIp(host)) {
+    if (!allowPrivate && isPrivateOrReservedIp(host)) {
       throw new Error(
         `Refusing to access private/reserved address ${host} (set ${ALLOW_ENV}=1 to allow).`,
       );
     }
-    return;
+    return { url, hostname: host, address: host, family: isIP(host), port };
   }
 
   // Hostname — resolve every address it maps to and reject if ANY is private.
-  let addresses: { address: string }[];
+  let addresses: { address: string; family: number }[];
   try {
     addresses = await lookup(host, { all: true });
   } catch {
     throw new Error(`Cannot resolve host "${host}" to verify it is public; refusing request.`);
   }
+  if (addresses.length === 0) {
+    throw new Error(`Cannot resolve host "${host}" to verify it is public; refusing request.`);
+  }
   for (const { address } of addresses) {
-    if (isPrivateOrReservedIp(address)) {
+    if (!allowPrivate && isPrivateOrReservedIp(address)) {
       throw new Error(
         `Refusing request: host "${host}" resolves to private/reserved address ${address} ` +
           `(set ${ALLOW_ENV}=1 to allow).`,
       );
     }
   }
+
+  // Prefer IPv4 when available: Chromium's proxy path handles both families,
+  // but this keeps behavior predictable on dual-stack DNS answers and avoids a
+  // surprising v6-only connection where the host has a public v4 alternative.
+  const selected = addresses.find((entry) => entry.family === 4) ?? addresses[0];
+  return { url, hostname: host, address: selected.address, family: selected.family, port };
+}
+
+/**
+ * Throw if `urlString` is not a public http(s) URL. Resolves every DNS answer
+ * before returning; callers that need socket pinning should use
+ * {@link resolvePublicUrl} and retain its returned address instead.
+ */
+export async function assertPublicUrl(urlString: string): Promise<void> {
+  await resolvePublicUrl(urlString);
 }

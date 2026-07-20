@@ -87,6 +87,13 @@ vi.mock('../../src/analyzer/dom-parser.js', async (importOriginal) => {
 // Short-circuit the per-URL SSRF guard (DNS lookup) — all URLs here are public.
 vi.mock('../../src/utils/ssrf-guard.js', () => ({
   assertPublicUrl: async () => {},
+  resolvePublicUrl: async (url: string) => ({
+    url: new URL(url),
+    hostname: 'example.com',
+    address: '93.184.216.34',
+    family: 4,
+    port: 443,
+  }),
 }));
 
 describe('L-frontier: crawl queue dedup + bound', () => {

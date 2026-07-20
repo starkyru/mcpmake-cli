@@ -2,7 +2,8 @@ import type { Browser, Request, Response } from 'playwright';
 import type { Entry, Header } from 'har-format';
 import { redactEntrySecrets } from '../parser/har-filter.js';
 import { logger } from '../utils/logger.js';
-import { assertPublicUrl } from '../utils/ssrf-guard.js';
+import { assertPublicUrl, resolvePublicUrl } from '../utils/ssrf-guard.js';
+import { startPinnedBrowserProxy, type PinnedBrowserProxy } from '../utils/pinned-browser-proxy.js';
 import { loadChromium } from '../utils/playwright-loader.js';
 
 export interface RecorderOptions {
@@ -58,16 +59,22 @@ export async function recordBrowserSession(options: RecorderOptions): Promise<Re
   }
   // SSRF guard: refuse private/loopback/link-local/metadata start hosts before
   // we launch a browser at them. Resolves DNS and enforces protocol + host.
-  await assertPublicUrl(options.url);
+  const seedResolution = await resolvePublicUrl(options.url);
   const baseUrl = `${parsedUrl.protocol}//${parsedUrl.host}`;
 
   const headless = options.headless ?? false;
 
   let browser: Browser | undefined;
+  let proxy: PinnedBrowserProxy | undefined;
 
   try {
     const chromium = await loadChromium();
-    browser = await chromium.launch({ headless });
+    proxy = await startPinnedBrowserProxy(seedResolution);
+    browser = await chromium.launch({
+      headless,
+      proxy: { server: proxy.server },
+      args: ['--proxy-bypass-list=<-loopback>', '--disable-quic'],
+    });
     const context = await browser.newContext();
     const page = await context.newPage();
 
@@ -182,8 +189,11 @@ export async function recordBrowserSession(options: RecorderOptions): Promise<Re
         });
       });
     }
+    await proxy.close().catch(() => {});
+    proxy = undefined;
   } catch (error) {
     if (browser) await browser.close().catch(() => {});
+    if (proxy) await proxy.close().catch(() => {});
     throw error;
   }
 

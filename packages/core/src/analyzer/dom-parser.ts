@@ -400,10 +400,9 @@ export function isSameOrigin(href: string, origin: string): boolean {
  * XHR/fetch) are NOT blocked here — blocking them would break legitimate pages,
  * and a cross-origin subresource can't pivot the crawler's navigation context.
  *
- * NOTE (follow-up): this is an origin-equality gate only. It does not pin DNS,
- * so it does not by itself stop a public hostname that resolves to a private/
- * loopback IP (DNS-rebinding / metadata-IP). Full DNS-pinning + private-range
- * blocking is tracked separately and layered in front of the browser.
+ * This is an origin-equality gate only; the crawler and recorder additionally
+ * use a DNS-pinned socket proxy to prevent a public hostname from rebinding to
+ * a private or loopback address after validation.
  *
  * @param isNavigation whether the request is a top-level navigation/document load
  * @param url          the request URL
