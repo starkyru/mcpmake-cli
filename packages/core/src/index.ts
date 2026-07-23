@@ -142,6 +142,23 @@ export { collectLowConfidenceSelectors, summarizeRescan } from './rescan/rescan-
 export type { LowConfidenceSelector, RescanSummary, ChangeCounts } from './rescan/rescan-runner.js';
 
 // ---------------------------------------------------------------------------
+// Verify (live spec-vs-real-API drift + functional smoke scaffolding)
+// ---------------------------------------------------------------------------
+export { verifyLive } from './verify/verify-live.js';
+export type {
+  VerifyLiveOptions,
+  VerifyLiveReport,
+  OperationCheckResult,
+  OperationCheckStatus,
+} from './verify/verify-live.js';
+export { checkResponseShape } from './verify/shape-check.js';
+export type { ShapeDivergence } from './verify/shape-check.js';
+export { deriveParamSample } from './verify/sample-values.js';
+export type { ScalarSample } from './verify/sample-values.js';
+export { buildSmokeSuite } from './verify/smoke-suite.js';
+export type { SmokeSuite, SmokeCase, SmokeChain } from './verify/smoke-suite.js';
+
+// ---------------------------------------------------------------------------
 // Config (shared command/config plumbing)
 // ---------------------------------------------------------------------------
 export { defineConfigurableCommand } from './config/configurable-command.js';

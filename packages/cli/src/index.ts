@@ -26,6 +26,7 @@ import postmanCommand from './commands/from/postman.js';
 import websiteCommand from './commands/from/website.js';
 import stainlessCommand from './commands/from/stainless.js';
 import verifyCommand from './commands/verify.js';
+import testScaffoldCommand from './commands/test-scaffold.js';
 import updateCommand from './commands/update.js';
 import deployCommand from './commands/deploy.js';
 import loginCommand from './commands/login.js';
@@ -69,6 +70,7 @@ const main = defineCommand({
     from: fromCommand,
     merge: mergeCommand,
     verify: verifyCommand,
+    'test-scaffold': testScaffoldCommand,
     update: updateCommand,
     login: loginCommand,
     logout: logoutCommand,

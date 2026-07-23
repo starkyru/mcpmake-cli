@@ -212,7 +212,8 @@ COMMANDS
   from describe   Generate from a plain-English description
   from stainless  Generate from a Stainless config (migration)
   merge           Merge multiple specs into one server
-  verify          Verify a generated server against its source spec
+  verify          Verify a generated server vs its spec, or the spec vs the live API (--live)
+  test-scaffold   Generate a functional smoke-test suite from the spec
   update          Re-generate a server from an updated spec
   diff            Show what would change before regenerating
   lint            Lint a spec for MCP-generation issues
