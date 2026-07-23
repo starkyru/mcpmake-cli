@@ -144,7 +144,7 @@ async function verifyStatic(
     logger.success(`Verified: all ${expectedTools.length} tools match the spec`);
     return true;
   }
-  logger.error(`Static verification failed: ${missingCount} missing, ${extraCount} extra tools`);
+  logger.error(`Verification failed: ${missingCount} missing, ${extraCount} extra tools`);
   return false;
 }
 
@@ -200,7 +200,7 @@ async function verifyCatalog(
     );
     return true;
   }
-  logger.error(`Static verification failed: ${missingCount} missing, ${extraCount} extra tools`);
+  logger.error(`Verification failed: ${missingCount} missing, ${extraCount} extra tools`);
   return false;
 }
 
