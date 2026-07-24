@@ -1,0 +1,21 @@
+#!/bin/sh
+#
+# Opt-in pre-push gate. Runs the SAME verify gate as .github/workflows/publish.yml
+# (format:check, typecheck, unit tests, build, built-bin e2e, npm audit) so a
+# regression CI would reject never reaches origin/main — which auto-publishes both
+# packages to npm on every push.
+#
+# NOT installed automatically. Enable it in your clone with:
+#     git config core.hooksPath .githooks
+# Bypass for a docs-only / non-code push with:
+#     git push --no-verify
+#
+# Skipped in CI (the release bot pushes there and the gate already ran as its own
+# workflow steps; re-running it inside the push would be redundant and could fail
+# the release push on transient audit timing).
+if [ -n "$CI" ]; then
+  exit 0
+fi
+
+echo "pre-push: running full verify gate (npm run preflight); use --no-verify to skip"
+npm run preflight

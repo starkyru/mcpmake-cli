@@ -60,9 +60,30 @@ for the latest.**
 ```bash
 npm install        # install workspaces
 npm run build      # build @mcpmake/core then mcpmake
-npm test           # vitest across both packages
+npm test           # vitest across both packages (fast unit tier)
 npm run typecheck  # type-check both packages
+npm run preflight  # run the FULL publish gate locally (see below)
 npm run publish:all   # build + publish core then cli (needs npm login)
+```
+
+### Before pushing to `main`
+
+A push to `main` triggers `.github/workflows/publish.yml`, which **auto-publishes
+both packages to npm**. Its verify gate is more than `npm test`: it also runs the
+built-bin **e2e** suite (`MCPMAKE_E2E=1 npm run test:e2e`, a separate Vitest
+config) and `npm audit`. `npm run preflight` runs that exact gate locally —
+**run it before every push** so a failure surfaces here, not mid-publish:
+
+```bash
+npm run preflight   # format:check + typecheck + test + build + e2e + audit
+```
+
+Optional: enforce it automatically with the committed pre-push hook (inert until
+you enable it):
+
+```bash
+git config core.hooksPath .githooks   # runs `npm run preflight` on git push
+# bypass a docs-only push with: git push --no-verify
 ```
 
 - Node.js **>= 20**
