@@ -109,8 +109,13 @@ export interface PythonEnv {
 /**
  * Create a venv and `pip install` the generated server's runtime deps once.
  * Returns `{python:null, reason}` (never throws) when python3 / venv / pip /
- * network is unavailable so the python tests skip cleanly. The deps mirror the
- * generated `requirements.txt` (`mcp`, `pydantic`, `httpx`, `python-dotenv`).
+ * network is unavailable so the python tests skip cleanly.
+ *
+ * The specifiers below MUST mirror `emitter/python-templates/requirements.txt.hbs`
+ * — including the upper bounds. Installing the bare names instead resolved `mcp`
+ * 2.x, whose `mcp.server.fastmcp` no longer exists, so step 3 failed and the whole
+ * python e2e tier skipped itself instead of reporting the break it was written to
+ * catch. `test/emitter/emitted-dependency-ranges.test.ts` pins the template side.
  */
 export async function provisionPythonVenv(parentDir: string): Promise<PythonEnv> {
   const venvDir = join(parentDir, '.venv');
@@ -138,10 +143,10 @@ export async function provisionPythonVenv(parentDir: string): Promise<PythonEnv>
         'install',
         '--quiet',
         '--disable-pip-version-check',
-        'mcp',
-        'pydantic',
-        'httpx',
-        'python-dotenv',
+        'mcp>=1.2.0,<2',
+        'pydantic>=2.0.0,<3',
+        'httpx>=0.27.0,<1',
+        'python-dotenv>=1.0.0,<2',
       ],
       { timeout: INSTALL_TIMEOUT_MS, env: childEnv(), maxBuffer: 32 * 1024 * 1024 },
     );
